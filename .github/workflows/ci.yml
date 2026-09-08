@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Unit & Integration Tests
+        run: zig build test --summary all
+
+      - name: Build Binary (ReleaseFast)
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Generate Fixtures
+        run: python tests/generate_fixtures.py
+
+      - name: Validate CLI on Fixtures
+        run: |
+          ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf
+          ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf --format json
+          
+          # Negative tests: ensure invalid files are rejected with exit code 1
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/overflow.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/out_of_bounds.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/overlap.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/duplicate_tensor.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/duplicate_key.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/invalid_key.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/alloc_dos_tensor.gguf

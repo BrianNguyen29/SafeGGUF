@@ -26,6 +26,14 @@ pub const Document = struct {
     tensor_data_base: u64,
     tensors: []const TensorInfo,
     file_size: u64,
+
+    pub fn deinit(self: *Document, allocator: std.mem.Allocator) void {
+        for (self.tensors) |t| {
+            allocator.free(t.name);
+            allocator.free(t.dimensions);
+        }
+        allocator.free(self.tensors);
+    }
 };
 
 pub fn parseDocument(
@@ -60,6 +68,11 @@ pub fn parseDocument(
     cur += 8;
     if (metadata_kv_count > limit.max_metadata_entries) return err.ParseError.ResourceLimitExceeded;
 
+    const min_meta_size: u64 = 8 + 1 + 4;
+    if (cur > reader.size or metadata_kv_count > (reader.size - cur) / min_meta_size) {
+        return err.ParseError.UnexpectedEof;
+    }
+
     const header = Header{
         .version = version,
         .tensor_count = tensor_count,
@@ -67,6 +80,15 @@ pub fn parseDocument(
     };
 
     var alignment: u64 = types.DEFAULT_ALIGNMENT;
+
+    var seen_keys = std.StringHashMap(void).init(allocator);
+    defer {
+        var it = seen_keys.keyIterator();
+        while (it.next()) |k| {
+            allocator.free(k.*);
+        }
+        seen_keys.deinit();
+    }
 
     // 4. Parse Metadata
     var m_idx: u64 = 0;
@@ -79,11 +101,23 @@ pub fn parseDocument(
         if (key_end > reader.size) return err.ParseError.UnexpectedEof;
 
         const key_buf = allocator.alloc(u8, key_len) catch return err.ParseError.OutOfMemory;
-        defer allocator.free(key_buf);
+        var key_registered = false;
+        defer {
+            if (!key_registered) {
+                allocator.free(key_buf);
+            }
+        }
+
         try reader.readBytes(cur, key_buf);
         cur = key_end;
 
         try metadata_mod.validateKey(key_buf);
+
+        if (seen_keys.contains(key_buf)) {
+            return err.ParseError.DuplicateMetadataKey;
+        }
+        seen_keys.put(key_buf, {}) catch return err.ParseError.OutOfMemory;
+        key_registered = true;
 
         const val_type_raw = try reader.readInt(u32, cur, endian);
         cur += 4;
@@ -105,32 +139,49 @@ pub fn parseDocument(
                 return err.ParseError.InvalidAlignment;
             }
         } else {
-            _ = try metadata_mod.skipMetadataValue(reader, &cur, val_type, endian, limit);
+            _ = try metadata_mod.skipMetadataValue(reader, &cur, val_type, endian, limit, 0);
         }
+    }
+
+    const min_tensor_desc_size: u64 = 8 + 1 + 4 + 8 + 4 + 8;
+    if (cur > reader.size or tensor_count > (reader.size - cur) / min_tensor_desc_size) {
+        return err.ParseError.UnexpectedEof;
     }
 
     // 5. Parse Tensor Descriptors
     const tensors = allocator.alloc(TensorInfo, tensor_count) catch return err.ParseError.OutOfMemory;
-    errdefer allocator.free(tensors);
 
     var t_idx: u64 = 0;
-    while (t_idx < tensor_count) : (t_idx += 1) {
+    errdefer {
+        for (tensors[0..t_idx]) |t| {
+            allocator.free(t.name);
+            allocator.free(t.dimensions);
+        }
+        allocator.free(tensors);
+    }
+
+    while (t_idx < tensor_count) {
         const name_len = try reader.readInt(u64, cur, endian);
         cur += 8;
-        if (name_len > limit.max_string_bytes) return err.ParseError.ResourceLimitExceeded;
+        if (name_len == 0 or name_len > limit.max_tensor_name_bytes) return err.ParseError.InvalidTensorName;
 
         const name_end = std.math.add(u64, cur, name_len) catch return err.ParseError.ArithmeticOverflow;
         if (name_end > reader.size) return err.ParseError.UnexpectedEof;
 
         const name_buf = allocator.alloc(u8, name_len) catch return err.ParseError.OutOfMemory;
+        errdefer allocator.free(name_buf);
         try reader.readBytes(cur, name_buf);
         cur = name_end;
 
         const n_dims = try reader.readInt(u32, cur, endian);
         cur += 4;
-        if (n_dims == 0 or n_dims > limit.max_dimensions) return err.ParseError.InvalidDimensionCount;
+        if (n_dims == 0 or n_dims > limit.max_dimensions) {
+            return err.ParseError.InvalidDimensionCount;
+        }
 
         const dims = allocator.alloc(u64, n_dims) catch return err.ParseError.OutOfMemory;
+        errdefer allocator.free(dims);
+
         var d_idx: u32 = 0;
         while (d_idx < n_dims) : (d_idx += 1) {
             dims[d_idx] = try reader.readInt(u64, cur, endian);
@@ -149,6 +200,7 @@ pub fn parseDocument(
             .tensor_type = tensor_type,
             .offset = offset,
         };
+        t_idx += 1;
     }
 
     // 6. Compute Tensor Data Base
@@ -162,4 +214,3 @@ pub fn parseDocument(
         .file_size = reader.size,
     };
 }
-

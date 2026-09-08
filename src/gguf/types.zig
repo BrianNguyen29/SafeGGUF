@@ -35,12 +35,33 @@ pub const GGMLType = enum(u32) {
     Q5_K = 13,
     Q6_K = 14,
     Q8_K = 15,
+    IQ2_XXS = 16,
+    IQ2_XS = 17,
+    IQ3_XXS = 18,
+    IQ1_S = 19,
+    IQ4_NL = 20,
+    IQ3_S = 21,
+    IQ2_S = 22,
+    IQ4_XS = 23,
     I8 = 24,
     I16 = 25,
     I32 = 26,
     I64 = 27,
     F64 = 28,
+    IQ1_M = 29,
     BF16 = 30,
+    Q4_0_4_4 = 31,
+    Q4_0_4_8 = 32,
+    Q4_0_8_8 = 33,
+    TQ1_0 = 34,
+    TQ2_0 = 35,
+    IQ4_KS = 36,
+    IQ2_KS = 37,
+    IQ3_KS = 38,
+    Q1_0 = 39,
+    Q2_0 = 40,
+    MXFP4 = 41,
+    NVFP4 = 42,
     _,
 };
 
@@ -65,13 +86,33 @@ pub fn getTypeTraits(type_raw: u32) ?TypeTraits {
         13 => TypeTraits{ .block_size = 256, .type_size = 176 }, // Q5_K
         14 => TypeTraits{ .block_size = 256, .type_size = 210 }, // Q6_K
         15 => TypeTraits{ .block_size = 256, .type_size = 292 }, // Q8_K
+        16 => TypeTraits{ .block_size = 256, .type_size = 66 }, // IQ2_XXS
+        17 => TypeTraits{ .block_size = 256, .type_size = 74 }, // IQ2_XS
+        18 => TypeTraits{ .block_size = 256, .type_size = 98 }, // IQ3_XXS
+        19 => TypeTraits{ .block_size = 256, .type_size = 48 }, // IQ1_S
+        20 => TypeTraits{ .block_size = 32, .type_size = 18 }, // IQ4_NL
+        21 => TypeTraits{ .block_size = 256, .type_size = 110 }, // IQ3_S
+        22 => TypeTraits{ .block_size = 256, .type_size = 82 }, // IQ2_S
+        23 => TypeTraits{ .block_size = 256, .type_size = 136 }, // IQ4_XS
         24 => TypeTraits{ .block_size = 1, .type_size = 1 }, // I8
         25 => TypeTraits{ .block_size = 1, .type_size = 2 }, // I16
         26 => TypeTraits{ .block_size = 1, .type_size = 4 }, // I32
         27 => TypeTraits{ .block_size = 1, .type_size = 8 }, // I64
         28 => TypeTraits{ .block_size = 1, .type_size = 8 }, // F64
+        29 => TypeTraits{ .block_size = 256, .type_size = 56 }, // IQ1_M
         30 => TypeTraits{ .block_size = 1, .type_size = 2 }, // BF16
+        31 => TypeTraits{ .block_size = 32, .type_size = 18 }, // Q4_0_4_4
+        32 => TypeTraits{ .block_size = 32, .type_size = 18 }, // Q4_0_4_8
+        33 => TypeTraits{ .block_size = 32, .type_size = 18 }, // Q4_0_8_8
+        34 => TypeTraits{ .block_size = 256, .type_size = 56 }, // TQ1_0
+        35 => TypeTraits{ .block_size = 256, .type_size = 84 }, // TQ2_0
+        36 => TypeTraits{ .block_size = 256, .type_size = 144 }, // IQ4_KS
+        37 => TypeTraits{ .block_size = 256, .type_size = 82 }, // IQ2_KS
+        38 => TypeTraits{ .block_size = 256, .type_size = 110 }, // IQ3_KS
+        39 => TypeTraits{ .block_size = 32, .type_size = 6 }, // Q1_0
+        40 => TypeTraits{ .block_size = 32, .type_size = 10 }, // Q2_0
+        41 => TypeTraits{ .block_size = 32, .type_size = 17 }, // MXFP4
+        42 => TypeTraits{ .block_size = 32, .type_size = 18 }, // NVFP4
         else => null,
     };
 }
-

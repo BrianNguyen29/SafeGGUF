@@ -21,6 +21,16 @@ pub fn validateStructural(allocator: std.mem.Allocator, doc: parser.Document) er
 
     if (doc.tensors.len == 0) return;
 
+    var seen_names = std.StringHashMap(void).init(allocator);
+    defer seen_names.deinit();
+
+    for (doc.tensors) |tensor| {
+        if (seen_names.contains(tensor.name)) {
+            return err.ParseError.DuplicateTensorName;
+        }
+        seen_names.put(tensor.name, {}) catch return err.ParseError.OutOfMemory;
+    }
+
     const ranges = allocator.alloc(TensorRange, doc.tensors.len) catch return err.ParseError.OutOfMemory;
     defer allocator.free(ranges);
 
