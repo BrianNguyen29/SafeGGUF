@@ -32,7 +32,7 @@ fi
 cd "$REPO_ROOT"
 CXX_COMPILER="${CXX:-c++}"
 echo "Compiling tests/oracle/ggml_oracle with $CXX_COMPILER..."
-$CXX_COMPILER -O2 "$SCRIPT_DIR/oracle/ggml_oracle.cpp" \
+$CXX_COMPILER -std=c++17 -O2 "$SCRIPT_DIR/oracle/ggml_oracle.cpp" \
     -I"$CACHE_DIR/include" \
     -L"$CACHE_DIR/build/src" \
     -lggml-base -lggml \
