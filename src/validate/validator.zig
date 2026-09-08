@@ -36,9 +36,18 @@ pub const Validator = struct {
         return self.quota_alloc.allocator();
     }
 
+    /// Resets per-validation monotonic work/byte counters and transient quota flags,
+    /// enabling a single Validator instance to be safely reused across multiple files.
+    pub fn resetForValidation(self: *Validator) void {
+        self.work_budget.consumed_units = 0;
+        self.work_budget.consumed_scanned_bytes = 0;
+        self.quota_alloc.resetQuotaExceeded();
+    }
+
     /// Validates a GGUF file stream via Reader abstraction, strictly enforcing
     /// parser and structural invariants under managed resource budgets.
     pub fn validate(self: *Validator, r: reader_mod.Reader) err.ParseError!parser.Document {
+        self.resetForValidation();
         const alloc = self.quota_alloc.allocator();
         var doc = try parser.parseDocument(alloc, r, self.endian, self.limits, self.profile, &self.work_budget);
         errdefer doc.deinit(alloc);

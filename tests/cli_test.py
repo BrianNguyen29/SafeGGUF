@@ -201,7 +201,7 @@ def test_help():
         rc, stdout, stderr = run_cli(flag)
         assert rc == 0, f"Expected returncode 0 for {flag}, got {rc}"
         output = stdout + stderr
-        assert "SafeGGUF v0.3.4" in output, f"Version missing in help: {output}"
+        assert "SafeGGUF v0.3.5" in output, f"Version missing in help: {output}"
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
         assert "default: little" in output, f"Default little endian missing in help: {output}"
         assert "--format <text|json>" in output

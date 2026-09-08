@@ -1260,3 +1260,63 @@ test "buffered_reader: sliding window across 64 KiB boundary" {
         try std.testing.expectEqual(expected, b);
     }
 }
+
+test "validator: reuse Validator across multiple files resets per-run work budget and quota flag" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 0, .little); // 0 tensors
+    try writer.writeInt(u64, 0, .little); // 0 metadata
+
+    // Set a moderate work budget limit (e.g. 50 units)
+    const lim = limits.Limits{ .max_work_units = 50 };
+    var val = safegguf.Validator.init(std.testing.allocator, lim, .gguf_spec);
+
+    // Perform 10 consecutive validations on the same Validator instance.
+    // If work budget was cumulative, 10 runs would accumulate units and exceed 50 units!
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        const r = reader_mod.SliceReader.init(buffer[0..32]).reader();
+        var doc = try val.validate(r);
+        defer val.deinitDocument(&doc);
+
+        try std.testing.expectEqual(@as(u64, 0), doc.header.tensor_count);
+        // Ensure per-run units were reset to 0 at the start of each validate()
+        try std.testing.expect(val.work_budget.consumed_units < 50);
+        try std.testing.expect(!val.isQuotaExceeded());
+    }
+}
+
+test "structural: low-level API validateStructural charges WorkBudget for dimension pre-pass" {
+    const dims = [_]u64{10};
+    const tensors = [_]parser.TensorInfo{
+        .{ .name = "t0", .dimensions = &dims, .tensor_type = 0, .offset = 0 },
+        .{ .name = "t1", .dimensions = &dims, .tensor_type = 0, .offset = 32 },
+        .{ .name = "t2", .dimensions = &dims, .tensor_type = 0, .offset = 64 },
+        .{ .name = "t3", .dimensions = &dims, .tensor_type = 0, .offset = 96 },
+        .{ .name = "t4", .dimensions = &dims, .tensor_type = 0, .offset = 128 },
+        .{ .name = "t5", .dimensions = &dims, .tensor_type = 0, .offset = 160 },
+        .{ .name = "t6", .dimensions = &dims, .tensor_type = 0, .offset = 192 },
+        .{ .name = "t7", .dimensions = &dims, .tensor_type = 0, .offset = 224 },
+    };
+
+    const doc = parser.Document{
+        .header = .{
+            .version = 3,
+            .tensor_count = 8,
+            .metadata_kv_count = 0,
+        },
+        .alignment = 32,
+        .tensor_data_base = 32,
+        .tensors = &tensors,
+        .file_size = 512,
+    };
+
+    // Work budget only allows 3 units, but there are 8 tensors in dimension pre-pass
+    var tight_budget = limits.WorkBudget.init(3);
+    const res = structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &tight_budget);
+    try std.testing.expectError(error.ResourceLimitExceeded, res);
+}

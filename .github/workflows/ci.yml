@@ -106,5 +106,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag_name="${GITHUB_REF#refs/tags/}"
+          echo "Ensuring release $tag_name exists..."
+          gh release view "$tag_name" >/dev/null 2>&1 || gh release create "$tag_name" --title "$tag_name" --generate-notes
           echo "Uploading assets to release $tag_name..."
           gh release upload "$tag_name" dist/* --clobber

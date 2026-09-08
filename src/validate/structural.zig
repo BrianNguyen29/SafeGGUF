@@ -45,6 +45,7 @@ pub fn validateStructural(
 
     // Validate tensor dimensions against bounds and zero-dimension rules
     for (doc.tensors) |tensor| {
+        try work_budget.consume(1);
         try arithmetic.validateDimensions(tensor.dimensions, profile);
     }
 

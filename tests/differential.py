@@ -79,7 +79,7 @@ EXPECTED_MATRIX = {
     ),
     "nonzero_header_padding.gguf": (
         "REJECT", "PASS", "PASS",
-        "SafeGGUF strictly enforces GGUF zero-padding requirement; upstream ggml skips padding unverified.",
+        "SafeGGUF deliberately enforces zero-filled descriptor padding as an anti-tamper safe-subset invariant; upstream ggml aligns without checking byte contents.",
     ),
     "out_of_bounds.gguf": (
         "REJECT", "REJECT", "REJECT",

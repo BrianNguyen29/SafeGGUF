@@ -4,7 +4,7 @@
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
-[![Release](https://img.shields.io/badge/release-v0.3.4-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.5-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
 
 A memory-safe, overflow-checked GGUF v3 structural and arithmetic pre-admission validator written in **Zig**, designed to inspect model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes.
 
@@ -25,7 +25,7 @@ SafeGGUF acts as a hardened **pre-admission gateway** in model supply chain pipe
 
 ---
 
-## 🛡️ Architectural Guarantees & Features (v0.3.4)
+## 🛡️ Architectural Guarantees & Features (v0.3.5)
 
 ### 1. Canonical Upstream Type Table Verified by C Oracle
 Supports all **35 active GGML types** matching `ggml 0.23.0` (`e91ded11`):
@@ -50,7 +50,7 @@ Different runtimes enforce different constraints. SafeGGUF strictly decouples sp
 | **Alignment** | Multiple of 8 (uint32) | Power-of-two (uint32) |
 
 > [!NOTE]
-> Both `--profile gguf-spec` and `--profile llama-cpp` are **safe pre-admission subsets** designed for defense-in-depth. They enforce deliberate security invariants over raw formats: strict boolean bytes ($\in \{0, 1\}$), non-empty tensor names ($1 \le \text{len}$), non-zero dimensions ($d > 0$), strict lower_snake_case key grammar, checked integer overflow prevention (mitigating upstream `GGML_PAD` unsigned wrap-around), and finite resource budgets.
+> Both `--profile gguf-spec` and `--profile llama-cpp` are **safe pre-admission subsets** designed for defense-in-depth. `--profile llama-cpp` is derived from and differential-tested directly against pinned `ggml 0.23.0` (`e91ded11`). Furthermore, SafeGGUF deliberately requires zero-filled descriptor padding (`0x00`) as an anti-tamper safe-subset canonicalization invariant (whereas the base GGUF specification defines padding alignment length without prescribing byte values).
 
 ### 3. Comprehensive Multi-Layer Resource Budgeting (Anti-DoS)
 * **Global Quota Allocator:** Wraps GPA / test allocator with hard live and peak memory ceilings (`max_total_alloc_bytes = 128 MB`), bounding memory consumption across all parser tables, hash maps, strings, and sorting buffers.
@@ -83,7 +83,7 @@ SafeGGUF incorporates an exhaustive, multi-tier verification harness:
 3. **Seed Corpus Crash Regression & Fuzz Harness (`tests/fuzz_target.zig`):**
    Provides an official `LLVMFuzzerTestOneInput` C ABI entry point for libFuzzer/OSS-Fuzz and a corpus runner (`zig build fuzz`) verifying parser memory safety across 26 adversarial seed fixtures.
 4. **Leak-Free Unit & Regression Suite (`zig build test`):**
-   38 exhaustive unit and regression tests verifying arithmetic overflows, trailing padding truncation, zero-tensor spec alignment, signed dimension bounds, quota tracking, and DoS limits with 0 memory leaks under `std.testing.allocator` (enforced on Ubuntu & macOS in CI).
+   47 exhaustive unit and regression tests verifying arithmetic overflows, trailing padding truncation, zero-tensor spec alignment, signed dimension bounds, Validator reuse lifecycle, quota tracking, and DoS limits with 0 memory leaks under `std.testing.allocator` (enforced on Ubuntu & macOS in CI).
 
 ---
 

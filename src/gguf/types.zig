@@ -13,7 +13,7 @@ pub const ACTIVE_TYPE_COUNT: u32 = 35;
 
 pub const Profile = enum {
     gguf_spec, // Resource-bounded safe subset of GGUF v3 specification
-    llama_cpp, // Upstream ggml / llama.cpp 0.23.0 loader compatibility profile
+    llama_cpp, // Compatibility profile derived from and differential-tested against pinned ggml 0.23.0 (e91ded11)
 };
 
 pub const CompatibilityTarget = struct {
