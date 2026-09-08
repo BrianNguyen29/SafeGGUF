@@ -51,6 +51,10 @@ pub fn validateStructural(
             const unpadded_end = try arithmetic.checkedAdd(expected_offset, nbytes);
             expected_offset = try arithmetic.checkedAlignUp(unpadded_end, doc.alignment);
         }
+        const required_file_end = try arithmetic.checkedAdd(doc.tensor_data_base, expected_offset);
+        if (required_file_end > doc.file_size) {
+            return err.ParseError.TensorOutOfBounds;
+        }
     }
 
     const ranges = allocator.alloc(TensorRange, doc.tensors.len) catch return err.ParseError.OutOfMemory;
@@ -97,4 +101,3 @@ pub fn validateStructural(
         prev_end = range.end;
     }
 }
-

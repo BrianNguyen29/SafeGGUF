@@ -29,7 +29,7 @@ const CANONICAL_ORACLE = [_]CanonicalOracleEntry{
     .{ .id = 6, .name = "Q5_0", .block_size = 32, .type_size = 22 },
     .{ .id = 7, .name = "Q5_1", .block_size = 32, .type_size = 24 },
     .{ .id = 8, .name = "Q8_0", .block_size = 32, .type_size = 34 },
-    .{ .id = 9, .name = "Q8_1", .block_size = 32, .type_size = 40 },
+    .{ .id = 9, .name = "Q8_1", .block_size = 32, .type_size = 36 },
     .{ .id = 10, .name = "Q2_K", .block_size = 256, .type_size = 84 },
     .{ .id = 11, .name = "Q3_K", .block_size = 256, .type_size = 110 },
     .{ .id = 12, .name = "Q4_K", .block_size = 256, .type_size = 144 },
@@ -785,11 +785,12 @@ test "profile: scalar tensor (n_dims == 0) supported under llama_cpp" {
     const slice_reader = reader_mod.SliceReader.init(buffer[0..total_file_size]);
     const r = slice_reader.reader();
 
-    // Under gguf_spec: n_dims == 0 is rejected (InvalidDimensionCount)
+    // Under both gguf_spec and llama_cpp: n_dims == 0 is accepted as a scalar tensor!
     var b_spec = limits.WorkBudget.init(1000);
-    try std.testing.expectError(error.InvalidDimensionCount, parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b_spec));
+    var doc_spec = try parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b_spec);
+    defer doc_spec.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), doc_spec.tensors[0].dimensions.len);
 
-    // Under llama_cpp: n_dims == 0 is accepted as a scalar tensor!
     var b_llama = limits.WorkBudget.init(1000);
     var doc_llama = try parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .llama_cpp, &b_llama);
     defer doc_llama.deinit(std.testing.allocator);
@@ -841,3 +842,38 @@ test "structural: WorkBudget exhaustion returns ResourceLimitExceeded" {
     try std.testing.expectError(error.ResourceLimitExceeded, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &budget));
 }
 
+test "structural: llama_cpp rejects truncated final tensor padding (HIGH-01)" {
+    // 1 scalar tensor (F32, 4 bytes), alignment 32.
+    // doc.tensor_data_base = 32, tensor.offset = 0.
+    // Unpadded end is 32 + 4 = 36 bytes.
+    // Aligned end is 32 + 32 = 64 bytes.
+    // If file_size is 36, safe unpadded check passes, but contiguous padded check must fail!
+    const dims = [_]u64{};
+    const tensors = [_]parser.TensorInfo{
+        .{
+            .name = "scalar",
+            .dimensions = &dims,
+            .tensor_type = 0, // F32 -> 4 bytes
+            .offset = 0,
+        },
+    };
+
+    const doc = parser.Document{
+        .header = .{ .version = 3, .tensor_count = 1, .metadata_kv_count = 0 },
+        .alignment = 32,
+        .tensor_data_base = 32,
+        .tensors = &tensors,
+        .file_size = 36, // Missing 28 bytes of trailing padding!
+    };
+
+    var budget = limits.WorkBudget.init(1000);
+    try std.testing.expectError(error.TensorOutOfBounds, structural.validateStructural(std.testing.allocator, doc, .llama_cpp, &budget));
+}
+
+test "limits: WorkBudget byte-scanning exhaustion returns ResourceLimitExceeded (HIGH-03)" {
+    // Limits byte scanning to 50 bytes
+    var budget = limits.WorkBudget.initWithLimits(1000, 50);
+    try budget.consumeBytes(30);
+    try std.testing.expectEqual(@as(u64, 30), budget.consumed_scanned_bytes);
+    try std.testing.expectError(error.ResourceLimitExceeded, budget.consumeBytes(25)); // 30 + 25 = 55 > 50
+}

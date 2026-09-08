@@ -96,7 +96,7 @@ pub fn getTypeTraits(type_raw: u32) ?TypeTraits {
         6 => TypeTraits{ .name = "Q5_0", .block_size = 32, .type_size = 22 },
         7 => TypeTraits{ .name = "Q5_1", .block_size = 32, .type_size = 24 },
         8 => TypeTraits{ .name = "Q8_0", .block_size = 32, .type_size = 34 },
-        9 => TypeTraits{ .name = "Q8_1", .block_size = 32, .type_size = 40 },
+        9 => TypeTraits{ .name = "Q8_1", .block_size = 32, .type_size = 36 },
         10 => TypeTraits{ .name = "Q2_K", .block_size = 256, .type_size = 84 },
         11 => TypeTraits{ .name = "Q3_K", .block_size = 256, .type_size = 110 },
         12 => TypeTraits{ .name = "Q4_K", .block_size = 256, .type_size = 144 },

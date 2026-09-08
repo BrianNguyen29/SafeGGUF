@@ -60,8 +60,12 @@ def test_positive():
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
-    # 8. Scalar tensor (n_dims == 0) under llama-cpp
+    # 8. Scalar tensor (n_dims == 0) under both profiles
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "scalar.gguf"), "--profile", "llama-cpp")
+    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout
+
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "scalar.gguf"), "--profile", "gguf-spec")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
@@ -73,8 +77,8 @@ def test_negative_validation():
     rejections = [
         # P0 regression: contiguous offset addition overflow under llama-cpp
         (["inspect", os.path.join(FIXTURES, "llama_cpp_overflow.gguf"), "--profile", "llama-cpp"], "E_ArithmeticOverflow"),
-        # Scalar tensor rejected under gguf-spec
-        (["inspect", os.path.join(FIXTURES, "scalar.gguf"), "--profile", "gguf-spec"], "E_InvalidDimensionCount"),
+        # P0 regression: truncated final tensor padding under llama-cpp (HIGH-01)
+        (["inspect", os.path.join(FIXTURES, "truncated_final_padding.gguf"), "--profile", "llama-cpp"], "E_TensorOutOfBounds"),
         # NVFP4 truncated file (regression)
         (["inspect", os.path.join(FIXTURES, "type40_truncated_false_pass.gguf")], "E_TensorOutOfBounds"),
         # Non-contiguous offset under llama-cpp

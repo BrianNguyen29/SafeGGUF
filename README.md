@@ -4,7 +4,7 @@
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggerganov/llama.cpp)
-[![Release](https://img.shields.io/badge/release-v0.2.3-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.0-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
 
 A memory-safe, overflow-checked GGUF v3 structural and arithmetic pre-admission validator written in **Zig**, designed to inspect model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes.
 
@@ -17,44 +17,46 @@ SafeGGUF operates purely on file headers and descriptors without loading multi-g
 GGUF is the standard container format for local and edge LLM inference (`llama.cpp`, Ollama, vLLM). Because model files are typically loaded via `mmap` and parsed in C/C++, malformed or crafted files present direct security risks:
 
 * **Integer Overflows in Tensor Byte Math:** Crafting extreme tensor dimensions can overflow integer calculations in block quantization, bypassing bounds checks and triggering undersized allocations or heap buffer overflows (e.g., CVE-2026-33298, CVE-2026-27940).
-* **Contiguous Layout Addition Overflows:** In runtime loaders requiring strictly sequential layouts, calculating expected offsets ($O_{next} = O_{cur} + S$) without checked arithmetic can trigger integer overflows and crash or panic scanning processes.
-* **Memory Exhaustion & Heap DoS:** Corrupted headers declaring massive tensor counts or nested metadata arrays can exhaust host memory before payload verification.
-* **Layout Inconsistencies & Loader Crashes:** Files with arbitrary tensor gaps or descriptor misalignments can crash runtime loaders like `llama.cpp` which assert sequential, contiguous memory layout (`ti.offset == ctx->size`).
+* **Contiguous Layout & Trailing Padding Exploits:** In runtime loaders requiring strictly sequential layouts, calculating expected offsets ($O_{next} = O_{cur} + S$) without checked arithmetic can trigger integer overflows and crash. Furthermore, files truncating trailing tensor padding cause runtime loaders to abort with truncated reads (`failed to read tensor data binary blob`).
+* **Memory & I/O Exhaustion (Anti-DoS):** Corrupted headers declaring massive tensor counts or nested string arrays can exhaust host memory or force gigabytes of stream byte validation without exceeding logical element counts.
 * **Semantic Format Exploits:** Malformed boolean values (bytes $\notin \{0, 1\}$), invalid UTF-8 sequences, or unconstrained nested arrays can trigger parser panics or memory corruption.
 
 SafeGGUF acts as a hardened **pre-admission gateway** in model supply chain pipelines, running before weights are mapped or executed.
 
 ---
 
-## 🛡️ Architectural Guarantees & Features (v0.2.3)
+## 🛡️ Architectural Guarantees & Features (v0.3.0)
 
-### 1. Canonical Upstream Type Table (ggml 0.23.0 / `e91ded11`)
-Supports all **35 active GGML types** with exact `(block_size, type_size)` traits:
+### 1. Canonical Upstream Type Table Verified by C Oracle
+Supports all **35 active GGML types** matching `ggml 0.23.0` (`e91ded11`):
+* Verified against an independent compiled C++ upstream oracle (`tests/test_oracle_types.py`) inspecting exact `sizeof` and `blck_size` across all 43 upstream type slots.
 * Includes standard floating point (`F32`, `F16`, `BF16`, `F64`), integers (`I8`..`I64`), k-quants (`Q2_K`..`Q8_K`), i-quants (`IQ1_S`, `IQ1_M`, `IQ2_XXS`..`IQ4_XS`), t-quants (`TQ1_0`, `TQ2_0`), and modern micro-float types (`MXFP4`, `NVFP4`, `Q1_0`, `Q2_0`).
 * Deprecated/removed slots (4, 5, 31..33, 36..38) and IDs $\ge 43$ are strictly rejected (`InvalidTensorType`).
 * Row divisibility is strictly enforced: $\text{dimensions}[0] \pmod{\text{block\_size}} = 0$.
-* Checked arithmetic prevents integer overflow across every dimension product, block calculation, and alignment step.
-* Fixed P0 unchecked addition overflow in contiguous layout validation via `checkedAdd`.
+* Checked arithmetic prevents integer overflow across every dimension product, block calculation, alignment, and contiguous layout traversal.
 
-### 2. Profile Separation (`gguf-spec` vs `llama-cpp`)
+### 2. Profile Separation: Specification vs Runtime Safe Subset
 Different runtimes enforce different constraints. SafeGGUF strictly decouples spec validation from runtime loader validation:
 
 | Constraint | `--profile gguf-spec` (Default) | `--profile llama-cpp` |
 | :--- | :--- | :--- |
+| **Profile Role** | GGUF v3 Structural Format Spec | ggml 0.23.0 Safe Pre-Admission Subset |
 | **GGUF Version** | Exactly version 3 | Version 2 and Version 3 |
-| **Tensor Layout** | Arbitrary order & gaps permitted (non-overlapping) | Strictly contiguous in descriptor order (`offset == prev_end`) |
+| **Tensor Layout** | Arbitrary order & gaps permitted (non-overlapping) | Strictly contiguous in descriptor order + checked trailing padding |
 | **Nested Arrays** | Permitted (depth limited to 16) | Strictly rejected (`NestedArrayNotSupported`) |
-| **Scalar Tensors** | Requires $1 \le \text{n\_dims} \le 4$ | Supports $\text{n\_dims} = 0$ (scalar, 1 element = `type_size`) |
+| **Scalar Tensors** | Supported ($\text{n\_dims} = 0$, 1 element = `type_size`) | Supported ($\text{n\_dims} = 0$, 1 element = `type_size`) |
 | **Tensor Name Length** | $1 \le \text{len} \le 64$ bytes | $1 \le \text{len} < 64$ bytes (`GGML_MAX_NAME` check) |
 | **Alignment** | Multiple of 8 (uint32) | Power-of-two (uint32) |
-| **Zero Dimensions** | Strictly rejected (`ZeroDimensionNotAllowed`) | Strictly rejected (`ZeroDimensionNotAllowed`) |
 
-### 3. Comprehensive Resource Budgeting & Anti-DoS
+> [!NOTE]
+> SafeGGUF's `--profile llama-cpp` is a **safe pre-admission subset** of upstream `llama.cpp`. It intentionally enforces stricter security validation than upstream C readers on adversarial inputs: strict boolean bytes ($\in \{0, 1\}$), strict lower_snake_case key grammar, checked integer overflow prevention (mitigating upstream `GGML_PAD` unsigned wrap-around), and finite resource budgets.
+
+### 3. Comprehensive Multi-Layer Resource Budgeting (Anti-DoS)
 * **Global Quota Allocator:** Wraps GPA / test allocator with hard live and peak memory ceilings (`max_total_alloc_bytes = 128 MB`), bounding memory consumption across all parser tables, hash maps, strings, and sorting buffers.
 * **Quota Exhaustion vs Host OOM:** Quota exhaustion explicitly flags `isQuotaExceeded()` and exits with code `2` (`E_TotalAllocationLimitExceeded`), while unbudgeted host memory starvation exits with code `70` (`EX_SOFTWARE`).
-* **Global Work Budget:** Monotonically charged across parsing, metadata traversal, descriptor decoding, sorting $O(N \log N)$, and interval scanning (`max_work_units = 10_000_000`) to prevent CPU exhaustion.
+* **Global Work Budget:** Monotonically charged across parsing, metadata traversal, descriptor decoding, sorting $O(N \log N)$, and interval scanning (`max_work_units = 10_000_000`) to prevent CPU algorithmic complexity attacks.
+* **Byte-Scanning Budget:** Dedicated accounting (`max_scanned_bytes = 256 MB`) charging every byte read during UTF-8 stream validation, boolean array scanning, key validation, and string parsing to eliminate CPU/IO sink attacks.
 * **Buffered I/O (64 KiB Sliding Window):** Caches reads to protect the host against syscall exhaustion attacks from fragmented metadata streams.
-* **Pre-Allocation Stream Bounds Checks:** Verifies `tensor_count \le (remaining / 33)` and `metadata_kv_count \le (remaining / 13)` before attempting memory allocations.
 
 ### 4. Fail-Closed CLI & Standard Exit Code Taxonomy
 SafeGGUF uses standard, deterministic exit codes suitable for automated CI/CD and deployment pipelines:
@@ -69,11 +71,39 @@ SafeGGUF uses standard, deterministic exit codes suitable for automated CI/CD an
 
 ---
 
+## 🔬 Independent Verification & Testing Infrastructure
+
+SafeGGUF incorporates an exhaustive, multi-tier verification harness:
+
+1. **Independent Type Oracle Verification (`tests/test_oracle_types.py`):**
+   Automatically builds a C++ helper against `ggml-org/ggml@e91ded11` and asserts that all 43 GGML type traits match with 100% precision.
+2. **True Upstream Differential Validation (`tests/differential.py`):**
+   Executes SafeGGUF alongside the compiled upstream `ggml` oracle running both metadata-only and normal tensor data loading paths (`gguf_init_from_file`). Enforces an explicit, audited allowlist for intentional security divergences. Any unexpected divergence immediately fails CI.
+3. **Seed Corpus Crash Regression & Fuzz Harness (`tests/fuzz_target.zig`):**
+   Provides an official `LLVMFuzzerTestOneInput` C ABI entry point for libFuzzer/OSS-Fuzz and a corpus runner (`zig build fuzz`) verifying parser memory safety across 19 adversarial seed fixtures.
+4. **Leak-Free Unit & Regression Suite (`zig build test`):**
+   30 exhaustive tests verifying arithmetic overflows, trailing padding truncation, quota tracking, and DoS limits with 0 memory leaks under `std.testing.allocator`.
+
+---
+
+## 🔒 Supply Chain & TOCTOU Considerations
+
+SafeGGUF acts as a fast pre-admission barrier inspecting headers before runtime mapping. In environments where local file storage is shared or writable by untrusted processes:
+
+* **Time-Of-Check to Time-Of-Use (TOCTOU):** A file validated by SafeGGUF could theoretically be modified on disk before a downstream inference engine loads it.
+* **Recommended Mitigations:**
+  1. **Immutable Content-Addressed Storage (CAS):** Store models in read-only volumes (e.g., S3/OCI read-only layers, dm-verity) and validate before promoting to the admitted store.
+  2. **File Descriptor Chaining:** In programmatic / library integrations, open the file descriptor once with read-only permissions (`O_RDONLY`), validate the descriptor via SafeGGUF, and pass the same descriptor to the runtime loader.
+  3. **Digest Verification:** Verify SHA-256 or BLAKE3 digests of admitted artifacts before deployment.
+
+---
+
 ## 🚀 Quick Start
 
 ### Prerequisites
 * **Zig 0.13.0** (pinned toolchain)
-* Python 3.10+ (for synthetic fixtures, integration, and differential tests)
+* Python 3.10+
+* CMake & C++ compiler (for building the upstream verification oracle)
 
 ### Building from Source
 
@@ -91,17 +121,23 @@ zig build -Doptimize=ReleaseSafe
 ### Running the Test Suite
 
 ```bash
-# Run all unit tests, regression tests, and fuzz corpus sweep with 0-leak verification
+# 1. Verify code formatting
+zig fmt --check src/ build.zig tests/*.zig
+
+# 2. Run all unit tests, regression tests, and fuzz corpus sweep with 0-leak verification
 zig build test --summary all
 
-# Run standalone fuzz harness across corpus
-zig build fuzz
-
-# Run end-to-end CLI integration tests (exact exit codes & timeouts)
+# 3. Generate synthetic adversarial fixtures
 python tests/generate_fixtures.py
+
+# 4. Run end-to-end CLI integration tests (exact exit codes & timeouts)
 python tests/cli_test.py
 
-# Run differential test suite comparing gguf-spec and llama-cpp profile verdicts
+# 5. Build upstream ggml oracle and verify type traits
+bash tests/build_oracle.sh
+python tests/test_oracle_types.py
+
+# 6. Run true upstream differential test suite
 python tests/differential.py
 ```
 
@@ -145,94 +181,6 @@ Valid file output (`--profile gguf-spec`):
   },
   "findings": []
 }
-```
-
-Valid file output (`--profile llama-cpp`):
-```json
-{
-  "status": "PASS",
-  "profile": "llama-cpp",
-  "version": 3,
-  "file_size": 448,
-  "metadata_entries": 1,
-  "tensors": 2,
-  "alignment": 32,
-  "tensor_data_offset": 192,
-  "compatibility_target": {
-    "project": "ggml",
-    "version": "0.23.0",
-    "commit": "e91ded11bdcd78c42f9c8d3978ff6686eb4c1226"
-  },
-  "checks": {
-    "structural": "PASS",
-    "arithmetic": "PASS",
-    "bounds": "PASS",
-    "overlap": "PASS"
-  },
-  "findings": []
-}
-```
-
-Rejected file output:
-```json
-{
-  "status": "REJECT",
-  "profile": "llama-cpp",
-  "error": "NonContiguousTensorOffset",
-  "error_code": "E_NonContiguousTensorOffset",
-  "stage": "validation",
-  "version": 3,
-  "file_size": 608,
-  "findings": [
-    {
-      "code": "E_NonContiguousTensorOffset",
-      "severity": "reject",
-      "message": "Structural invariant violation"
-    }
-  ]
-}
-```
-
-### Selecting Validation Profiles
-
-```bash
-# GGUF Specification profile (uint32, multiple of 8, version 3) - default
-safegguf inspect /path/to/model.gguf --profile gguf-spec
-
-# llama.cpp Loader profile (contiguous layout, version 2/3, name < 64 bytes, scalar tensors)
-safegguf inspect /path/to/model.gguf --profile llama-cpp
-```
-
----
-
-## 📂 Project Structure
-
-```
-safegguf/
-├── .github/
-│   └── workflows/
-│       └── ci.yml                      # Multi-platform CI (Ubuntu & macOS 14, 10m timeout)
-├── build.zig                           # Zig 0.13.0 build configuration with fuzz step
-├── src/
-│   ├── root.zig                        # Package root module exports
-│   ├── main.zig                        # CLI entry point (exit codes 0/2/64/70/74, JSON differentiation)
-│   ├── gguf/
-│   │   ├── types.zig                   # Canonical ggml 0.23.0 type traits & profile enums
-│   │   ├── error.zig                   # ParseError enum and structured findings
-│   │   ├── limits.zig                  # QuotaAllocator (isQuotaExceeded), WorkBudget, & DoS limits
-│   │   ├── reader.zig                  # Bounded Reader with 64KB sliding-window BufferedReader
-│   │   ├── metadata.zig                # UTF-8, bool chunk scan, & lower_snake_case grammar
-│   │   └── parser.zig                  # Header, tensor & metadata parsing with scalar tensor support
-│   └── validate/
-│       ├── arithmetic.zig              # Checked arithmetic & block quantization math
-│       └── structural.zig              # Tensor alignment, bounds, overlap, contiguous checks & WorkBudget
-└── tests/
-    ├── validator_test.zig              # 28 unit tests (P0 overflow regression, scalar, QuotaAllocator)
-    ├── fuzz_target.zig                 # Native fuzzer harness and corpus runner (LLVMFuzzer entrypoint)
-    ├── generate_fixtures.py            # Fixture generator (18 test files)
-    ├── cli_test.py                     # CLI integration suite (exact exit codes, timeout=10)
-    ├── differential.py                 # Differential test harness (spec vs llama-cpp verdicts)
-    └── corpus/                         # Seed corpus directory for fuzzing (18 seed files)
 ```
 
 ---

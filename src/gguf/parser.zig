@@ -106,6 +106,7 @@ pub fn parseDocument(
         const key_len = try reader.readInt(u64, cur, endian);
         cur += 8;
         if (key_len > limit.max_string_bytes) return err.ParseError.ResourceLimitExceeded;
+        try work_budget.consumeBytes(key_len);
 
         const key_end = std.math.add(u64, cur, key_len) catch return err.ParseError.ArithmeticOverflow;
         if (key_end > reader.size) return err.ParseError.UnexpectedEof;
@@ -187,6 +188,7 @@ pub fn parseDocument(
         if (name_len == 0 or name_len > limit.max_tensor_name_bytes) {
             return err.ParseError.InvalidTensorName;
         }
+        try work_budget.consumeBytes(name_len);
 
         const name_end = std.math.add(u64, cur, name_len) catch return err.ParseError.ArithmeticOverflow;
         if (name_end > reader.size) return err.ParseError.UnexpectedEof;
@@ -202,14 +204,8 @@ pub fn parseDocument(
 
         const n_dims = try reader.readInt(u32, cur, endian);
         cur += 4;
-        if (profile == .llama_cpp) {
-            if (n_dims > limit.max_dimensions) {
-                return err.ParseError.InvalidDimensionCount;
-            }
-        } else {
-            if (n_dims == 0 or n_dims > limit.max_dimensions) {
-                return err.ParseError.InvalidDimensionCount;
-            }
+        if (n_dims > limit.max_dimensions) {
+            return err.ParseError.InvalidDimensionCount;
         }
 
         const dims = allocator.alloc(u64, n_dims) catch return err.ParseError.OutOfMemory;

@@ -126,7 +126,7 @@ pub fn main() !void {
     var quota_alloc = limits.QuotaAllocator.init(gpa.allocator(), limit.max_total_alloc_bytes);
     const allocator = quota_alloc.allocator();
 
-    var work_budget = limits.WorkBudget.init(limit.max_work_units);
+    var work_budget = limits.WorkBudget.initWithLimits(limit.max_work_units, limit.max_scanned_bytes);
 
     const profile_str = switch (profile) {
         .gguf_spec => "gguf-spec",
@@ -243,6 +243,12 @@ pub fn main() !void {
 }
 
 fn printUsage(writer: anytype) !void {
-    try writer.print("SafeGGUF v0.2.3 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
-    try writer.print("Usage: safegguf inspect <path_to_model.gguf> [--endian little|big] [--format text|json] [--profile gguf-spec|llama-cpp]\n", .{});
+    try writer.print("SafeGGUF v0.3.0 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
+    try writer.print("Usage: safegguf inspect <path_to_model.gguf> [options]\n", .{});
+    try writer.print("Options:\n", .{});
+    try writer.print("  --endian <little|big>     Byte order (default: host)\n", .{});
+    try writer.print("  --format <text|json>      Output format (default: text)\n", .{});
+    try writer.print("  --profile <spec|llama>    Validation profile (default: gguf-spec):\n", .{});
+    try writer.print("                              gguf-spec: GGUF v3 structural format specification\n", .{});
+    try writer.print("                              llama-cpp: ggml 0.23.0 safe pre-admission subset\n", .{});
 }

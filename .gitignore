@@ -7,4 +7,7 @@ __pycache__/
 *.pyc
 tests/fixtures/*.gguf
 tests/corpus/*.gguf
+.cache/
+tests/oracle/ggml_oracle
+
 

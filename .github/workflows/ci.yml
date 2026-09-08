@@ -17,17 +17,20 @@ jobs:
         os: [ubuntu-latest, macos-14]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@v1
+        uses: mlugg/setup-zig@00142fb7c8ef4c4d51bb7534431f06154b52c0f6 # v1.2.1
         with:
           version: 0.13.0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
           python-version: '3.12'
+
+      - name: Verify Code Formatting
+        run: zig fmt --check src/ build.zig tests/*.zig
 
       - name: Generate Fixtures and Seed Corpus
         run: python tests/generate_fixtures.py
@@ -41,7 +44,13 @@ jobs:
       - name: Run End-to-End CLI Integration Tests (Exact Exit Codes & Invariants)
         run: python tests/cli_test.py
 
-      - name: Run Differential Test Suite (Spec vs llama.cpp Verdicts)
+      - name: Build Upstream ggml 0.23.0 Oracle
+        run: bash tests/build_oracle.sh
+
+      - name: Run Independent Type Oracle Verification
+        run: python tests/test_oracle_types.py
+
+      - name: Run True Differential Test Suite (SafeGGUF vs Upstream ggml 0.23.0)
         run: python tests/differential.py
 
 

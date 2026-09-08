@@ -11,16 +11,30 @@ pub const Limits = struct {
     max_metadata_depth: u32 = 16,
     max_total_alloc_bytes: u64 = 128 * 1024 * 1024,
     max_work_units: u64 = 10_000_000,
+    max_scanned_bytes: u64 = 256 * 1024 * 1024,
 };
 
 pub const WorkBudget = struct {
     max_work_units: u64 = 10_000_000,
     consumed_units: u64 = 0,
+    max_scanned_bytes: u64 = 256 * 1024 * 1024,
+    consumed_scanned_bytes: u64 = 0,
 
     pub fn init(max_units: u64) WorkBudget {
         return .{
             .max_work_units = max_units,
             .consumed_units = 0,
+            .max_scanned_bytes = 256 * 1024 * 1024,
+            .consumed_scanned_bytes = 0,
+        };
+    }
+
+    pub fn initWithLimits(max_units: u64, max_bytes: u64) WorkBudget {
+        return .{
+            .max_work_units = max_units,
+            .consumed_units = 0,
+            .max_scanned_bytes = max_bytes,
+            .consumed_scanned_bytes = 0,
         };
     }
 
@@ -30,6 +44,14 @@ pub const WorkBudget = struct {
             return error.ResourceLimitExceeded;
         }
         self.consumed_units = new_consumed;
+    }
+
+    pub fn consumeBytes(self: *WorkBudget, bytes: u64) error{ResourceLimitExceeded}!void {
+        const new_consumed = std.math.add(u64, self.consumed_scanned_bytes, bytes) catch return error.ResourceLimitExceeded;
+        if (new_consumed > self.max_scanned_bytes) {
+            return error.ResourceLimitExceeded;
+        }
+        self.consumed_scanned_bytes = new_consumed;
     }
 };
 

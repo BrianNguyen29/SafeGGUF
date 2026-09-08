@@ -54,7 +54,7 @@ pub fn validateKey(key: []const u8) err.ParseError!void {
 
 /// Validates a UTF-8 stream in 4KB chunks without dynamic heap allocation,
 /// properly handling multi-byte code point boundary carry-over.
-pub fn validateUtf8Stream(reader: Reader, start_offset: u64, len: u64) err.ParseError!void {
+pub fn validateUtf8Stream(reader: Reader, start_offset: u64, len: u64, work_budget: *limits.WorkBudget) err.ParseError!void {
     var cur = start_offset;
     var remaining = len;
     var buf: [4096]u8 = undefined;
@@ -63,6 +63,7 @@ pub fn validateUtf8Stream(reader: Reader, start_offset: u64, len: u64) err.Parse
     while (remaining > 0 or carry_len > 0) {
         const read_len = @min(remaining, buf.len - carry_len);
         if (read_len > 0) {
+            try work_budget.consumeBytes(read_len);
             try reader.readBytes(cur, buf[carry_len .. carry_len + read_len]);
             cur += read_len;
             remaining -= read_len;
@@ -186,7 +187,7 @@ pub fn skipMetadataValue(
             const end = std.math.add(u64, cur, len) catch return err.ParseError.ArithmeticOverflow;
             if (end > reader.size) return err.ParseError.UnexpectedEof;
 
-            try validateUtf8Stream(reader, cur, len);
+            try validateUtf8Stream(reader, cur, len, work_budget);
 
             cur = end;
             offset_ptr.* = cur;
@@ -226,6 +227,7 @@ pub fn skipMetadataValue(
                 var buf: [4096]u8 = undefined;
                 while (remaining > 0) {
                     const chunk_size = @min(remaining, buf.len);
+                    try work_budget.consumeBytes(chunk_size);
                     try reader.readBytes(cur, buf[0..chunk_size]);
                     for (buf[0..chunk_size]) |b| {
                         if (b > 1) return err.ParseError.InvalidBoolean;

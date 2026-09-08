@@ -411,6 +411,31 @@ def build_scalar():
     with open(os.path.join(DIR, "scalar.gguf"), "wb") as f:
         f.write(b)
 
+def build_truncated_final_padding():
+    # Concrete false-PASS regression (HIGH-01):
+    # 1 scalar tensor (F32, 4 bytes), alignment 32.
+    # Required aligned end for llama.cpp contiguous load is data_base + 32.
+    # File is truncated right after 4 bytes of payload (missing trailing 28 bytes of padding).
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 1)
+    b += struct.pack("<Q", 0)
+
+    t_name = b"scalar"
+    b += struct.pack("<Q", len(t_name))
+    b += t_name
+    b += struct.pack("<I", 0) # n_dims == 0
+    b += struct.pack("<I", 0) # F32 -> 4 bytes
+    b += struct.pack("<Q", 0) # offset 0
+
+    data_base = align_up(len(b), 32)
+    b += b"\x00" * (data_base - len(b))
+    b += b"\xAA" * 4 # Missing 28 bytes of padding!
+
+    with open(os.path.join(DIR, "truncated_final_padding.gguf"), "wb") as f:
+        f.write(b)
+
 if __name__ == "__main__":
     build_valid()
     build_type40_false_pass()
@@ -430,6 +455,7 @@ if __name__ == "__main__":
     build_v2()
     build_llama_cpp_overflow()
     build_scalar()
+    build_truncated_final_padding()
 
     # Populate seed corpus directory for fuzzing
     corpus_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus")
