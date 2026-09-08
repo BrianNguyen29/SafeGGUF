@@ -354,6 +354,9 @@ def build_v2():
     b += struct.pack("<Q", len(v))
     b += v
 
+    with open(os.path.join(DIR, "version_2.gguf"), "wb") as f:
+        f.write(b)
+
 def build_llama_cpp_overflow():
     b = bytearray()
     b += b"GGUF"
