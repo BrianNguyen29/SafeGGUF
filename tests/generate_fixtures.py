@@ -354,7 +354,58 @@ def build_v2():
     b += struct.pack("<Q", len(v))
     b += v
 
-    with open(os.path.join(DIR, "version_2.gguf"), "wb") as f:
+def build_llama_cpp_overflow():
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 2)
+    b += struct.pack("<Q", 0)
+
+    # Tensor 0: 8 elements F32 = 32 bytes, offset 0
+    t0 = b"t0"
+    b += struct.pack("<Q", len(t0))
+    b += t0
+    b += struct.pack("<I", 1)
+    b += struct.pack("<Q", 8)
+    b += struct.pack("<I", 0)
+    b += struct.pack("<Q", 0)
+
+    # Tensor 1: 2305843009213693951 elements F64 (8 bytes each -> nbytes = UINT64_MAX - 7), offset 32
+    # 32 + (UINT64_MAX - 7) overflows u64!
+    t1 = b"t1"
+    b += struct.pack("<Q", len(t1))
+    b += t1
+    b += struct.pack("<I", 1)
+    b += struct.pack("<Q", 2305843009213693951)
+    b += struct.pack("<I", 28) # F64
+    b += struct.pack("<Q", 32)
+
+    data_base = align_up(len(b), 32)
+    b += b"\x00" * (data_base - len(b))
+    b += b"\x00" * 64
+
+    with open(os.path.join(DIR, "llama_cpp_overflow.gguf"), "wb") as f:
+        f.write(b)
+
+def build_scalar():
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 1)
+    b += struct.pack("<Q", 0)
+
+    t_name = b"scalar"
+    b += struct.pack("<Q", len(t_name))
+    b += t_name
+    b += struct.pack("<I", 0) # n_dims == 0
+    b += struct.pack("<I", 0) # F32 -> 4 bytes
+    b += struct.pack("<Q", 0)
+
+    data_base = align_up(len(b), 32)
+    b += b"\x00" * (data_base - len(b))
+    b += b"\x00" * 32
+
+    with open(os.path.join(DIR, "scalar.gguf"), "wb") as f:
         f.write(b)
 
 if __name__ == "__main__":
@@ -374,4 +425,15 @@ if __name__ == "__main__":
     build_nested_array()
     build_name_64()
     build_v2()
-    print("All fixtures generated successfully.")
+    build_llama_cpp_overflow()
+    build_scalar()
+
+    # Populate seed corpus directory for fuzzing
+    corpus_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus")
+    os.makedirs(corpus_dir, exist_ok=True)
+    import shutil
+    for fname in os.listdir(DIR):
+        if fname.endswith(".gguf"):
+            shutil.copyfile(os.path.join(DIR, fname), os.path.join(corpus_dir, fname))
+
+    print("All fixtures and seed corpus generated successfully.")

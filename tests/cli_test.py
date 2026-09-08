@@ -8,7 +8,7 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 def run_cli(*args):
     cmd = [BINARY] + list(args)
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
     return proc.returncode, proc.stdout, proc.stderr
 
 def test_positive():
@@ -19,34 +19,49 @@ def test_positive():
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout, f"Missing PASS: {stdout}"
 
-    # 2. Valid file JSON
+    # 2. Valid file JSON (gguf-spec profile emits type_layout_source)
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "valid.gguf"), "--format", "json")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     data = json.loads(stdout)
     assert data["status"] == "PASS"
     assert data["profile"] == "gguf-spec"
-    assert data["compatibility_target"]["project"] == "ggml"
-    assert data["compatibility_target"]["version"] == "0.23.0"
+    assert "type_layout_source" in data
+    assert data["type_layout_source"]["project"] == "ggml"
+    assert data["type_layout_source"]["version"] == "0.23.0"
     assert data["checks"]["structural"] == "PASS"
     assert data["checks"]["arithmetic"] == "PASS"
 
-    # 3. Gap file under gguf-spec
+    # 3. Valid file JSON under llama-cpp profile (emits compatibility_target)
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "valid.gguf"), "--profile", "llama-cpp", "--format", "json")
+    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+    data_llama = json.loads(stdout)
+    assert data_llama["status"] == "PASS"
+    assert data_llama["profile"] == "llama-cpp"
+    assert "compatibility_target" in data_llama
+    assert data_llama["compatibility_target"]["project"] == "ggml"
+
+    # 4. Gap file under gguf-spec
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "gap.gguf"), "--profile", "gguf-spec")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
-    # 4. Nested array under gguf-spec
+    # 5. Nested array under gguf-spec
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "nested_array.gguf"), "--profile", "gguf-spec")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
-    # 5. 64-byte name under gguf-spec
+    # 6. 64-byte name under gguf-spec
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "name_64.gguf"), "--profile", "gguf-spec")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
-    # 6. Version 2 under llama-cpp
+    # 7. Version 2 under llama-cpp
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "version_2.gguf"), "--profile", "llama-cpp")
+    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout
+
+    # 8. Scalar tensor (n_dims == 0) under llama-cpp
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "scalar.gguf"), "--profile", "llama-cpp")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
@@ -56,6 +71,10 @@ def test_negative_validation():
     print("Running negative validation tests (must exit code 2)...")
 
     rejections = [
+        # P0 regression: contiguous offset addition overflow under llama-cpp
+        (["inspect", os.path.join(FIXTURES, "llama_cpp_overflow.gguf"), "--profile", "llama-cpp"], "E_ArithmeticOverflow"),
+        # Scalar tensor rejected under gguf-spec
+        (["inspect", os.path.join(FIXTURES, "scalar.gguf"), "--profile", "gguf-spec"], "E_InvalidDimensionCount"),
         # NVFP4 truncated file (regression)
         (["inspect", os.path.join(FIXTURES, "type40_truncated_false_pass.gguf")], "E_TensorOutOfBounds"),
         # Non-contiguous offset under llama-cpp
@@ -97,6 +116,12 @@ def test_negative_json():
     assert data["error_code"] == "E_NonContiguousTensorOffset"
     assert len(data["findings"]) > 0
     assert data["findings"][0]["severity"] == "reject"
+
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "llama_cpp_overflow.gguf"), "--profile", "llama-cpp", "--format", "json")
+    assert rc == 2, f"Expected returncode 2, got {rc}"
+    data_ov = json.loads(stdout)
+    assert data_ov["status"] == "REJECT"
+    assert data_ov["error_code"] == "E_ArithmeticOverflow"
 
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "overflow.gguf"), "--format", "json")
     assert rc == 2, f"Expected returncode 2, got {rc}"

@@ -106,7 +106,17 @@ pub fn main() !void {
     };
     defer file.close();
 
-    const stat = try file.stat();
+    const stat = file.stat() catch |e| {
+        if (format == .json) {
+            try stdout.print(
+                \\{{"status":"REJECT","error":"{s}","error_code":"E_FILE_STAT_FAILED","message":"Failed to stat file"}}
+                \\
+            , .{@errorName(e)});
+        } else {
+            try stderr.print("Error: Failed to stat file '{s}': {s}\n", .{ file_path, @errorName(e) });
+        }
+        std.process.exit(74); // EX_IOERR
+    };
 
     // Sliding-window buffered reader to mitigate syscall-heavy DoS attacks
     var buffered_reader = reader_mod.BufferedReader.init(file, stat.size);
@@ -124,6 +134,35 @@ pub fn main() !void {
     };
 
     var doc = parser.parseDocument(allocator, r, endian, limit, profile, &work_budget) catch |e| {
+        if (e == error.IoError) {
+            if (format == .json) {
+                try stdout.print(
+                    \\{{"status":"REJECT","profile":"{s}","error":"IoError","error_code":"E_IoError","stage":"parser","message":"I/O error reading file stream"}}
+                    \\
+                , .{profile_str});
+            } else {
+                try stderr.print("Error: I/O error reading file stream: {s}\n", .{@errorName(e)});
+            }
+            std.process.exit(74); // EX_IOERR
+        }
+
+        if (e == error.OutOfMemory) {
+            if (quota_alloc.isQuotaExceeded()) {
+                if (format == .json) {
+                    try stdout.print(
+                        \\{{"status":"REJECT","profile":"{s}","error":"TotalAllocationLimitExceeded","error_code":"E_TotalAllocationLimitExceeded","stage":"parser","findings":[{{"code":"E_TotalAllocationLimitExceeded","severity":"reject","message":"Configured memory allocation quota exceeded"}}]}}
+                        \\
+                    , .{profile_str});
+                } else {
+                    try stderr.print("REJECT [E_TotalAllocationLimitExceeded] Error: Allocation quota exceeded ({d} bytes)\n", .{limit.max_total_alloc_bytes});
+                }
+                std.process.exit(2);
+            } else {
+                try stderr.print("FATAL: Host system out of memory\n", .{});
+                std.process.exit(70); // EX_SOFTWARE
+            }
+        }
+
         if (format == .json) {
             try stdout.print(
                 \\{{"status":"REJECT","profile":"{s}","error":"{s}","error_code":"E_{s}","stage":"parser","findings":[{{"code":"E_{s}","severity":"reject","message":"Parser rejected malformed GGUF stream"}}]}}
@@ -136,7 +175,24 @@ pub fn main() !void {
     };
     defer doc.deinit(allocator);
 
-    structural.validateStructural(allocator, doc, profile) catch |e| {
+    structural.validateStructural(allocator, doc, profile, &work_budget) catch |e| {
+        if (e == error.OutOfMemory) {
+            if (quota_alloc.isQuotaExceeded()) {
+                if (format == .json) {
+                    try stdout.print(
+                        \\{{"status":"REJECT","profile":"{s}","error":"TotalAllocationLimitExceeded","error_code":"E_TotalAllocationLimitExceeded","stage":"validation","version":{d},"file_size":{d},"findings":[{{"code":"E_TotalAllocationLimitExceeded","severity":"reject","message":"Configured memory allocation quota exceeded"}}]}}
+                        \\
+                    , .{ profile_str, doc.header.version, doc.file_size });
+                } else {
+                    try stderr.print("\nValidation: REJECT [E_TotalAllocationLimitExceeded]\n", .{});
+                }
+                std.process.exit(2);
+            } else {
+                try stderr.print("FATAL: Host system out of memory\n", .{});
+                std.process.exit(70); // EX_SOFTWARE
+            }
+        }
+
         if (format == .json) {
             try stdout.print(
                 \\{{"status":"REJECT","profile":"{s}","error":"{s}","error_code":"E_{s}","stage":"validation","version":{d},"file_size":{d},"findings":[{{"code":"E_{s}","severity":"reject","message":"Structural invariant violation"}}]}}
@@ -149,8 +205,13 @@ pub fn main() !void {
     };
 
     if (format == .json) {
+        const target_field_name = switch (profile) {
+            .llama_cpp => "compatibility_target",
+            .gguf_spec => "type_layout_source",
+        };
+
         try stdout.print(
-            \\{{"status":"PASS","profile":"{s}","version":{d},"file_size":{d},"metadata_entries":{d},"tensors":{d},"alignment":{d},"tensor_data_offset":{d},"compatibility_target":{{"project":"ggml","version":"{s}","commit":"{s}"}},"checks":{{"structural":"PASS","arithmetic":"PASS","bounds":"PASS","overlap":"PASS"}},"findings":[]}}
+            \\{{"status":"PASS","profile":"{s}","version":{d},"file_size":{d},"metadata_entries":{d},"tensors":{d},"alignment":{d},"tensor_data_offset":{d},"{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"checks":{{"structural":"PASS","arithmetic":"PASS","bounds":"PASS","overlap":"PASS"}},"findings":[]}}
             \\
         , .{
             profile_str,
@@ -160,6 +221,7 @@ pub fn main() !void {
             doc.header.tensor_count,
             doc.alignment,
             doc.tensor_data_base,
+            target_field_name,
             types.GGML_PINNED_VERSION,
             types.GGML_PINNED_COMMIT,
         });
@@ -181,6 +243,6 @@ pub fn main() !void {
 }
 
 fn printUsage(writer: anytype) !void {
-    try writer.print("SafeGGUF v0.2.2 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
+    try writer.print("SafeGGUF v0.2.3 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
     try writer.print("Usage: safegguf inspect <path_to_model.gguf> [--endian little|big] [--format text|json] [--profile gguf-spec|llama-cpp]\n", .{});
 }

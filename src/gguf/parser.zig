@@ -202,8 +202,14 @@ pub fn parseDocument(
 
         const n_dims = try reader.readInt(u32, cur, endian);
         cur += 4;
-        if (n_dims == 0 or n_dims > limit.max_dimensions) {
-            return err.ParseError.InvalidDimensionCount;
+        if (profile == .llama_cpp) {
+            if (n_dims > limit.max_dimensions) {
+                return err.ParseError.InvalidDimensionCount;
+            }
+        } else {
+            if (n_dims == 0 or n_dims > limit.max_dimensions) {
+                return err.ParseError.InvalidDimensionCount;
+            }
         }
 
         const dims = allocator.alloc(u64, n_dims) catch return err.ParseError.OutOfMemory;

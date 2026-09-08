@@ -27,4 +27,17 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    const fuzz_tests = b.addTest(.{
+        .root_source_file = b.path("tests/fuzz_target.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fuzz_tests.root_module.addImport("safegguf", safegguf_mod);
+
+    const run_fuzz = b.addRunArtifact(fuzz_tests);
+    test_step.dependOn(&run_fuzz.step);
+
+    const fuzz_step = b.step("fuzz", "Run corpus through fuzz harness");
+    fuzz_step.dependOn(&run_fuzz.step);
 }

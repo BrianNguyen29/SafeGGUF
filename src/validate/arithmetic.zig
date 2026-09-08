@@ -34,7 +34,15 @@ pub fn checkedProduct(dims: []const u64) !u64 {
 
 pub fn computeTensorBytes(dims: []const u64, tensor_type: u32) !u64 {
     const traits = types.getTypeTraits(tensor_type) orelse return error.InvalidTensorType;
-    if (dims.len == 0 or dims.len > 4) return error.InvalidDimensionCount;
+    if (dims.len > 4) return error.InvalidDimensionCount;
+
+    if (dims.len == 0) {
+        // In llama.cpp / ggml, n_dims == 0 represents a scalar tensor (1 element)
+        if (traits.block_size != 1) {
+            return error.BlockDivisibilityViolation;
+        }
+        return traits.type_size;
+    }
 
     // Invariant: Row/block divisibility (ne[0] must be divisible by block_size)
     if (dims[0] % traits.block_size != 0) {

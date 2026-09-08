@@ -8,13 +8,13 @@ pub const Limits = struct {
     max_dimensions: u32 = 4,
     max_array_elements: u64 = 10_000_000,
     max_variable_array_elements: u64 = 100_000,
-    max_metadata_depth: u32 = 8,
+    max_metadata_depth: u32 = 16,
     max_total_alloc_bytes: u64 = 128 * 1024 * 1024,
-    max_work_units: u64 = 5_000_000,
+    max_work_units: u64 = 10_000_000,
 };
 
 pub const WorkBudget = struct {
-    max_work_units: u64 = 5_000_000,
+    max_work_units: u64 = 10_000_000,
     consumed_units: u64 = 0,
 
     pub fn init(max_units: u64) WorkBudget {
@@ -40,12 +40,21 @@ pub const QuotaAllocator = struct {
     max_bytes: u64,
     allocated_bytes: u64 = 0,
     peak_bytes: u64 = 0,
+    quota_exceeded: bool = false,
 
     pub fn init(parent: std.mem.Allocator, max_bytes: u64) QuotaAllocator {
         return .{
             .parent_allocator = parent,
             .max_bytes = max_bytes,
         };
+    }
+
+    pub fn isQuotaExceeded(self: *const QuotaAllocator) bool {
+        return self.quota_exceeded;
+    }
+
+    pub fn resetQuotaExceeded(self: *QuotaAllocator) void {
+        self.quota_exceeded = false;
     }
 
     pub fn allocator(self: *QuotaAllocator) std.mem.Allocator {
@@ -61,8 +70,14 @@ pub const QuotaAllocator = struct {
 
     fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
         const self: *QuotaAllocator = @ptrCast(@alignCast(ctx));
-        const new_total = std.math.add(u64, self.allocated_bytes, len) catch return null;
-        if (new_total > self.max_bytes) return null;
+        const new_total = std.math.add(u64, self.allocated_bytes, len) catch {
+            self.quota_exceeded = true;
+            return null;
+        };
+        if (new_total > self.max_bytes) {
+            self.quota_exceeded = true;
+            return null;
+        }
 
         const result = self.parent_allocator.rawAlloc(len, ptr_align, ret_addr) orelse return null;
         self.allocated_bytes = new_total;
@@ -76,8 +91,14 @@ pub const QuotaAllocator = struct {
         const self: *QuotaAllocator = @ptrCast(@alignCast(ctx));
         if (new_len > buf.len) {
             const diff = new_len - buf.len;
-            const new_total = std.math.add(u64, self.allocated_bytes, diff) catch return false;
-            if (new_total > self.max_bytes) return false;
+            const new_total = std.math.add(u64, self.allocated_bytes, diff) catch {
+                self.quota_exceeded = true;
+                return false;
+            };
+            if (new_total > self.max_bytes) {
+                self.quota_exceeded = true;
+                return false;
+            }
 
             if (self.parent_allocator.rawResize(buf, buf_align, new_len, ret_addr)) {
                 self.allocated_bytes = new_total;

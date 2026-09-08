@@ -10,6 +10,7 @@ jobs:
   test:
     name: Test on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -28,15 +29,19 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run Exhaustive Unit & Regression Tests
+      - name: Generate Fixtures and Seed Corpus
+        run: python tests/generate_fixtures.py
+
+      - name: Run Exhaustive Unit, Fuzz, & Regression Tests
         run: zig build test --summary all
 
       - name: Build Binary (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe
 
-      - name: Generate Fixtures
-        run: python tests/generate_fixtures.py
-
       - name: Run End-to-End CLI Integration Tests (Exact Exit Codes & Invariants)
         run: python tests/cli_test.py
+
+      - name: Run Differential Test Suite (Spec vs llama.cpp Verdicts)
+        run: python tests/differential.py
+
 

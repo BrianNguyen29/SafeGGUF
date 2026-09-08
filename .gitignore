@@ -6,3 +6,5 @@ zig-out/
 __pycache__/
 *.pyc
 tests/fixtures/*.gguf
+tests/corpus/*.gguf
+

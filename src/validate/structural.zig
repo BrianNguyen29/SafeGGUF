@@ -2,6 +2,7 @@ const std = @import("std");
 const err = @import("../gguf/error.zig");
 const types = @import("../gguf/types.zig");
 const parser = @import("../gguf/parser.zig");
+const limits = @import("../gguf/limits.zig");
 const arithmetic = @import("arithmetic.zig");
 
 pub const TensorRange = struct {
@@ -19,6 +20,7 @@ pub fn validateStructural(
     allocator: std.mem.Allocator,
     doc: parser.Document,
     profile: types.Profile,
+    work_budget: *limits.WorkBudget,
 ) err.ParseError!void {
     if (doc.tensor_data_base % doc.alignment != 0) {
         return err.ParseError.InvalidAlignment;
@@ -30,6 +32,7 @@ pub fn validateStructural(
     defer seen_names.deinit();
 
     for (doc.tensors) |tensor| {
+        try work_budget.consume(1);
         if (seen_names.contains(tensor.name)) {
             return err.ParseError.DuplicateTensorName;
         }
@@ -40,11 +43,13 @@ pub fn validateStructural(
     if (profile == .llama_cpp) {
         var expected_offset: u64 = 0;
         for (doc.tensors) |tensor| {
+            try work_budget.consume(1);
             if (tensor.offset != expected_offset) {
                 return err.ParseError.NonContiguousTensorOffset;
             }
             const nbytes = try arithmetic.computeTensorBytes(tensor.dimensions, tensor.tensor_type);
-            expected_offset = try arithmetic.checkedAlignUp(expected_offset + nbytes, doc.alignment);
+            const unpadded_end = try arithmetic.checkedAdd(expected_offset, nbytes);
+            expected_offset = try arithmetic.checkedAlignUp(unpadded_end, doc.alignment);
         }
     }
 
@@ -52,6 +57,7 @@ pub fn validateStructural(
     defer allocator.free(ranges);
 
     for (doc.tensors, 0..) |tensor, i| {
+        try work_budget.consume(1);
         if (tensor.offset % doc.alignment != 0) {
             return err.ParseError.MisalignedTensor;
         }
@@ -71,13 +77,24 @@ pub fn validateStructural(
         };
     }
 
+    // Charge sorting cost: O(N log2(N + 1))
+    const n_tensors = doc.tensors.len;
+    var log_factor: u64 = 1;
+    if (n_tensors > 1) {
+        log_factor = std.math.log2_int(usize, n_tensors) + 1;
+    }
+    const sort_units = std.math.mul(u64, n_tensors, log_factor) catch std.math.maxInt(u64);
+    try work_budget.consume(sort_units);
+
     std.mem.sort(TensorRange, ranges, {}, compareTensorRanges);
 
     var prev_end: u64 = 0;
     for (ranges, 0..) |range, i| {
+        try work_budget.consume(1);
         if (i > 0 and range.start < prev_end) {
             return err.ParseError.TensorOverlap;
         }
         prev_end = range.end;
     }
 }
+

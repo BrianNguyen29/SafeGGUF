@@ -144,7 +144,7 @@ test "regression: in-memory type 40 (NVFP4) truncated file must be REJECTED" {
     try std.testing.expectEqual(@as(u64, 64), doc.tensors[0].dimensions[0]);
 
     // Validation must REJECT with TensorOutOfBounds!
-    try std.testing.expectError(error.TensorOutOfBounds, structural.validateStructural(std.testing.allocator, doc, .gguf_spec));
+    try std.testing.expectError(error.TensorOutOfBounds, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &budget));
 }
 
 // ---------------------------------------------------------------------------
@@ -192,10 +192,12 @@ test "profile: tensor gaps allowed in gguf-spec, rejected in llama-cpp" {
     defer doc_spec.deinit(std.testing.allocator);
 
     // Under gguf_spec: gap is valid non-overlapping aligned layout -> PASS!
-    try structural.validateStructural(std.testing.allocator, doc_spec, .gguf_spec);
+    var b_spec = limits.WorkBudget.init(1000);
+    try structural.validateStructural(std.testing.allocator, doc_spec, .gguf_spec, &b_spec);
 
     // Under llama_cpp: non-contiguous offset violates upstream loader -> REJECT!
-    try std.testing.expectError(error.NonContiguousTensorOffset, structural.validateStructural(std.testing.allocator, doc_spec, .llama_cpp));
+    var b_llama = limits.WorkBudget.init(1000);
+    try std.testing.expectError(error.NonContiguousTensorOffset, structural.validateStructural(std.testing.allocator, doc_spec, .llama_cpp, &b_llama));
 }
 
 test "profile: nested arrays allowed in gguf-spec, rejected in llama-cpp" {
@@ -612,7 +614,7 @@ test "validator: reject misaligned tensor" {
     var doc = try parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b);
     defer doc.deinit(std.testing.allocator);
 
-    try std.testing.expectError(error.MisalignedTensor, structural.validateStructural(std.testing.allocator, doc, .gguf_spec));
+    try std.testing.expectError(error.MisalignedTensor, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &b));
 }
 
 test "validator: reject duplicate tensor names" {
@@ -647,7 +649,7 @@ test "validator: reject duplicate tensor names" {
     var doc = try parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b);
     defer doc.deinit(std.testing.allocator);
 
-    try std.testing.expectError(error.DuplicateTensorName, structural.validateStructural(std.testing.allocator, doc, .gguf_spec));
+    try std.testing.expectError(error.DuplicateTensorName, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &b));
 }
 
 test "validator: reject tensor overlap" {
@@ -686,7 +688,7 @@ test "validator: reject tensor overlap" {
     var doc = try parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b);
     defer doc.deinit(std.testing.allocator);
 
-    try std.testing.expectError(error.TensorOverlap, structural.validateStructural(std.testing.allocator, doc, .gguf_spec));
+    try std.testing.expectError(error.TensorOverlap, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &b));
 }
 
 test "validator: reject removed/deprecated type slot 31" {
@@ -717,5 +719,125 @@ test "validator: reject removed/deprecated type slot 31" {
     var doc = try parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b);
     defer doc.deinit(std.testing.allocator);
 
-    try std.testing.expectError(error.InvalidTensorType, structural.validateStructural(std.testing.allocator, doc, .gguf_spec));
+    try std.testing.expectError(error.InvalidTensorType, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &b));
 }
+
+// ---------------------------------------------------------------------------
+// 4. v0.2.3 Security Hardening & P0 Overflow Regression Tests
+// ---------------------------------------------------------------------------
+
+test "structural: llama_cpp contiguous offset overflow does not panic and returns ArithmeticOverflow" {
+    // Demonstrates the P0 review finding:
+    // Tensor 0: offset 0, 32 bytes (F32, dims=[8])
+    // Tensor 1: offset 32, dims=[2_305_843_009_213_693_951], type F64 (8 bytes per elem -> nbytes = UINT64_MAX - 7)
+    // Under llama_cpp, previous expected_offset = 32.
+    // Unchecked: 32 + (UINT64_MAX - 7) overflows u64!
+    // Checked arithmetic MUST return error.ArithmeticOverflow without panic!
+    var dims0 = [_]u64{8};
+    var dims1 = [_]u64{2_305_843_009_213_693_951};
+    var tensors = [_]parser.TensorInfo{
+        .{
+            .name = "t0",
+            .dimensions = &dims0,
+            .tensor_type = 0, // F32
+            .offset = 0,
+        },
+        .{
+            .name = "t1",
+            .dimensions = &dims1,
+            .tensor_type = 28, // F64 (type_size 8, block_size 1)
+            .offset = 32,
+        },
+    };
+
+    const doc = parser.Document{
+        .header = .{ .version = 3, .tensor_count = 2, .metadata_kv_count = 0 },
+        .alignment = 32,
+        .tensor_data_base = 64,
+        .tensors = &tensors,
+        .file_size = std.math.maxInt(u64),
+    };
+
+    var budget = limits.WorkBudget.init(1000);
+    try std.testing.expectError(error.ArithmeticOverflow, structural.validateStructural(std.testing.allocator, doc, .llama_cpp, &budget));
+}
+
+test "profile: scalar tensor (n_dims == 0) supported under llama_cpp" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little);
+    try writer.writeInt(u64, 0, .little);
+
+    try writer.writeInt(u64, 6, .little);
+    try writer.writeAll("scalar");
+    try writer.writeInt(u32, 0, .little); // n_dims == 0 (scalar!)
+    try writer.writeInt(u32, 0, .little); // F32 -> 4 bytes
+    try writer.writeInt(u64, 0, .little);
+
+    const written_len = fbs.getWritten().len;
+    const tensor_data_base = (written_len + 31) & ~@as(usize, 31);
+    const total_file_size = tensor_data_base + 32;
+
+    const slice_reader = reader_mod.SliceReader.init(buffer[0..total_file_size]);
+    const r = slice_reader.reader();
+
+    // Under gguf_spec: n_dims == 0 is rejected (InvalidDimensionCount)
+    var b_spec = limits.WorkBudget.init(1000);
+    try std.testing.expectError(error.InvalidDimensionCount, parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b_spec));
+
+    // Under llama_cpp: n_dims == 0 is accepted as a scalar tensor!
+    var b_llama = limits.WorkBudget.init(1000);
+    var doc_llama = try parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .llama_cpp, &b_llama);
+    defer doc_llama.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), doc_llama.tensors[0].dimensions.len);
+    var b_val = limits.WorkBudget.init(1000);
+    try structural.validateStructural(std.testing.allocator, doc_llama, .llama_cpp, &b_val);
+}
+
+test "limits: QuotaAllocator tracks isQuotaExceeded flag correctly" {
+    var qa = limits.QuotaAllocator.init(std.testing.allocator, 100);
+    const alloc = qa.allocator();
+
+    try std.testing.expectEqual(false, qa.isQuotaExceeded());
+
+    const buf1 = try alloc.alloc(u8, 50);
+    defer alloc.free(buf1);
+    try std.testing.expectEqual(false, qa.isQuotaExceeded());
+
+    // This allocation would exceed 100 bytes (50 + 60 = 110 > 100)
+    const err_alloc = alloc.alloc(u8, 60);
+    try std.testing.expectError(error.OutOfMemory, err_alloc);
+    try std.testing.expectEqual(true, qa.isQuotaExceeded());
+
+    qa.resetQuotaExceeded();
+    try std.testing.expectEqual(false, qa.isQuotaExceeded());
+}
+
+test "structural: WorkBudget exhaustion returns ResourceLimitExceeded" {
+    var dims = [_]u64{32};
+    var tensors = [_]parser.TensorInfo{
+        .{
+            .name = "t0",
+            .dimensions = &dims,
+            .tensor_type = 0,
+            .offset = 0,
+        },
+    };
+
+    const doc = parser.Document{
+        .header = .{ .version = 3, .tensor_count = 1, .metadata_kv_count = 0 },
+        .alignment = 32,
+        .tensor_data_base = 32,
+        .tensors = &tensors,
+        .file_size = 256,
+    };
+
+    var budget = limits.WorkBudget.init(0); // 0 work units allowed!
+    try std.testing.expectError(error.ResourceLimitExceeded, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &budget));
+}
+
