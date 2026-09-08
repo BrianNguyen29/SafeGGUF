@@ -1,0 +1,8 @@
+.zig-cache/
+zig-out/
+*.o
+*.obj
+*.exe
+__pycache__/
+*.pyc
+tests/fixtures/*.gguf
