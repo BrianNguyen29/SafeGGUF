@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-14]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,25 +28,35 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Run Unit & Integration Tests
+      - name: Run Exhaustive Unit & Regression Tests
         run: zig build test --summary all
 
-      - name: Build Binary (ReleaseFast)
-        run: zig build -Doptimize=ReleaseFast
+      - name: Build Binary (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
 
       - name: Generate Fixtures
         run: python tests/generate_fixtures.py
 
-      - name: Validate CLI on Fixtures
+      - name: Validate CLI Positive Tests
         run: |
           ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf
           ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf --format json
+          ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf --profile gguf-spec
+          ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf --profile llama-cpp
+
+      - name: Validate CLI Negative Tests (Must Reject)
+        run: |
+          # False-PASS Regression: NVFP4 truncated file must reject!
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/type40_truncated_false_pass.gguf
           
-          # Negative tests: ensure invalid files are rejected with exit code 1
+          # Other attack vectors & malformed inputs
           ! ./zig-out/bin/safegguf inspect tests/fixtures/overflow.gguf
           ! ./zig-out/bin/safegguf inspect tests/fixtures/out_of_bounds.gguf
           ! ./zig-out/bin/safegguf inspect tests/fixtures/overlap.gguf
           ! ./zig-out/bin/safegguf inspect tests/fixtures/duplicate_tensor.gguf
           ! ./zig-out/bin/safegguf inspect tests/fixtures/duplicate_key.gguf
           ! ./zig-out/bin/safegguf inspect tests/fixtures/invalid_key.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/hyphen_key.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/invalid_bool.gguf
+          ! ./zig-out/bin/safegguf inspect tests/fixtures/removed_type_slot31.gguf
           ! ./zig-out/bin/safegguf inspect tests/fixtures/alloc_dos_tensor.gguf

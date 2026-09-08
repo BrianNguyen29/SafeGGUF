@@ -42,6 +42,7 @@ pub fn main() !void {
 
     var endian: std.builtin.Endian = .little;
     var format: OutputFormat = .text;
+    var limit = limits.Limits{};
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--endian")) {
@@ -70,6 +71,19 @@ pub fn main() !void {
                 try stderr.print("Error: invalid format value '{s}'\n", .{val});
                 std.process.exit(1);
             }
+        } else if (std.mem.eql(u8, arg, "--profile")) {
+            const val = args.next() orelse {
+                try stderr.print("Error: --profile requires 'gguf-spec' or 'llama-cpp'\n", .{});
+                std.process.exit(1);
+            };
+            if (std.mem.eql(u8, val, "gguf-spec")) {
+                limit.profile = .gguf_spec;
+            } else if (std.mem.eql(u8, val, "llama-cpp")) {
+                limit.profile = .llama_cpp;
+            } else {
+                try stderr.print("Error: invalid profile value '{s}'\n", .{val});
+                std.process.exit(1);
+            }
         }
     }
 
@@ -90,7 +104,7 @@ pub fn main() !void {
     const file_reader = reader_mod.FileReader.init(file, stat.size);
     const r = file_reader.reader();
 
-    var doc = parser.parseDocument(allocator, r, endian, limits.Limits{}) catch |e| {
+    var doc = parser.parseDocument(allocator, r, endian, limit) catch |e| {
         if (format == .json) {
             try stdout.print(
                 \\{{"status":"REJECT","error":"{s}","error_code":"E_{s}","stage":"parser"}}
@@ -144,6 +158,6 @@ pub fn main() !void {
 }
 
 fn printUsage(writer: anytype) !void {
-    try writer.print("SafeGGUF v0.2.0 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
-    try writer.print("Usage: safegguf inspect <path_to_model.gguf> [--endian little|big] [--format text|json]\n", .{});
+    try writer.print("SafeGGUF v0.2.1 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
+    try writer.print("Usage: safegguf inspect <path_to_model.gguf> [--endian little|big] [--format text|json] [--profile gguf-spec|llama-cpp]\n", .{});
 }

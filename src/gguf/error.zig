@@ -10,6 +10,8 @@ pub const ParseError = error{
     InvalidStringLength,
     InvalidTensorName,
     InvalidKeyFormat,
+    InvalidBoolean,
+    InvalidUtf8,
     InvalidArrayLength,
     ArithmeticOverflow,
     BlockDivisibilityViolation,
@@ -21,6 +23,8 @@ pub const ParseError = error{
     DuplicateMetadataKey,
     RecursionDepthExceeded,
     ResourceLimitExceeded,
+    TotalAllocationLimitExceeded,
+    CompatibilityViolation,
     OutOfMemory,
     IoError,
 };

@@ -43,6 +43,7 @@ pub fn parseDocument(
     limit: limits.Limits,
 ) err.ParseError!Document {
     var cur: u64 = 0;
+    var total_allocated_bytes: u64 = 0;
 
     // 1. Magic
     var magic_buf: [4]u8 = undefined;
@@ -100,6 +101,9 @@ pub fn parseDocument(
         const key_end = std.math.add(u64, cur, key_len) catch return err.ParseError.ArithmeticOverflow;
         if (key_end > reader.size) return err.ParseError.UnexpectedEof;
 
+        total_allocated_bytes = std.math.add(u64, total_allocated_bytes, key_len) catch return err.ParseError.ArithmeticOverflow;
+        if (total_allocated_bytes > limit.max_total_alloc_bytes) return err.ParseError.TotalAllocationLimitExceeded;
+
         const key_buf = allocator.alloc(u8, key_len) catch return err.ParseError.OutOfMemory;
         var key_registered = false;
         defer {
@@ -125,19 +129,24 @@ pub fn parseDocument(
         const val_type: types.MetadataType = @enumFromInt(val_type_raw);
 
         if (std.mem.eql(u8, key_buf, "general.alignment")) {
-            if (val_type == .uint32) {
-                const align_val = try reader.readInt(u32, cur, endian);
-                cur += 4;
-                if (align_val == 0 or align_val % 8 != 0) return err.ParseError.InvalidAlignment;
-                alignment = align_val;
-            } else if (val_type == .uint64) {
-                const align_val = try reader.readInt(u64, cur, endian);
-                cur += 8;
-                if (align_val == 0 or align_val % 8 != 0) return err.ParseError.InvalidAlignment;
-                alignment = align_val;
-            } else {
+            // Spec requires general.alignment to be uint32
+            if (val_type != .uint32) {
                 return err.ParseError.InvalidAlignment;
             }
+            const align_val = try reader.readInt(u32, cur, endian);
+            cur += 4;
+
+            if (align_val == 0) return err.ParseError.InvalidAlignment;
+            if (align_val % 8 != 0) return err.ParseError.InvalidAlignment;
+
+            if (limit.profile == .llama_cpp) {
+                // llama.cpp requires power-of-two alignment
+                if ((align_val & (align_val - 1)) != 0) {
+                    return err.ParseError.CompatibilityViolation;
+                }
+            }
+
+            alignment = align_val;
         } else {
             _ = try metadata_mod.skipMetadataValue(reader, &cur, val_type, endian, limit, 0);
         }
@@ -149,6 +158,10 @@ pub fn parseDocument(
     }
 
     // 5. Parse Tensor Descriptors
+    const tensors_alloc_size = std.math.mul(u64, tensor_count, @sizeOf(TensorInfo)) catch return err.ParseError.ArithmeticOverflow;
+    total_allocated_bytes = std.math.add(u64, total_allocated_bytes, tensors_alloc_size) catch return err.ParseError.ArithmeticOverflow;
+    if (total_allocated_bytes > limit.max_total_alloc_bytes) return err.ParseError.TotalAllocationLimitExceeded;
+
     const tensors = allocator.alloc(TensorInfo, tensor_count) catch return err.ParseError.OutOfMemory;
 
     var t_idx: u64 = 0;
@@ -168,16 +181,27 @@ pub fn parseDocument(
         const name_end = std.math.add(u64, cur, name_len) catch return err.ParseError.ArithmeticOverflow;
         if (name_end > reader.size) return err.ParseError.UnexpectedEof;
 
+        total_allocated_bytes = std.math.add(u64, total_allocated_bytes, name_len) catch return err.ParseError.ArithmeticOverflow;
+        if (total_allocated_bytes > limit.max_total_alloc_bytes) return err.ParseError.TotalAllocationLimitExceeded;
+
         const name_buf = allocator.alloc(u8, name_len) catch return err.ParseError.OutOfMemory;
         errdefer allocator.free(name_buf);
         try reader.readBytes(cur, name_buf);
         cur = name_end;
+
+        if (!std.unicode.utf8ValidateSlice(name_buf)) {
+            return err.ParseError.InvalidUtf8;
+        }
 
         const n_dims = try reader.readInt(u32, cur, endian);
         cur += 4;
         if (n_dims == 0 or n_dims > limit.max_dimensions) {
             return err.ParseError.InvalidDimensionCount;
         }
+
+        const dims_alloc_size = std.math.mul(u64, n_dims, @sizeOf(u64)) catch return err.ParseError.ArithmeticOverflow;
+        total_allocated_bytes = std.math.add(u64, total_allocated_bytes, dims_alloc_size) catch return err.ParseError.ArithmeticOverflow;
+        if (total_allocated_bytes > limit.max_total_alloc_bytes) return err.ParseError.TotalAllocationLimitExceeded;
 
         const dims = allocator.alloc(u64, n_dims) catch return err.ParseError.OutOfMemory;
         errdefer allocator.free(dims);

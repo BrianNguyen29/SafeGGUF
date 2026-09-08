@@ -26,6 +26,10 @@ pub const ArrayValue = struct {
     count: u64,
 };
 
+/// Validates strict GGUF key specification:
+/// Keys consist of segments separated by a single dot ('.').
+/// Each segment must be strictly non-empty lower_snake_case: [a-z0-9_]+.
+/// Hyphens ('-') and uppercase letters are rejected.
 pub fn validateKey(key: []const u8) err.ParseError!void {
     if (key.len == 0 or key.len > 65535) {
         return err.ParseError.InvalidStringLength;
@@ -40,10 +44,57 @@ pub fn validateKey(key: []const u8) err.ParseError!void {
         if (c == '.') {
             if (prev_dot) return err.ParseError.InvalidKeyFormat;
             prev_dot = true;
-        } else if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_' or c == '-') {
+        } else if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_') {
             prev_dot = false;
         } else {
             return err.ParseError.InvalidKeyFormat;
+        }
+    }
+}
+
+/// Validates a UTF-8 stream in 4KB chunks without dynamic heap allocation,
+/// properly handling multi-byte code point boundary carry-over.
+pub fn validateUtf8Stream(reader: Reader, start_offset: u64, len: u64) err.ParseError!void {
+    var cur = start_offset;
+    var remaining = len;
+    var buf: [4096]u8 = undefined;
+    var carry_len: usize = 0;
+
+    while (remaining > 0 or carry_len > 0) {
+        const read_len = @min(remaining, buf.len - carry_len);
+        if (read_len > 0) {
+            try reader.readBytes(cur, buf[carry_len .. carry_len + read_len]);
+            cur += read_len;
+            remaining -= read_len;
+        }
+        const total_validating = carry_len + read_len;
+        if (total_validating == 0) break;
+
+        var valid_up_to = total_validating;
+        if (remaining > 0) {
+            var i = total_validating;
+            while (i > 0 and (total_validating - i) < 4) {
+                i -= 1;
+                const byte = buf[i];
+                if (byte & 0x80 == 0) {
+                    break;
+                } else if (byte & 0xC0 == 0xC0) {
+                    const seq_len = std.unicode.utf8ByteSequenceLength(byte) catch return err.ParseError.InvalidUtf8;
+                    if (total_validating - i < seq_len) {
+                        valid_up_to = i;
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (!std.unicode.utf8ValidateSlice(buf[0..valid_up_to])) {
+            return err.ParseError.InvalidUtf8;
+        }
+
+        carry_len = total_validating - valid_up_to;
+        if (carry_len > 0) {
+            std.mem.copyForwards(u8, buf[0..carry_len], buf[valid_up_to..total_validating]);
         }
     }
 }
@@ -104,7 +155,8 @@ pub fn skipMetadataValue(
             const raw = try reader.readInt(u8, cur, endian);
             cur += 1;
             offset_ptr.* = cur;
-            return .{ .bool_ = (raw != 0) };
+            if (raw > 1) return err.ParseError.InvalidBoolean;
+            return .{ .bool_ = (raw == 1) };
         },
         .uint64 => {
             const v = try reader.readInt(u64, cur, endian);
@@ -130,6 +182,9 @@ pub fn skipMetadataValue(
             if (len > limit.max_string_bytes) return err.ParseError.ResourceLimitExceeded;
             const end = std.math.add(u64, cur, len) catch return err.ParseError.ArithmeticOverflow;
             if (end > reader.size) return err.ParseError.UnexpectedEof;
+
+            try validateUtf8Stream(reader, cur, len);
+
             cur = end;
             offset_ptr.* = cur;
             return .{ .string = "" };
@@ -146,12 +201,38 @@ pub fn skipMetadataValue(
             cur += 8;
             if (count > limit.max_array_elements) return err.ParseError.ResourceLimitExceeded;
 
+            // Anti-DoS limit on variable array elements (strings, nested arrays)
+            if (elem_type == .string or elem_type == .array) {
+                if (count > limit.max_variable_array_elements) return err.ParseError.ResourceLimitExceeded;
+            }
+
+            // Bool arrays: scan and validate that all bytes are <= 1 (0 or 1)
+            if (elem_type == .bool_) {
+                const total_bytes = count;
+                const end = std.math.add(u64, cur, total_bytes) catch return err.ParseError.ArithmeticOverflow;
+                if (end > reader.size) return err.ParseError.UnexpectedEof;
+
+                var remaining = count;
+                var buf: [4096]u8 = undefined;
+                while (remaining > 0) {
+                    const chunk_size = @min(remaining, buf.len);
+                    try reader.readBytes(cur, buf[0..chunk_size]);
+                    for (buf[0..chunk_size]) |b| {
+                        if (b > 1) return err.ParseError.InvalidBoolean;
+                    }
+                    cur += chunk_size;
+                    remaining -= chunk_size;
+                }
+                offset_ptr.* = cur;
+                return .{ .array = .{ .element_type = elem_type, .count = count } };
+            }
+
             const primitive_size: u64 = switch (elem_type) {
-                .uint8, .int8, .bool_ => 1,
+                .uint8, .int8 => 1,
                 .uint16, .int16 => 2,
                 .uint32, .int32, .float32 => 4,
                 .uint64, .int64, .float64 => 8,
-                .string, .array => 0,
+                .bool_, .string, .array => 0,
             };
 
             if (primitive_size > 0) {
