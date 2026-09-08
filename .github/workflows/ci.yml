@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@00142fb7c8ef4c4d51bb7534431f06154b52c0f6 # v1.2.1
+        uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1.2.2
         with:
           version: 0.13.0
 
