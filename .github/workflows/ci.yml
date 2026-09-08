@@ -53,4 +53,7 @@ jobs:
       - name: Run True Differential Test Suite (SafeGGUF vs Upstream ggml 0.23.0)
         run: python tests/differential.py
 
+      - name: Run High-Throughput Mutation Fuzzing (2,000 Permutations)
+        run: python tests/fuzz_mutation.py --iterations 2000
+
 

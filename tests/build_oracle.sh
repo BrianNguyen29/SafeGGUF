@@ -21,7 +21,12 @@ if [ ! -d "$CACHE_DIR/.git" ]; then
 fi
 
 cd "$CACHE_DIR"
-git checkout -q "$PINNED_COMMIT" || true
+git checkout --detach "$PINNED_COMMIT"
+ACTUAL_COMMIT="$(git rev-parse HEAD)"
+if [ "$ACTUAL_COMMIT" != "$PINNED_COMMIT" ]; then
+    echo "FATAL: Checked out commit $ACTUAL_COMMIT does not match pinned commit $PINNED_COMMIT" >&2
+    exit 1
+fi
 
 if [ ! -f "build/src/libggml.so" ] && [ ! -f "build/src/libggml.dylib" ]; then
     echo "Configuring and building ggml libraries with CMake..."

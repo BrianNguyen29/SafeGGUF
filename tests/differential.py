@@ -14,28 +14,93 @@ SAFEGGUF_BIN = os.path.join(REPO_ROOT, "zig-out", "bin", "safegguf")
 ORACLE_BIN = os.path.join(SCRIPT_DIR, "oracle", "ggml_oracle")
 FIXTURES_DIR = os.path.join(SCRIPT_DIR, "fixtures")
 
-# Intentional, documented security divergences where SafeGGUF is strictly more secure than upstream
-INTENTIONAL_DIVERGENCES = {
-    "invalid_bool.gguf": {
-        "reason": "SafeGGUF enforces GGUF spec booleans (0 or 1 only). Upstream gguf.cpp accepts any non-zero byte as true.",
-        "expected_safe": "REJECT",
-        "expected_upstream": "PASS",
-    },
-    "invalid_key.gguf": {
-        "reason": "SafeGGUF enforces strict lower_snake_case key grammar. Upstream gguf.cpp accepts uppercase and non-standard keys.",
-        "expected_safe": "REJECT",
-        "expected_upstream": "PASS",
-    },
-    "hyphen_key.gguf": {
-        "reason": "SafeGGUF enforces strict lower_snake_case key grammar without hyphens. Upstream gguf.cpp accepts hyphens.",
-        "expected_safe": "REJECT",
-        "expected_upstream": "PASS",
-    },
-    "llama_cpp_overflow.gguf": {
-        "reason": "SafeGGUF checked integer arithmetic prevents integer wrap-around. Upstream GGML_PAD macro overflows UINT64_MAX to 0.",
-        "expected_safe": "REJECT",
-        "expected_upstream": "PASS",
-    },
+# Explicit, full expected matrix for all fixtures across:
+# (SafeGGUF llama-cpp, Upstream --load-data, Upstream --no-load, Description/Rationale)
+EXPECTED_MATRIX = {
+    "alloc_dos_tensor.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Allocation DoS tensor exceeds bounds/limits",
+    ),
+    "duplicate_key.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Duplicate metadata key rejected",
+    ),
+    "duplicate_tensor.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Duplicate tensor name rejected",
+    ),
+    "empty_tensor_name.gguf": (
+        "REJECT", "PASS", "PASS",
+        "SafeGGUF enforces non-empty tensor names (1 <= len <= 64). Upstream accepts len == 0.",
+    ),
+    "gap.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Non-contiguous tensor offsets rejected under llama-cpp profile",
+    ),
+    "hyphen_key.gguf": (
+        "REJECT", "PASS", "PASS",
+        "SafeGGUF enforces strict lower_snake_case without hyphens. Upstream accepts hyphens.",
+    ),
+    "invalid_bool.gguf": (
+        "REJECT", "PASS", "PASS",
+        "SafeGGUF enforces strict boolean bytes (0x00 or 0x01). Upstream accepts any non-zero.",
+    ),
+    "invalid_key.gguf": (
+        "REJECT", "PASS", "PASS",
+        "SafeGGUF enforces strict lower_snake_case key grammar. Upstream accepts uppercase.",
+    ),
+    "llama_cpp_overflow.gguf": (
+        "REJECT", "PASS", "PASS",
+        "SafeGGUF checked arithmetic prevents u64 overflow. Upstream GGML_PAD wraps to 0.",
+    ),
+    "name_64.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Tensor name >= 64 characters rejected",
+    ),
+    "nested_array.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Nested metadata arrays rejected under llama-cpp profile",
+    ),
+    "out_of_bounds.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Tensor data bounds exceed file size",
+    ),
+    "overflow.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Tensor dimension product arithmetic overflow",
+    ),
+    "overlap.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Overlapping tensor byte spans rejected",
+    ),
+    "removed_type_slot31.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Deprecated/removed GGML type slot 31 rejected",
+    ),
+    "scalar.gguf": (
+        "PASS", "PASS", "PASS",
+        "Scalar tensor (n_dims == 0, 1 element) valid across SafeGGUF and upstream",
+    ),
+    "truncated_final_padding.gguf": (
+        "REJECT", "REJECT", "PASS",
+        "Trailing padding missing: SafeGGUF and upstream load reject; no-load passes (HIGH-01)",
+    ),
+    "type40_truncated_false_pass.gguf": (
+        "REJECT", "REJECT", "PASS",
+        "Truncated tensor data: SafeGGUF and upstream load reject; no-load passes",
+    ),
+    "valid.gguf": (
+        "PASS", "PASS", "PASS",
+        "Canonical valid GGUF file passes all checks",
+    ),
+    "version_2.gguf": (
+        "PASS", "PASS", "PASS",
+        "GGUF v2 file passes backward-compatible llama-cpp loader",
+    ),
+    "zero_dimension.gguf": (
+        "REJECT", "PASS", "PASS",
+        "SafeGGUF rejects explicit 0-element dimensions (E_ZeroDimensionNotAllowed). Upstream accepts.",
+    ),
 }
 
 def ensure_binaries():
@@ -47,21 +112,49 @@ def ensure_binaries():
         print(f"Building upstream ggml oracle via {os.path.join(SCRIPT_DIR, 'build_oracle.sh')}...")
         subprocess.check_call([os.path.join(SCRIPT_DIR, "build_oracle.sh")], cwd=REPO_ROOT)
 
+def assert_oracle_identity():
+    proc = subprocess.run([ORACLE_BIN, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    out = proc.stdout.strip()
+    print(f"Oracle runtime identity: {out.replace(chr(10), ', ')}")
+    assert "ggml_version: 0.23.0" in out, f"Unexpected ggml_version: {out}"
+    assert "ggml_commit: e91ded1" in out, f"Unexpected ggml_commit: {out}"
+
 def run_safegguf(path: str):
     cmd = [SAFEGGUF_BIN, "inspect", path, "--profile", "llama-cpp"]
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
-    verdict = "PASS" if proc.returncode == 0 else "REJECT"
+
+    # Strict POSIX exit taxonomy
+    if proc.returncode == 0:
+        verdict = "PASS"
+    elif proc.returncode == 2:
+        verdict = "REJECT"
+    elif proc.returncode < 0:
+        verdict = f"CRASH(SIG{-proc.returncode})"
+    else:
+        verdict = f"INTERNAL_ERROR({proc.returncode})"
+
     return verdict, proc.returncode, proc.stderr.strip()
 
 def run_oracle(path: str, mode: str):
     cmd = [ORACLE_BIN, mode, path]
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
-    verdict = "PASS" if proc.returncode == 0 else "REJECT"
+
+    # Strict oracle exit taxonomy
+    if proc.returncode == 0:
+        verdict = "PASS"
+    elif proc.returncode == 2 or proc.returncode == 1:
+        verdict = "REJECT"
+    elif proc.returncode < 0:
+        verdict = f"CRASH(SIG{-proc.returncode})"
+    else:
+        verdict = f"ERROR({proc.returncode})"
+
     return verdict, proc.returncode
 
 def main():
     print("=== SafeGGUF vs Upstream ggml 0.23.0 True Differential Validation ===")
     ensure_binaries()
+    assert_oracle_identity()
 
     fixtures = sorted([f for f in os.listdir(FIXTURES_DIR) if f.endswith(".gguf")])
     if not fixtures:
@@ -70,40 +163,57 @@ def main():
 
     print(f"Loaded {len(fixtures)} fixtures from {FIXTURES_DIR}\n")
     print(f"{'Fixture':<34} | {'SafeGGUF':<8} | {'Upstream Load':<13} | {'Upstream NoLoad':<15} | {'Verdict'}")
-    print("-" * 88)
+    print("-" * 105)
 
     failures = []
     for f in fixtures:
+        if f not in EXPECTED_MATRIX:
+            failures.append(f"Fixture '{f}' has no entry in EXPECTED_MATRIX! All fixtures must be explicitly verified.")
+            continue
+
+        exp_safe, exp_up_load, exp_up_noload, rationale = EXPECTED_MATRIX[f]
         path = os.path.join(FIXTURES_DIR, f)
         safe_verdict, safe_rc, safe_err = run_safegguf(path)
-        up_load_verdict, _ = run_oracle(path, "--load-data")
-        up_noload_verdict, _ = run_oracle(path, "--no-load")
+        up_load_verdict, up_load_rc = run_oracle(path, "--load-data")
+        up_noload_verdict, up_noload_rc = run_oracle(path, "--no-load")
 
-        # Check against allowlist or exact match
-        status_note = "MATCH"
-        if f in INTENTIONAL_DIVERGENCES:
-            div = INTENTIONAL_DIVERGENCES[f]
-            if safe_verdict == div["expected_safe"] and up_load_verdict == div["expected_upstream"]:
-                status_note = f"ALLOWLIST ({div['reason'][:35]}...)"
-            else:
-                failures.append(f"{f}: Expected allowlist verdict ({div['expected_safe']} vs {div['expected_upstream']}), got ({safe_verdict} vs {up_load_verdict})")
-                status_note = "MISMATCH"
+        # Check for unexpected crashes or internal errors
+        if safe_verdict not in ("PASS", "REJECT"):
+            failures.append(f"{f}: SafeGGUF crashed or internal error! Verdict={safe_verdict}, Stderr={safe_err}")
+        if up_load_verdict not in ("PASS", "REJECT"):
+            failures.append(f"{f}: Upstream Load crashed! Verdict={up_load_verdict}")
+        if up_noload_verdict not in ("PASS", "REJECT"):
+            failures.append(f"{f}: Upstream NoLoad crashed! Verdict={up_noload_verdict}")
+
+        # Assert full 3-column matrix against expected specifications
+        mismatch = False
+        if safe_verdict != exp_safe:
+            failures.append(f"{f}: SafeGGUF verdict mismatch! Expected {exp_safe}, got {safe_verdict} (rc={safe_rc}). Stderr: {safe_err}")
+            mismatch = True
+        if up_load_verdict != exp_up_load:
+            failures.append(f"{f}: Upstream Load verdict mismatch! Expected {exp_up_load}, got {up_load_verdict} (rc={up_load_rc})")
+            mismatch = True
+        if up_noload_verdict != exp_up_noload:
+            failures.append(f"{f}: Upstream NoLoad verdict mismatch! Expected {exp_up_noload}, got {up_noload_verdict} (rc={up_noload_rc})")
+            mismatch = True
+
+        if mismatch:
+            status_note = "MISMATCH FAILURE"
+        elif safe_verdict != up_load_verdict or safe_verdict != up_noload_verdict:
+            status_note = f"DOCUMENTED DIVERGENCE ({rationale[:40]}...)"
         else:
-            # Must match upstream normal loading verdict
-            if safe_verdict != up_load_verdict:
-                failures.append(f"{f}: Unexpected divergence! SafeGGUF={safe_verdict} (rc={safe_rc}), Upstream={up_load_verdict}. Safe err: {safe_err}")
-                status_note = "DIVERGENCE FAILURE"
+            status_note = "MATCH (100% UNANIMOUS)"
 
         print(f"{f:<34} | {safe_verdict:<8} | {up_load_verdict:<13} | {up_noload_verdict:<15} | {status_note}")
 
-    print("-" * 88)
+    print("-" * 105)
     if failures:
         print("\nDIFFERENTIAL FAILURES DETECTED:")
         for fail in failures:
             print("  X " + fail)
         sys.exit(1)
 
-    print("\n✓ True Differential Test Suite PASSED! All 19 fixtures verified against upstream ggml 0.23.0.")
+    print(f"\n✓ True Differential Test Suite PASSED! All {len(fixtures)} fixtures verified with full 3-column assertions against upstream ggml 0.23.0.")
 
 if __name__ == "__main__":
     main()

@@ -13,10 +13,19 @@ REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 ORACLE_BIN = os.path.join(SCRIPT_DIR, "oracle", "ggml_oracle")
 TYPES_ZIG = os.path.join(REPO_ROOT, "src", "gguf", "types.zig")
 
-def parse_upstream_types():
+def assert_oracle_identity():
     if not os.path.exists(ORACLE_BIN):
         print(f"Building oracle binary first via {os.path.join(SCRIPT_DIR, 'build_oracle.sh')}...")
         subprocess.check_call([os.path.join(SCRIPT_DIR, "build_oracle.sh")])
+
+    proc = subprocess.run([ORACLE_BIN, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
+    out = proc.stdout.strip()
+    print(f"Oracle runtime identity: {out.replace(chr(10), ', ')}")
+    assert "ggml_version: 0.23.0" in out, f"Unexpected ggml_version: {out}"
+    assert "ggml_commit: e91ded1" in out, f"Unexpected ggml_commit: {out}"
+
+def parse_upstream_types():
+    assert_oracle_identity()
 
     proc = subprocess.run([ORACLE_BIN, "--dump-types"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
     lines = proc.stdout.strip().splitlines()

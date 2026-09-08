@@ -436,6 +436,53 @@ def build_truncated_final_padding():
     with open(os.path.join(DIR, "truncated_final_padding.gguf"), "wb") as f:
         f.write(b)
 
+def build_zero_dimension():
+    # Deliberate divergence: SafeGGUF rejects explicit zero dimensions (E_ZeroDimensionNotAllowed).
+    # Upstream ggml treats 0-element tensors as trivially representable (PASS).
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 1) # 1 tensor
+    b += struct.pack("<Q", 0) # 0 metadata
+
+    t_name = b"zero_dim"
+    b += struct.pack("<Q", len(t_name))
+    b += t_name
+    b += struct.pack("<I", 1) # n_dims == 1
+    b += struct.pack("<Q", 0) # dim[0] == 0 (zero dimension!)
+    b += struct.pack("<I", 0) # F32
+    b += struct.pack("<Q", 0) # offset 0
+
+    data_base = align_up(len(b), 32)
+    b += b"\x00" * (data_base - len(b))
+    b += b"\x00" * 32
+
+    with open(os.path.join(DIR, "zero_dimension.gguf"), "wb") as f:
+        f.write(b)
+
+def build_empty_tensor_name():
+    # Deliberate divergence: SafeGGUF enforces non-empty tensor names 1 <= len <= 64 (E_InvalidTensorName).
+    # Upstream ggml only checks name.length() >= GGML_MAX_NAME (64), so it accepts len == 0 (PASS).
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 1) # 1 tensor
+    b += struct.pack("<Q", 0) # 0 metadata
+
+    # empty tensor name: length 0
+    b += struct.pack("<Q", 0)
+    b += struct.pack("<I", 1) # n_dims == 1
+    b += struct.pack("<Q", 1) # dim[0] == 1
+    b += struct.pack("<I", 0) # F32
+    b += struct.pack("<Q", 0) # offset 0
+
+    data_base = align_up(len(b), 32)
+    b += b"\x00" * (data_base - len(b))
+    b += b"\x00" * 32
+
+    with open(os.path.join(DIR, "empty_tensor_name.gguf"), "wb") as f:
+        f.write(b)
+
 if __name__ == "__main__":
     build_valid()
     build_type40_false_pass()
@@ -456,6 +503,8 @@ if __name__ == "__main__":
     build_llama_cpp_overflow()
     build_scalar()
     build_truncated_final_padding()
+    build_zero_dimension()
+    build_empty_tensor_name()
 
     # Populate seed corpus directory for fuzzing
     corpus_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus")

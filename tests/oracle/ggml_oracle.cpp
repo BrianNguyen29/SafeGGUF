@@ -6,8 +6,13 @@
 
 int main(int argc, char ** argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <--dump-types | --no-load <file> | --load-data <file>>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <--version | --dump-types | --no-load <file> | --load-data <file>>\n", argv[0]);
         return 64;
+    }
+
+    if (strcmp(argv[1], "--version") == 0) {
+        printf("ggml_version: %s\nggml_commit: %s\n", ggml_version(), ggml_commit());
+        return 0;
     }
 
     if (strcmp(argv[1], "--dump-types") == 0) {

@@ -3,8 +3,8 @@
 [![CI](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/ci.yml/badge.svg)](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/ci.yml)
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggerganov/llama.cpp)
-[![Release](https://img.shields.io/badge/release-v0.3.0-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
+[![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
+[![Release](https://img.shields.io/badge/release-v0.3.1-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
 
 A memory-safe, overflow-checked GGUF v3 structural and arithmetic pre-admission validator written in **Zig**, designed to inspect model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes.
 
@@ -40,16 +40,17 @@ Different runtimes enforce different constraints. SafeGGUF strictly decouples sp
 
 | Constraint | `--profile gguf-spec` (Default) | `--profile llama-cpp` |
 | :--- | :--- | :--- |
-| **Profile Role** | GGUF v3 Structural Format Spec | ggml 0.23.0 Safe Pre-Admission Subset |
+| **Profile Role** | Resource-bounded GGUF v3 structural safe subset | ggml 0.23.0 Safe Pre-Admission Subset |
 | **GGUF Version** | Exactly version 3 | Version 2 and Version 3 |
 | **Tensor Layout** | Arbitrary order & gaps permitted (non-overlapping) | Strictly contiguous in descriptor order + checked trailing padding |
 | **Nested Arrays** | Permitted (depth limited to 16) | Strictly rejected (`NestedArrayNotSupported`) |
 | **Scalar Tensors** | Supported ($\text{n\_dims} = 0$, 1 element = `type_size`) | Supported ($\text{n\_dims} = 0$, 1 element = `type_size`) |
+| **Zero Dimensions** | Strictly rejected (`dimensions[i] > 0`) | Strictly rejected (`dimensions[i] > 0`) |
 | **Tensor Name Length** | $1 \le \text{len} \le 64$ bytes | $1 \le \text{len} < 64$ bytes (`GGML_MAX_NAME` check) |
 | **Alignment** | Multiple of 8 (uint32) | Power-of-two (uint32) |
 
 > [!NOTE]
-> SafeGGUF's `--profile llama-cpp` is a **safe pre-admission subset** of upstream `llama.cpp`. It intentionally enforces stricter security validation than upstream C readers on adversarial inputs: strict boolean bytes ($\in \{0, 1\}$), strict lower_snake_case key grammar, checked integer overflow prevention (mitigating upstream `GGML_PAD` unsigned wrap-around), and finite resource budgets.
+> Both `--profile gguf-spec` and `--profile llama-cpp` are **safe pre-admission subsets** designed for defense-in-depth. They enforce deliberate security invariants over raw formats: strict boolean bytes ($\in \{0, 1\}$), non-empty tensor names ($1 \le \text{len}$), non-zero dimensions ($d > 0$), strict lower_snake_case key grammar, checked integer overflow prevention (mitigating upstream `GGML_PAD` unsigned wrap-around), and finite resource budgets.
 
 ### 3. Comprehensive Multi-Layer Resource Budgeting (Anti-DoS)
 * **Global Quota Allocator:** Wraps GPA / test allocator with hard live and peak memory ceilings (`max_total_alloc_bytes = 128 MB`), bounding memory consumption across all parser tables, hash maps, strings, and sorting buffers.
@@ -137,8 +138,11 @@ python tests/cli_test.py
 bash tests/build_oracle.sh
 python tests/test_oracle_types.py
 
-# 6. Run true upstream differential test suite
+# 6. Run true upstream differential test suite (SafeGGUF vs Upstream ggml 0.23.0)
 python tests/differential.py
+
+# 7. Run high-throughput mutation fuzzing (2,000 hostile permutations)
+python tests/fuzz_mutation.py --iterations 2000
 ```
 
 ---

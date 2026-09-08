@@ -28,6 +28,11 @@ pub fn main() !void {
         std.process.exit(64);
     };
 
+    if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "help")) {
+        try printUsage(stdout);
+        std.process.exit(0);
+    }
+
     if (!std.mem.eql(u8, cmd, "inspect")) {
         try stderr.print("Unknown command: {s}\n", .{cmd});
         try printUsage(stderr);
@@ -39,6 +44,11 @@ pub fn main() !void {
         try printUsage(stderr);
         std.process.exit(64);
     };
+
+    if (std.mem.eql(u8, file_path, "--help") or std.mem.eql(u8, file_path, "-h")) {
+        try printUsage(stdout);
+        std.process.exit(0);
+    }
 
     var endian: std.builtin.Endian = .little;
     var format: OutputFormat = .text;
@@ -243,12 +253,13 @@ pub fn main() !void {
 }
 
 fn printUsage(writer: anytype) !void {
-    try writer.print("SafeGGUF v0.3.0 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
+    try writer.print("SafeGGUF v0.3.1 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
     try writer.print("Usage: safegguf inspect <path_to_model.gguf> [options]\n", .{});
     try writer.print("Options:\n", .{});
-    try writer.print("  --endian <little|big>     Byte order (default: host)\n", .{});
-    try writer.print("  --format <text|json>      Output format (default: text)\n", .{});
-    try writer.print("  --profile <spec|llama>    Validation profile (default: gguf-spec):\n", .{});
-    try writer.print("                              gguf-spec: GGUF v3 structural format specification\n", .{});
-    try writer.print("                              llama-cpp: ggml 0.23.0 safe pre-admission subset\n", .{});
+    try writer.print("  --endian <little|big>           Byte order (default: little)\n", .{});
+    try writer.print("  --format <text|json>            Output format (default: text)\n", .{});
+    try writer.print("  --profile <gguf-spec|llama-cpp> Validation profile (default: gguf-spec):\n", .{});
+    try writer.print("                                    gguf-spec: resource-bounded GGUF v3 structural safe subset\n", .{});
+    try writer.print("                                    llama-cpp: ggml 0.23.0 safe pre-admission subset\n", .{});
+    try writer.print("  --help, -h                      Display this help message and exit\n", .{});
 }

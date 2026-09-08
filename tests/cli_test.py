@@ -75,6 +75,10 @@ def test_negative_validation():
     print("Running negative validation tests (must exit code 2)...")
 
     rejections = [
+        # Boundary: zero dimension under both profiles
+        (["inspect", os.path.join(FIXTURES, "zero_dimension.gguf")], "E_ZeroDimensionNotAllowed"),
+        # Boundary: empty tensor name under both profiles
+        (["inspect", os.path.join(FIXTURES, "empty_tensor_name.gguf")], "E_InvalidTensorName"),
         # P0 regression: contiguous offset addition overflow under llama-cpp
         (["inspect", os.path.join(FIXTURES, "llama_cpp_overflow.gguf"), "--profile", "llama-cpp"], "E_ArithmeticOverflow"),
         # P0 regression: truncated final tensor padding under llama-cpp (HIGH-01)
@@ -162,6 +166,18 @@ def test_io_error():
 
     print("  ✓ IO error tests passed with exit code 74.")
 
+def test_help():
+    print("Running CLI help contract tests (must exit code 0)...")
+    for flag in ["--help", "-h", "help"]:
+        rc, stdout, stderr = run_cli(flag)
+        assert rc == 0, f"Expected returncode 0 for {flag}, got {rc}"
+        output = stdout + stderr
+        assert "SafeGGUF v0.3.1" in output, f"Version missing in help: {output}"
+        assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
+        assert "default: little" in output, f"Default little endian missing in help: {output}"
+        assert "--format <text|json>" in output
+    print("  ✓ All help contract tests passed with exit code 0.")
+
 if __name__ == "__main__":
     if not os.path.exists(BINARY):
         print(f"Error: binary {BINARY} does not exist. Run zig build first.")
@@ -172,4 +188,5 @@ if __name__ == "__main__":
     test_negative_json()
     test_usage_and_flags()
     test_io_error()
+    test_help()
     print("\nAll CLI end-to-end integration tests PASSED successfully!")

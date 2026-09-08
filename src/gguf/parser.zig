@@ -159,7 +159,7 @@ pub fn parseDocument(
         }
     }
 
-    const min_tensor_desc_size: u64 = 8 + 1 + 4 + 8 + 4 + 8;
+    const min_tensor_desc_size: u64 = 8 + 4 + 4 + 8; // 24 bytes: name_len(8) + n_dims(4) + type(4) + offset(8)
     if (cur > reader.size or tensor_count > (reader.size - cur) / min_tensor_desc_size) {
         return err.ParseError.UnexpectedEof;
     }

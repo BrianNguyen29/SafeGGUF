@@ -877,3 +877,54 @@ test "limits: WorkBudget byte-scanning exhaustion returns ResourceLimitExceeded 
     try std.testing.expectEqual(@as(u64, 30), budget.consumed_scanned_bytes);
     try std.testing.expectError(error.ResourceLimitExceeded, budget.consumeBytes(25)); // 30 + 25 = 55 > 50
 }
+
+test "parser: reject zero-element dimension" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little); // 1 tensor
+    try writer.writeInt(u64, 0, .little); // 0 metadata
+
+    const name = "zero_dim";
+    try writer.writeInt(u64, name.len, .little);
+    try writer.writeAll(name);
+    try writer.writeInt(u32, 1, .little); // 1 dim
+    try writer.writeInt(u64, 0, .little); // dim 0 is 0!
+    try writer.writeInt(u32, 0, .little); // F32
+    try writer.writeInt(u64, 0, .little); // offset 0
+
+    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    const r = slice_reader.reader();
+
+    var b = limits.WorkBudget.init(1000);
+    const result = parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b);
+    try std.testing.expectError(error.ZeroDimensionNotAllowed, result);
+}
+
+test "parser: reject empty tensor name" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little); // 1 tensor
+    try writer.writeInt(u64, 0, .little); // 0 metadata
+
+    // name length 0
+    try writer.writeInt(u64, 0, .little);
+    try writer.writeInt(u32, 1, .little);
+    try writer.writeInt(u64, 1, .little);
+    try writer.writeInt(u32, 0, .little);
+    try writer.writeInt(u64, 0, .little);
+
+    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    const r = slice_reader.reader();
+
+    var b = limits.WorkBudget.init(1000);
+    const result = parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b);
+    try std.testing.expectError(error.InvalidTensorName, result);
+}
