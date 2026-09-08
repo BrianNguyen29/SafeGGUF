@@ -220,7 +220,9 @@ test "profile: nested arrays allowed in gguf-spec, rejected in llama-cpp" {
     try writer.writeInt(u64, 1, .little);
     try writer.writeInt(u32, 42, .little);
 
-    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    const written_len = fbs.getWritten().len;
+    const padded_len = (written_len + 31) & ~@as(usize, 31);
+    const slice_reader = reader_mod.SliceReader.init(buffer[0..padded_len]);
     const r = slice_reader.reader();
 
     // Under gguf_spec: nested arrays are valid -> PASS!
@@ -255,7 +257,9 @@ test "profile: 64-byte tensor name allowed in gguf-spec, rejected in llama-cpp" 
     try writer.writeInt(u32, 0, .little);
     try writer.writeInt(u64, 0, .little);
 
-    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    const written_len = fbs.getWritten().len;
+    const padded_len = (written_len + 31) & ~@as(usize, 31);
+    const slice_reader = reader_mod.SliceReader.init(buffer[0..padded_len]);
     const r = slice_reader.reader();
 
     // Under gguf_spec: 64 bytes is allowed (<= 64) -> PASS!
@@ -518,7 +522,7 @@ test "alignment: profile validation" {
     try writer.writeInt(u32, 4, .little); // uint32
     try writer.writeInt(u32, 24, .little); // 24: multiple of 8, not power of 2
 
-    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    const slice_reader = reader_mod.SliceReader.init(buffer[0..72]);
     const r = slice_reader.reader();
 
     var b1 = limits.WorkBudget.init(1000);
@@ -607,7 +611,8 @@ test "validator: reject misaligned tensor" {
     try writer.writeInt(u64, 15, .little); // 15 % 32 != 0
 
     const written_len = fbs.getWritten().len;
-    const slice_reader = reader_mod.SliceReader.init(buffer[0..written_len]);
+    const padded_len = (written_len + 31) & ~@as(usize, 31);
+    const slice_reader = reader_mod.SliceReader.init(buffer[0..padded_len]);
     const r = slice_reader.reader();
 
     var b = limits.WorkBudget.init(1000);
@@ -642,7 +647,8 @@ test "validator: reject duplicate tensor names" {
     try writer.writeInt(u64, 32, .little);
 
     const written_len = fbs.getWritten().len;
-    const slice_reader = reader_mod.SliceReader.init(buffer[0..written_len]);
+    const padded_len = (written_len + 31) & ~@as(usize, 31);
+    const slice_reader = reader_mod.SliceReader.init(buffer[0..padded_len]);
     const r = slice_reader.reader();
 
     var b = limits.WorkBudget.init(1000);
@@ -1004,4 +1010,86 @@ test "parser: llama_cpp profile rejects non-native endianness" {
     var b = limits.WorkBudget.init(1000);
     const result = parser.parseDocument(std.testing.allocator, r, opposite_endian, limits.Limits{}, .llama_cpp, &b);
     try std.testing.expectError(error.CompatibilityViolation, result);
+}
+
+test "spec: zero-tensor file must be padded to alignment under gguf_spec, accepted in llama_cpp" {
+    // 24-byte zero-tensor buffer (unpadded)
+    var buffer: [64]u8 = [_]u8{0} ** 64;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 0, .little); // 0 tensors
+    try writer.writeInt(u64, 0, .little); // 0 metadata
+
+    try std.testing.expectEqual(@as(usize, 24), fbs.getWritten().len);
+
+    const r_unpadded = reader_mod.SliceReader.init(fbs.getWritten()).reader();
+
+    // Under gguf_spec: missing alignment padding to 32 -> REJECT with UnexpectedEof!
+    var b1 = limits.WorkBudget.init(1000);
+    try std.testing.expectError(error.UnexpectedEof, parser.parseDocument(std.testing.allocator, r_unpadded, .little, limits.Limits{}, .gguf_spec, &b1));
+
+    // Under llama_cpp: upstream ggml skips alignment seek when n_tensors == 0 -> PASS!
+    var b2 = limits.WorkBudget.init(1000);
+    var doc_llama = try parser.parseDocument(std.testing.allocator, r_unpadded, .little, limits.Limits{}, .llama_cpp, &b2);
+    defer doc_llama.deinit(std.testing.allocator);
+
+    // Now test properly 32-byte padded buffer -> PASS under both profiles!
+    const r_padded = reader_mod.SliceReader.init(buffer[0..32]).reader();
+    var b3 = limits.WorkBudget.init(1000);
+    var doc_spec = try parser.parseDocument(std.testing.allocator, r_padded, .little, limits.Limits{}, .gguf_spec, &b3);
+    defer doc_spec.deinit(std.testing.allocator);
+}
+
+test "llama_cpp: reject dimension exceeding INT64_MAX" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little);
+    try writer.writeInt(u64, 0, .little);
+
+    const name = "t_neg";
+    try writer.writeInt(u64, name.len, .little);
+    try writer.writeAll(name);
+    try writer.writeInt(u32, 1, .little);
+    try writer.writeInt(u64, 0x8000000000000000, .little); // > INT64_MAX (negative in int64_t)
+    try writer.writeInt(u32, 0, .little);
+    try writer.writeInt(u64, 0, .little);
+
+    const r = reader_mod.SliceReader.init(buffer[0..64]).reader();
+
+    var b1 = limits.WorkBudget.init(1000);
+    const res_llama = parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .llama_cpp, &b1);
+    try std.testing.expectError(error.CompatibilityViolation, res_llama);
+}
+
+test "llama_cpp: reject element product exceeding INT64_MAX" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little);
+    try writer.writeInt(u64, 0, .little);
+
+    const name = "t_ovf";
+    try writer.writeInt(u64, name.len, .little);
+    try writer.writeAll(name);
+    try writer.writeInt(u32, 2, .little);
+    try writer.writeInt(u64, 0x4000000000000000, .little); // dim 0
+    try writer.writeInt(u64, 2, .little); // dim 1: product reaches 0x8000000000000000 >= INT64_MAX
+    try writer.writeInt(u32, 0, .little);
+    try writer.writeInt(u64, 0, .little);
+
+    const r = reader_mod.SliceReader.init(buffer[0..64]).reader();
+
+    var b1 = limits.WorkBudget.init(1000);
+    const res_llama = parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .llama_cpp, &b1);
+    try std.testing.expectError(error.CompatibilityViolation, res_llama);
 }

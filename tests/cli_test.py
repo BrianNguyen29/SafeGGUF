@@ -60,6 +60,11 @@ def test_positive():
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
+    # 10. Truncated header padding with zero tensors under llama-cpp profile (PASS like upstream)
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "truncated_header_padding_zero_tensors.gguf"), "--profile", "llama-cpp")
+    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout
+
     # 9. Big-endian v3 under gguf-spec profile with --endian big
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "big_endian_v3.gguf"), "--endian", "big", "--profile", "gguf-spec")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
@@ -88,6 +93,12 @@ def test_negative_validation():
         (["inspect", os.path.join(FIXTURES, "llama_cpp_overflow.gguf"), "--profile", "llama-cpp"], "E_ArithmeticOverflow"),
         # P0 regression: truncated final tensor padding under llama-cpp (HIGH-01)
         (["inspect", os.path.join(FIXTURES, "truncated_final_padding.gguf"), "--profile", "llama-cpp"], "E_TensorOutOfBounds"),
+        # Truncated zero-tensor padding rejected under gguf-spec
+        (["inspect", os.path.join(FIXTURES, "truncated_header_padding_zero_tensors.gguf"), "--profile", "gguf-spec"], "E_UnexpectedEof"),
+        # Signed dimension overflow (> INT64_MAX) under llama-cpp
+        (["inspect", os.path.join(FIXTURES, "signed_dim_overflow.gguf"), "--profile", "llama-cpp"], "E_CompatibilityViolation"),
+        # Element product overflow (>= INT64_MAX) under llama-cpp
+        (["inspect", os.path.join(FIXTURES, "element_product_overflow.gguf"), "--profile", "llama-cpp"], "E_CompatibilityViolation"),
         # Compatibility violation: non-native big-endian under llama-cpp
         (["inspect", os.path.join(FIXTURES, "big_endian_v3.gguf"), "--endian", "big", "--profile", "llama-cpp"], "E_CompatibilityViolation"),
         # Invalid alignment zero-padding
@@ -182,7 +193,7 @@ def test_help():
         rc, stdout, stderr = run_cli(flag)
         assert rc == 0, f"Expected returncode 0 for {flag}, got {rc}"
         output = stdout + stderr
-        assert "SafeGGUF v0.3.2" in output, f"Version missing in help: {output}"
+        assert "SafeGGUF v0.3.3" in output, f"Version missing in help: {output}"
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
         assert "default: little" in output, f"Default little endian missing in help: {output}"
         assert "--format <text|json>" in output

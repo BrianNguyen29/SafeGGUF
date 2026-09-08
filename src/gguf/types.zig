@@ -12,7 +12,7 @@ pub const GGML_TYPE_COUNT: u32 = 43;
 pub const ACTIVE_TYPE_COUNT: u32 = 35;
 
 pub const Profile = enum {
-    gguf_spec, // Strict GGUF v3 specification profile
+    gguf_spec, // Resource-bounded safe subset of GGUF v3 specification
     llama_cpp, // Upstream ggml / llama.cpp 0.23.0 loader compatibility profile
 };
 

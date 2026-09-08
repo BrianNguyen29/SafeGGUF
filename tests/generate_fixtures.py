@@ -313,6 +313,10 @@ def build_nested_array():
     b += struct.pack("<Q", 1) # 1 inner element
     b += struct.pack("<i", 42)
 
+    # Pad to default alignment (32) so header padding is valid
+    pad_len = (32 - (len(b) % 32)) % 32
+    b += b"\x00" * pad_len
+
     with open(os.path.join(DIR, "nested_array.gguf"), "wb") as f:
         f.write(b)
 
@@ -543,6 +547,49 @@ def build_nonzero_header_padding():
     with open(os.path.join(DIR, "nonzero_header_padding.gguf"), "wb") as f:
         f.write(b)
 
+def build_truncated_header_padding_zero_tensors():
+    # Exactly 24 bytes: magic(4), version(4), tensor_count(8)=0, metadata_count(8)=0
+    # Missing 8 bytes of zero alignment padding up to default 32-byte alignment
+    b = bytearray(b"GGUF")
+    b += struct.pack("<IQQ", 3, 0, 0)
+    assert len(b) == 24
+    with open(os.path.join(DIR, "truncated_header_padding_zero_tensors.gguf"), "wb") as f:
+        f.write(b)
+
+def build_signed_dim_overflow():
+    # 1 tensor with dimension 0x8000000000000000 (> INT64_MAX)
+    b = bytearray(b"GGUF")
+    b += struct.pack("<IQQ", 3, 1, 0)
+    name = "dim_overflow"
+    b += struct.pack("<Q", len(name))
+    b += name.encode("utf-8")
+    b += struct.pack("<I", 1) # 1 dim
+    b += struct.pack("<Q", 0x8000000000000000) # > INT64_MAX
+    b += struct.pack("<I", 0) # F32
+    b += struct.pack("<Q", 0) # offset 0
+    pad_len = (32 - (len(b) % 32)) % 32
+    b += b"\x00" * pad_len
+    with open(os.path.join(DIR, "signed_dim_overflow.gguf"), "wb") as f:
+        f.write(b)
+
+def build_element_product_overflow():
+    # 1 tensor with 2 dimensions [0x4000000000000000, 2], product >= INT64_MAX
+    b = bytearray(b"GGUF")
+    b += struct.pack("<IQQ", 3, 1, 0)
+    name = "prod_overflow"
+    b += struct.pack("<Q", len(name))
+    b += name.encode("utf-8")
+    b += struct.pack("<I", 2) # 2 dims
+    b += struct.pack("<Q", 0x4000000000000000) # dim 0
+    b += struct.pack("<Q", 2) # dim 1
+    b += struct.pack("<I", 0) # F32
+    b += struct.pack("<Q", 0) # offset 0
+    pad_len = (32 - (len(b) % 32)) % 32
+    b += b"\x00" * pad_len
+    with open(os.path.join(DIR, "element_product_overflow.gguf"), "wb") as f:
+        f.write(b)
+
+
 if __name__ == "__main__":
     build_valid()
     build_type40_false_pass()
@@ -567,6 +614,9 @@ if __name__ == "__main__":
     build_empty_tensor_name()
     build_big_endian_v3()
     build_nonzero_header_padding()
+    build_truncated_header_padding_zero_tensors()
+    build_signed_dim_overflow()
+    build_element_product_overflow()
 
     # Populate seed corpus directory for fuzzing
     corpus_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus")

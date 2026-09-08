@@ -53,7 +53,18 @@ jobs:
       - name: Run True Differential Test Suite (SafeGGUF vs Upstream ggml 0.23.0)
         run: python tests/differential.py
 
+      - name: Verify Fuzz Crash Handler Persistence
+        run: python tests/fuzz_mutation.py --test-crash-handler
+
       - name: Run High-Throughput Mutation Fuzzing (2,000 Permutations)
         run: python tests/fuzz_mutation.py --iterations 2000
+
+      - name: Upload Fuzz Crash Artifacts on Failure
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: fuzz-artifacts-${{ matrix.os }}
+          path: tests/fuzz-artifacts/
+          if-no-files-found: ignore
 
 

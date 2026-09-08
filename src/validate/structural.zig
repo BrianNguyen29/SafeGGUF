@@ -32,7 +32,12 @@ pub fn validateStructural(
         return err.ParseError.MisalignedTensor;
     }
 
-    if (doc.tensors.len == 0) return;
+    if (doc.tensors.len == 0) {
+        if (profile == .gguf_spec and doc.tensor_data_base > doc.file_size) {
+            return err.ParseError.UnexpectedEof;
+        }
+        return;
+    }
 
     var seen_names = std.StringHashMap(void).init(allocator);
     defer seen_names.deinit();
@@ -52,6 +57,16 @@ pub fn validateStructural(
             try work_budget.consume(1);
             if (tensor.offset != expected_offset) {
                 return err.ParseError.NonContiguousTensorOffset;
+            }
+            var element_product: u64 = 1;
+            for (tensor.dimensions) |d| {
+                if (d > @as(u64, std.math.maxInt(i64))) {
+                    return err.ParseError.CompatibilityViolation;
+                }
+                if (@as(u64, std.math.maxInt(i64)) / d <= element_product) {
+                    return err.ParseError.CompatibilityViolation;
+                }
+                element_product *= d;
             }
             const nbytes = try arithmetic.computeTensorBytes(tensor.dimensions, tensor.tensor_type);
             const unpadded_end = try arithmetic.checkedAdd(expected_offset, nbytes);

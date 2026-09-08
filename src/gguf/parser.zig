@@ -219,9 +219,22 @@ pub fn parseDocument(
         errdefer allocator.free(dims);
 
         var d_idx: u32 = 0;
+        var element_product: u64 = 1;
         while (d_idx < n_dims) : (d_idx += 1) {
             const d = try reader.readInt(u64, cur, endian);
             if (d == 0) return err.ParseError.ZeroDimensionNotAllowed;
+            if (profile == .llama_cpp) {
+                // Upstream ggml requires dimensions to be signed non-negative int64_t
+                if (d > @as(u64, std.math.maxInt(i64))) {
+                    return err.ParseError.CompatibilityViolation;
+                }
+                // Check upstream ggml condition: total elements is representable (< INT64_MAX)
+                // (INT64_MAX / d <= element_product) => product * d >= INT64_MAX
+                if (@as(u64, std.math.maxInt(i64)) / d <= element_product) {
+                    return err.ParseError.CompatibilityViolation;
+                }
+                element_product *= d;
+            }
             dims[d_idx] = d;
             cur += 8;
         }
@@ -243,6 +256,12 @@ pub fn parseDocument(
 
     // 6. Compute Tensor Data Base and validate zero alignment padding
     const tensor_data_base = try arithmetic.checkedAlignUp(cur, alignment);
+
+    // GGUF v3 specification conformance: zero-tensor file must contain required alignment padding
+    if (profile == .gguf_spec and header.tensor_count == 0 and tensor_data_base > reader.size) {
+        return err.ParseError.UnexpectedEof;
+    }
+
     const check_end = @min(tensor_data_base, reader.size);
     if (check_end > cur) {
         const padding_len = check_end - cur;

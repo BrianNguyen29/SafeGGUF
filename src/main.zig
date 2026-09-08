@@ -253,7 +253,7 @@ pub fn main() !void {
 }
 
 fn printUsage(writer: anytype) !void {
-    try writer.print("SafeGGUF v0.3.2 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
+    try writer.print("SafeGGUF v0.3.3 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
     try writer.print("Usage: safegguf inspect <path_to_model.gguf> [options]\n", .{});
     try writer.print("Options:\n", .{});
     try writer.print("  --endian <little|big>           Byte order (default: little)\n", .{});

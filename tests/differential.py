@@ -17,6 +17,18 @@ FIXTURES_DIR = os.path.join(SCRIPT_DIR, "fixtures")
 # Explicit, full expected matrix for all fixtures across:
 # (SafeGGUF llama-cpp, Upstream --load-data, Upstream --no-load, Description/Rationale)
 EXPECTED_MATRIX = {
+    "truncated_header_padding_zero_tensors.gguf": (
+        "PASS", "PASS", "PASS",
+        "SafeGGUF llama-cpp mirrors upstream zero-tensor non-seek; gguf-spec strictly rejects.",
+    ),
+    "signed_dim_overflow.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Upstream ggml and SafeGGUF llama-cpp reject dimensions > INT64_MAX.",
+    ),
+    "element_product_overflow.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Upstream ggml and SafeGGUF llama-cpp reject total elements >= INT64_MAX.",
+    ),
     "big_endian_v3.gguf": (
         "REJECT", "REJECT", "REJECT",
         "Upstream ggml rejects non-native endianness; SafeGGUF enforces native under llama-cpp",

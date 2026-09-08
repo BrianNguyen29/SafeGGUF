@@ -4,7 +4,7 @@
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
-[![Release](https://img.shields.io/badge/release-v0.3.2-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.3-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
 
 A memory-safe, overflow-checked GGUF v3 structural and arithmetic pre-admission validator written in **Zig**, designed to inspect model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes.
 
@@ -25,7 +25,7 @@ SafeGGUF acts as a hardened **pre-admission gateway** in model supply chain pipe
 
 ---
 
-## 🛡️ Architectural Guarantees & Features (v0.3.0)
+## 🛡️ Architectural Guarantees & Features (v0.3.3)
 
 ### 1. Canonical Upstream Type Table Verified by C Oracle
 Supports all **35 active GGML types** matching `ggml 0.23.0` (`e91ded11`):
@@ -81,9 +81,9 @@ SafeGGUF incorporates an exhaustive, multi-tier verification harness:
 2. **True Upstream Differential Validation (`tests/differential.py`):**
    Executes SafeGGUF alongside the compiled upstream `ggml` oracle running both metadata-only and normal tensor data loading paths (`gguf_init_from_file`). Enforces an explicit, audited allowlist for intentional security divergences. Any unexpected divergence immediately fails CI.
 3. **Seed Corpus Crash Regression & Fuzz Harness (`tests/fuzz_target.zig`):**
-   Provides an official `LLVMFuzzerTestOneInput` C ABI entry point for libFuzzer/OSS-Fuzz and a corpus runner (`zig build fuzz`) verifying parser memory safety across 23 adversarial seed fixtures.
+   Provides an official `LLVMFuzzerTestOneInput` C ABI entry point for libFuzzer/OSS-Fuzz and a corpus runner (`zig build fuzz`) verifying parser memory safety across 26 adversarial seed fixtures.
 4. **Leak-Free Unit & Regression Suite (`zig build test`):**
-   30 exhaustive tests verifying arithmetic overflows, trailing padding truncation, quota tracking, and DoS limits with 0 memory leaks under `std.testing.allocator`.
+   38 exhaustive unit and regression tests verifying arithmetic overflows, trailing padding truncation, zero-tensor spec alignment, signed dimension bounds, quota tracking, and DoS limits with 0 memory leaks under `std.testing.allocator` (enforced on Ubuntu & macOS in CI).
 
 ---
 
