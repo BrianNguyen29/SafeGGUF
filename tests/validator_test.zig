@@ -1093,3 +1093,170 @@ test "llama_cpp: reject element product exceeding INT64_MAX" {
     const res_llama = parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .llama_cpp, &b1);
     try std.testing.expectError(error.CompatibilityViolation, res_llama);
 }
+
+test "structural: public API direct call with dimension == 0 returns ZeroDimensionNotAllowed without panic" {
+    const dims = [_]u64{0};
+    const tensors = [_]parser.TensorInfo{
+        .{
+            .name = "t_zero",
+            .dimensions = &dims,
+            .tensor_type = 0,
+            .offset = 0,
+        },
+    };
+
+    const doc = parser.Document{
+        .header = .{
+            .version = 3,
+            .tensor_count = 1,
+            .metadata_kv_count = 0,
+        },
+        .alignment = 32,
+        .tensor_data_base = 32,
+        .tensors = &tensors,
+        .file_size = 128,
+    };
+
+    // Under llama_cpp: must NOT panic with division-by-zero, must return ZeroDimensionNotAllowed
+    var b1 = limits.WorkBudget.init(1000);
+    const res_llama = structural.validateStructural(std.testing.allocator, doc, .llama_cpp, &b1);
+    try std.testing.expectError(error.ZeroDimensionNotAllowed, res_llama);
+
+    // Under gguf_spec: must return ZeroDimensionNotAllowed
+    var b2 = limits.WorkBudget.init(1000);
+    const res_spec = structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &b2);
+    try std.testing.expectError(error.ZeroDimensionNotAllowed, res_spec);
+}
+
+test "structural: public API direct call with mismatched tensor_count returns CompatibilityViolation" {
+    const dims = [_]u64{10};
+    const tensors = [_]parser.TensorInfo{
+        .{
+            .name = "t_test",
+            .dimensions = &dims,
+            .tensor_type = 0,
+            .offset = 0,
+        },
+    };
+
+    const doc = parser.Document{
+        .header = .{
+            .version = 3,
+            .tensor_count = 100, // Inconsistent with tensors.len == 1
+            .metadata_kv_count = 0,
+        },
+        .alignment = 32,
+        .tensor_data_base = 32,
+        .tensors = &tensors,
+        .file_size = 128,
+    };
+
+    var b1 = limits.WorkBudget.init(1000);
+    const res = structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &b1);
+    try std.testing.expectError(error.CompatibilityViolation, res);
+}
+
+test "validator: high-level Validator API parses and validates valid GGUF" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 0, .little); // 0 tensors
+    try writer.writeInt(u64, 0, .little); // 0 metadata
+
+    // 32-byte alignment padding for zero-tensor valid GGUF
+    const r = reader_mod.SliceReader.init(buffer[0..32]).reader();
+
+    var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+    var doc = try val.validate(r);
+    defer val.deinitDocument(&doc);
+
+    try std.testing.expectEqual(@as(u64, 0), doc.header.tensor_count);
+    try std.testing.expectEqual(@as(u64, 0), doc.tensors.len);
+    try std.testing.expect(!val.isQuotaExceeded());
+}
+
+test "validator: high-level Validator API enforces memory quota" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little);
+    try writer.writeInt(u64, 0, .little);
+
+    const name = "tensor_alloc";
+    try writer.writeInt(u64, name.len, .little);
+    try writer.writeAll(name);
+    try writer.writeInt(u32, 1, .little);
+    try writer.writeInt(u64, 4, .little);
+    try writer.writeInt(u32, 0, .little);
+    try writer.writeInt(u64, 0, .little);
+
+    const r = reader_mod.SliceReader.init(buffer[0..64]).reader();
+
+    // Very low allocation quota (e.g. 5 bytes) that cannot hold tensor allocations
+    const tight_limits = limits.Limits{ .max_total_alloc_bytes = 5 };
+    var val = safegguf.Validator.init(std.testing.allocator, tight_limits, .gguf_spec);
+    const res = val.validate(r);
+    try std.testing.expectError(error.OutOfMemory, res);
+    try std.testing.expect(val.isQuotaExceeded());
+}
+
+test "quota_allocator: allocation, resize, free, and quota limit" {
+    var quota_alloc = limits.QuotaAllocator.init(std.testing.allocator, 100);
+    const alloc = quota_alloc.allocator();
+
+    // 1. Allocate 40 bytes -> OK
+    const slice1 = try alloc.alloc(u8, 40);
+    try std.testing.expectEqual(@as(u64, 40), quota_alloc.allocated_bytes);
+
+    // 2. Allocate another 50 bytes -> OK (total 90)
+    const slice2 = try alloc.alloc(u8, 50);
+    try std.testing.expectEqual(@as(u64, 90), quota_alloc.allocated_bytes);
+
+    // 3. Allocate 20 bytes -> exceeds 100 byte quota!
+    const fail_alloc = alloc.alloc(u8, 20);
+    try std.testing.expectError(error.OutOfMemory, fail_alloc);
+    try std.testing.expect(quota_alloc.isQuotaExceeded());
+
+    // 4. Free slice1 -> allocated_bytes decreases to 50
+    alloc.free(slice1);
+    try std.testing.expectEqual(@as(u64, 50), quota_alloc.allocated_bytes);
+
+    // 5. Free slice2 -> allocated_bytes decreases to 0
+    alloc.free(slice2);
+    try std.testing.expectEqual(@as(u64, 0), quota_alloc.allocated_bytes);
+}
+
+test "buffered_reader: sliding window across 64 KiB boundary" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("window_test.bin", .{ .read = true });
+    defer file.close();
+
+    const total_size: usize = 128 * 1024;
+    var writer = file.writer();
+    var byte_val: u8 = 0;
+    var idx: usize = 0;
+    while (idx < total_size) : (idx += 1) {
+        try writer.writeByte(byte_val);
+        byte_val +%= 1;
+    }
+
+    var buf_reader = reader_mod.BufferedReader.init(file, total_size);
+    const r = buf_reader.reader();
+
+    // Read bytes that straddle the 64 KiB (65536) window boundary
+    var read_buf: [16]u8 = undefined;
+    try r.readBytes(65530, &read_buf);
+
+    for (read_buf, 0..) |b, i| {
+        const expected = @as(u8, @truncate(65530 + i));
+        try std.testing.expectEqual(expected, b);
+    }
+}

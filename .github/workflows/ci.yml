@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [ main ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
 
@@ -14,18 +15,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14]
+        os: [ubuntu-24.04, macos-14]
     steps:
       - name: Checkout repository
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Zig
-        uses: mlugg/setup-zig@53fc45b17fe98b52f92ee5ea08ff48a85a3e7eb7 # v1.2.2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.13.0
 
       - name: Setup Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -56,15 +57,54 @@ jobs:
       - name: Verify Fuzz Crash Handler Persistence
         run: python tests/fuzz_mutation.py --test-crash-handler
 
-      - name: Run High-Throughput Mutation Fuzzing (2,000 Permutations)
+      - name: Run High-Throughput Mutation Fuzzing (2,000 Iterations, 4,000 Executions)
         run: python tests/fuzz_mutation.py --iterations 2000
 
       - name: Upload Fuzz Crash Artifacts on Failure
         if: failure() || cancelled()
-        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fuzz-artifacts-${{ matrix.os }}
           path: tests/fuzz-artifacts/
           if-no-files-found: ignore
 
+  release:
+    name: Build & Publish Release Artifacts
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.13.0
+
+      - name: Build Cross-Platform Release Binaries & SHA256 Manifest
+        run: |
+          mkdir -p dist
+          targets=("x86_64-linux" "aarch64-linux" "x86_64-macos" "aarch64-macos" "x86_64-windows")
+          for target in "${targets[@]}"; do
+            echo "Building for $target..."
+            ext=""
+            if [[ "$target" == *"windows"* ]]; then
+              ext=".exe"
+            fi
+            zig build -Doptimize=ReleaseSafe -Dtarget=$target
+            cp zig-out/bin/safegguf${ext} dist/safegguf-${target}${ext}
+          done
+          cd dist
+          sha256sum safegguf-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload Binaries and Checksums to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag_name="${GITHUB_REF#refs/tags/}"
+          echo "Uploading assets to release $tag_name..."
+          gh release upload "$tag_name" dist/* --clobber

@@ -182,10 +182,18 @@ def test_usage_and_flags():
 def test_io_error():
     print("Running IO error tests (must exit code 74)...")
 
+    # 1. Plain text IO error
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "non_existent_file.gguf"))
     assert rc == 74, f"Expected returncode 74 (EX_IOERR), got {rc}\nStdout: {stdout}\nStderr: {stderr}"
 
-    print("  ✓ IO error tests passed with exit code 74.")
+    # 2. JSON formatted IO error: status must be ERROR (not REJECT)
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "non_existent_file.gguf"), "--format", "json")
+    assert rc == 74, f"Expected returncode 74 (EX_IOERR), got {rc}\nStdout: {stdout}\nStderr: {stderr}"
+    data = json.loads(stdout)
+    assert data["status"] == "ERROR", f"Expected status ERROR, got {data['status']}"
+    assert data["error_code"] == "E_FILE_OPEN_FAILED"
+
+    print("  ✓ IO error tests passed with exit code 74 and status ERROR.")
 
 def test_help():
     print("Running CLI help contract tests (must exit code 0)...")
@@ -193,7 +201,7 @@ def test_help():
         rc, stdout, stderr = run_cli(flag)
         assert rc == 0, f"Expected returncode 0 for {flag}, got {rc}"
         output = stdout + stderr
-        assert "SafeGGUF v0.3.3" in output, f"Version missing in help: {output}"
+        assert "SafeGGUF v0.3.4" in output, f"Version missing in help: {output}"
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
         assert "default: little" in output, f"Default little endian missing in help: {output}"
         assert "--format <text|json>" in output

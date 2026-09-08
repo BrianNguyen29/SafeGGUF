@@ -22,6 +22,10 @@ pub fn validateStructural(
     profile: types.Profile,
     work_budget: *limits.WorkBudget,
 ) err.ParseError!void {
+    // Invariant verification: Document header tensor_count must match in-memory tensors length
+    if (doc.header.tensor_count != doc.tensors.len) {
+        return err.ParseError.CompatibilityViolation;
+    }
     if (doc.alignment == 0 or doc.alignment % 8 != 0) {
         return err.ParseError.InvalidAlignment;
     }
@@ -37,6 +41,11 @@ pub fn validateStructural(
             return err.ParseError.UnexpectedEof;
         }
         return;
+    }
+
+    // Validate tensor dimensions against bounds and zero-dimension rules
+    for (doc.tensors) |tensor| {
+        try arithmetic.validateDimensions(tensor.dimensions, profile);
     }
 
     var seen_names = std.StringHashMap(void).init(allocator);
@@ -57,16 +66,6 @@ pub fn validateStructural(
             try work_budget.consume(1);
             if (tensor.offset != expected_offset) {
                 return err.ParseError.NonContiguousTensorOffset;
-            }
-            var element_product: u64 = 1;
-            for (tensor.dimensions) |d| {
-                if (d > @as(u64, std.math.maxInt(i64))) {
-                    return err.ParseError.CompatibilityViolation;
-                }
-                if (@as(u64, std.math.maxInt(i64)) / d <= element_product) {
-                    return err.ParseError.CompatibilityViolation;
-                }
-                element_product *= d;
             }
             const nbytes = try arithmetic.computeTensorBytes(tensor.dimensions, tensor.tensor_type);
             const unpadded_end = try arithmetic.checkedAdd(expected_offset, nbytes);

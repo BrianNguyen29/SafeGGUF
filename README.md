@@ -4,7 +4,7 @@
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
-[![Release](https://img.shields.io/badge/release-v0.3.3-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.4-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
 
 A memory-safe, overflow-checked GGUF v3 structural and arithmetic pre-admission validator written in **Zig**, designed to inspect model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes.
 
@@ -25,7 +25,7 @@ SafeGGUF acts as a hardened **pre-admission gateway** in model supply chain pipe
 
 ---
 
-## 🛡️ Architectural Guarantees & Features (v0.3.3)
+## 🛡️ Architectural Guarantees & Features (v0.3.4)
 
 ### 1. Canonical Upstream Type Table Verified by C Oracle
 Supports all **35 active GGML types** matching `ggml 0.23.0` (`e91ded11`):
@@ -141,8 +141,36 @@ python tests/test_oracle_types.py
 # 6. Run true upstream differential test suite (SafeGGUF vs Upstream ggml 0.23.0)
 python tests/differential.py
 
-# 7. Run high-throughput mutation fuzzing (2,000 hostile permutations)
+# 7. Run high-throughput mutation fuzzing (2,000 permutations across both profiles = 4,000 executions)
 python tests/fuzz_mutation.py --iterations 2000
+```
+
+---
+
+## 📦 Library API Usage (Embedding SafeGGUF)
+
+For embedding in inference engines, model gateways, or custom admission controllers, use the high-level `Validator` struct which automatically manages memory quotas (`QuotaAllocator`) and monotonic execution budgets (`WorkBudget`):
+
+```zig
+const std = @import("std");
+const safegguf = @import("safegguf");
+
+pub fn validateGgufFile(allocator: std.mem.Allocator, file: std.fs.File) !void {
+    const stat = try file.stat();
+    var buf_reader = safegguf.reader.BufferedReader.init(file, stat.size);
+    const r = buf_reader.reader();
+
+    // Configure limits (defaults: 128 MB allocation quota, 10M work units, 256 MB scan limit)
+    const limits = safegguf.limits.Limits{};
+    
+    // Choose validation profile: .gguf_spec or .llama_cpp
+    var validator = safegguf.Validator.init(allocator, limits, .llama_cpp);
+    
+    var doc = try validator.validate(r);
+    defer validator.deinitDocument(&doc);
+
+    std.debug.print("Model validated successfully: {d} tensors\n", .{doc.header.tensor_count});
+}
 ```
 
 ---

@@ -2,17 +2,27 @@ const std = @import("std");
 const safegguf = @import("safegguf");
 
 const types = safegguf.types;
-const parser = safegguf.parser;
-const structural = safegguf.structural;
 const reader_mod = safegguf.reader;
 const limits = safegguf.limits;
+const Validator = safegguf.Validator;
 
 const OutputFormat = enum {
     text,
     json,
 };
 
-pub fn main() !void {
+pub fn main() void {
+    run() catch |e| {
+        const rc: u8 = switch (e) {
+            error.OutOfMemory => 70, // EX_SOFTWARE
+            error.IoError => 74, // EX_IOERR
+            else => 70, // EX_SOFTWARE
+        };
+        std.process.exit(rc);
+    };
+}
+
+fn run() anyerror!void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
@@ -57,42 +67,42 @@ pub fn main() !void {
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--endian")) {
-            const val = args.next() orelse {
+            const val_arg = args.next() orelse {
                 try stderr.print("Error: --endian requires 'little' or 'big'\n", .{});
                 std.process.exit(64);
             };
-            if (std.mem.eql(u8, val, "big")) {
+            if (std.mem.eql(u8, val_arg, "big")) {
                 endian = .big;
-            } else if (std.mem.eql(u8, val, "little")) {
+            } else if (std.mem.eql(u8, val_arg, "little")) {
                 endian = .little;
             } else {
-                try stderr.print("Error: invalid endian value '{s}'\n", .{val});
+                try stderr.print("Error: invalid endian value '{s}'\n", .{val_arg});
                 std.process.exit(64);
             }
         } else if (std.mem.eql(u8, arg, "--format")) {
-            const val = args.next() orelse {
+            const val_arg = args.next() orelse {
                 try stderr.print("Error: --format requires 'text' or 'json'\n", .{});
                 std.process.exit(64);
             };
-            if (std.mem.eql(u8, val, "json")) {
+            if (std.mem.eql(u8, val_arg, "json")) {
                 format = .json;
-            } else if (std.mem.eql(u8, val, "text")) {
+            } else if (std.mem.eql(u8, val_arg, "text")) {
                 format = .text;
             } else {
-                try stderr.print("Error: invalid format value '{s}'\n", .{val});
+                try stderr.print("Error: invalid format value '{s}'\n", .{val_arg});
                 std.process.exit(64);
             }
         } else if (std.mem.eql(u8, arg, "--profile")) {
-            const val = args.next() orelse {
+            const val_arg = args.next() orelse {
                 try stderr.print("Error: --profile requires 'gguf-spec' or 'llama-cpp'\n", .{});
                 std.process.exit(64);
             };
-            if (std.mem.eql(u8, val, "gguf-spec")) {
+            if (std.mem.eql(u8, val_arg, "gguf-spec")) {
                 profile = .gguf_spec;
-            } else if (std.mem.eql(u8, val, "llama-cpp")) {
+            } else if (std.mem.eql(u8, val_arg, "llama-cpp")) {
                 profile = .llama_cpp;
             } else {
-                try stderr.print("Error: invalid profile value '{s}'\n", .{val});
+                try stderr.print("Error: invalid profile value '{s}'\n", .{val_arg});
                 std.process.exit(64);
             }
         } else {
@@ -106,7 +116,7 @@ pub fn main() !void {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |e| {
         if (format == .json) {
             try stdout.print(
-                \\{{"status":"REJECT","error":"{s}","error_code":"E_FILE_OPEN_FAILED","message":"Failed to open file"}}
+                \\{{"status":"ERROR","error":"{s}","error_code":"E_FILE_OPEN_FAILED","message":"Failed to open file"}}
                 \\
             , .{@errorName(e)});
         } else {
@@ -119,7 +129,7 @@ pub fn main() !void {
     const stat = file.stat() catch |e| {
         if (format == .json) {
             try stdout.print(
-                \\{{"status":"REJECT","error":"{s}","error_code":"E_FILE_STAT_FAILED","message":"Failed to stat file"}}
+                \\{{"status":"ERROR","error":"{s}","error_code":"E_FILE_STAT_FAILED","message":"Failed to stat file"}}
                 \\
             , .{@errorName(e)});
         } else {
@@ -132,22 +142,20 @@ pub fn main() !void {
     var buffered_reader = reader_mod.BufferedReader.init(file, stat.size);
     const r = buffered_reader.reader();
 
-    // Global quota allocator covering all parser, metadata, and validator memory
-    var quota_alloc = limits.QuotaAllocator.init(gpa.allocator(), limit.max_total_alloc_bytes);
-    const allocator = quota_alloc.allocator();
-
-    var work_budget = limits.WorkBudget.initWithLimits(limit.max_work_units, limit.max_scanned_bytes);
-
     const profile_str = switch (profile) {
         .gguf_spec => "gguf-spec",
         .llama_cpp => "llama-cpp",
     };
 
-    var doc = parser.parseDocument(allocator, r, endian, limit, profile, &work_budget) catch |e| {
+    // High-level Validator automatically manages QuotaAllocator and WorkBudget
+    var val = Validator.init(gpa.allocator(), limit, profile);
+    val.endian = endian;
+
+    var doc = val.validate(r) catch |e| {
         if (e == error.IoError) {
             if (format == .json) {
                 try stdout.print(
-                    \\{{"status":"REJECT","profile":"{s}","error":"IoError","error_code":"E_IoError","stage":"parser","message":"I/O error reading file stream"}}
+                    \\{{"status":"ERROR","profile":"{s}","error":"IoError","error_code":"E_IoError","stage":"parser","message":"I/O error reading file stream"}}
                     \\
                 , .{profile_str});
             } else {
@@ -157,10 +165,10 @@ pub fn main() !void {
         }
 
         if (e == error.OutOfMemory) {
-            if (quota_alloc.isQuotaExceeded()) {
+            if (val.isQuotaExceeded()) {
                 if (format == .json) {
                     try stdout.print(
-                        \\{{"status":"REJECT","profile":"{s}","error":"TotalAllocationLimitExceeded","error_code":"E_TotalAllocationLimitExceeded","stage":"parser","findings":[{{"code":"E_TotalAllocationLimitExceeded","severity":"reject","message":"Configured memory allocation quota exceeded"}}]}}
+                        \\{{"status":"REJECT","profile":"{s}","error":"TotalAllocationLimitExceeded","error_code":"E_TotalAllocationLimitExceeded","stage":"validator","findings":[{{"code":"E_TotalAllocationLimitExceeded","severity":"reject","message":"Configured memory allocation quota exceeded"}}]}}
                         \\
                     , .{profile_str});
                 } else {
@@ -168,14 +176,21 @@ pub fn main() !void {
                 }
                 std.process.exit(2);
             } else {
-                try stderr.print("FATAL: Host system out of memory\n", .{});
+                if (format == .json) {
+                    try stdout.print(
+                        \\{{"status":"ERROR","error":"OutOfMemory","error_code":"E_OUT_OF_MEMORY","message":"Host system out of memory"}}
+                        \\
+                    , .{});
+                } else {
+                    try stderr.print("FATAL: Host system out of memory\n", .{});
+                }
                 std.process.exit(70); // EX_SOFTWARE
             }
         }
 
         if (format == .json) {
             try stdout.print(
-                \\{{"status":"REJECT","profile":"{s}","error":"{s}","error_code":"E_{s}","stage":"parser","findings":[{{"code":"E_{s}","severity":"reject","message":"Parser rejected malformed GGUF stream"}}]}}
+                \\{{"status":"REJECT","profile":"{s}","error":"{s}","error_code":"E_{s}","stage":"validator","findings":[{{"code":"E_{s}","severity":"reject","message":"Validator rejected untrusted GGUF stream"}}]}}
                 \\
             , .{ profile_str, @errorName(e), @errorName(e), @errorName(e) });
         } else {
@@ -183,36 +198,7 @@ pub fn main() !void {
         }
         std.process.exit(2);
     };
-    defer doc.deinit(allocator);
-
-    structural.validateStructural(allocator, doc, profile, &work_budget) catch |e| {
-        if (e == error.OutOfMemory) {
-            if (quota_alloc.isQuotaExceeded()) {
-                if (format == .json) {
-                    try stdout.print(
-                        \\{{"status":"REJECT","profile":"{s}","error":"TotalAllocationLimitExceeded","error_code":"E_TotalAllocationLimitExceeded","stage":"validation","version":{d},"file_size":{d},"findings":[{{"code":"E_TotalAllocationLimitExceeded","severity":"reject","message":"Configured memory allocation quota exceeded"}}]}}
-                        \\
-                    , .{ profile_str, doc.header.version, doc.file_size });
-                } else {
-                    try stderr.print("\nValidation: REJECT [E_TotalAllocationLimitExceeded]\n", .{});
-                }
-                std.process.exit(2);
-            } else {
-                try stderr.print("FATAL: Host system out of memory\n", .{});
-                std.process.exit(70); // EX_SOFTWARE
-            }
-        }
-
-        if (format == .json) {
-            try stdout.print(
-                \\{{"status":"REJECT","profile":"{s}","error":"{s}","error_code":"E_{s}","stage":"validation","version":{d},"file_size":{d},"findings":[{{"code":"E_{s}","severity":"reject","message":"Structural invariant violation"}}]}}
-                \\
-            , .{ profile_str, @errorName(e), @errorName(e), doc.header.version, doc.file_size, @errorName(e) });
-        } else {
-            try stderr.print("\nValidation: REJECT [E_{s}]\n", .{@errorName(e)});
-        }
-        std.process.exit(2);
-    };
+    defer val.deinitDocument(&doc);
 
     if (format == .json) {
         const target_field_name = switch (profile) {
@@ -253,7 +239,7 @@ pub fn main() !void {
 }
 
 fn printUsage(writer: anytype) !void {
-    try writer.print("SafeGGUF v0.3.3 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
+    try writer.print("SafeGGUF v0.3.4 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
     try writer.print("Usage: safegguf inspect <path_to_model.gguf> [options]\n", .{});
     try writer.print("Options:\n", .{});
     try writer.print("  --endian <little|big>           Byte order (default: little)\n", .{});

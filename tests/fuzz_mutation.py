@@ -176,46 +176,51 @@ def main():
             with open(tmp_path, "wb") as f:
                 f.write(mutated_buf)
 
-            profile = profiles[i % len(profiles)]
-            cmd = [SAFEGGUF_BIN, "inspect", tmp_path, "--profile", profile]
+            for profile in profiles:
+                cmd = [SAFEGGUF_BIN, "inspect", tmp_path, "--profile", profile]
 
-            try:
-                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
-            except subprocess.TimeoutExpired:
-                msg = f"Iteration {i}: Timeout (> 5s) on profile {profile} (size={len(mutated_buf)})"
-                failures.append(msg)
-                save_failing_artifact(ARTIFACTS_DIR, args.seed, i, profile, mutated_buf, "TIMEOUT", msg, -1, "Timed out after 5s")
-                break
+                try:
+                    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+                except subprocess.TimeoutExpired:
+                    msg = f"Iteration {i}: Timeout (> 5s) on profile {profile} (size={len(mutated_buf)})"
+                    failures.append(msg)
+                    save_failing_artifact(ARTIFACTS_DIR, args.seed, i, profile, mutated_buf, "TIMEOUT", msg, -1, "Timed out after 5s")
+                    break
 
-            rc = proc.returncode
-            if rc == 0:
-                pass_count += 1
-            elif rc == 2:
-                reject_count += 1
-            elif rc < 0:
-                msg = f"Iteration {i}: CRASH with signal {-rc} on profile {profile} (size={len(mutated_buf)})"
-                failures.append(msg)
-                stderr_text = proc.stderr.decode("utf-8", "replace")[:200]
-                save_failing_artifact(ARTIFACTS_DIR, args.seed, i, profile, mutated_buf, f"CRASH_SIG{-rc}", msg, rc, stderr_text)
-                break
-            else:
-                stderr_text = proc.stderr.decode("utf-8", "replace")[:200]
-                msg = f"Iteration {i}: Unexpected exit code {rc} on profile {profile} (Stderr: {stderr_text[:100]})"
-                failures.append(msg)
-                save_failing_artifact(ARTIFACTS_DIR, args.seed, i, profile, mutated_buf, f"UNEXPECTED_EXIT_{rc}", msg, rc, stderr_text)
+                rc = proc.returncode
+                if rc == 0:
+                    pass_count += 1
+                elif rc == 2:
+                    reject_count += 1
+                elif rc < 0:
+                    msg = f"Iteration {i}: CRASH with signal {-rc} on profile {profile} (size={len(mutated_buf)})"
+                    failures.append(msg)
+                    stderr_text = proc.stderr.decode("utf-8", "replace")[:200]
+                    save_failing_artifact(ARTIFACTS_DIR, args.seed, i, profile, mutated_buf, f"CRASH_SIG{-rc}", msg, rc, stderr_text)
+                    break
+                else:
+                    stderr_text = proc.stderr.decode("utf-8", "replace")[:200]
+                    msg = f"Iteration {i}: Unexpected exit code {rc} on profile {profile} (Stderr: {stderr_text[:100]})"
+                    failures.append(msg)
+                    save_failing_artifact(ARTIFACTS_DIR, args.seed, i, profile, mutated_buf, f"UNEXPECTED_EXIT_{rc}", msg, rc, stderr_text)
+                    break
+
+            if failures:
                 break
 
             if i % 500 == 0 or i == args.iterations:
                 elapsed = time.time() - start_time
-                rate = i / elapsed if elapsed > 0 else 0
-                print(f"  [{i}/{args.iterations}] PASS: {pass_count}, REJECT: {reject_count} ({rate:.1f} exec/s)")
+                total_exec = pass_count + reject_count
+                rate = total_exec / elapsed if elapsed > 0 else 0
+                print(f"  [{i}/{args.iterations}] ({total_exec} executions) PASS: {pass_count}, REJECT: {reject_count} ({rate:.1f} exec/s)")
 
     finally:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
 
     elapsed = time.time() - start_time
-    print(f"\nCompleted {args.iterations} mutation fuzzing iterations in {elapsed:.2f}s")
+    total_exec = pass_count + reject_count
+    print(f"\nCompleted {args.iterations} mutation iterations ({total_exec} executions across both profiles) in {elapsed:.2f}s")
 
     if failures:
         print("\nFUZZING FAILURES DETECTED:")

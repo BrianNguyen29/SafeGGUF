@@ -6,3 +6,5 @@ pub const metadata = @import("gguf/metadata.zig");
 pub const parser = @import("gguf/parser.zig");
 pub const arithmetic = @import("validate/arithmetic.zig");
 pub const structural = @import("validate/structural.zig");
+pub const validator = @import("validate/validator.zig");
+pub const Validator = validator.Validator;

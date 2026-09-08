@@ -219,25 +219,11 @@ pub fn parseDocument(
         errdefer allocator.free(dims);
 
         var d_idx: u32 = 0;
-        var element_product: u64 = 1;
         while (d_idx < n_dims) : (d_idx += 1) {
-            const d = try reader.readInt(u64, cur, endian);
-            if (d == 0) return err.ParseError.ZeroDimensionNotAllowed;
-            if (profile == .llama_cpp) {
-                // Upstream ggml requires dimensions to be signed non-negative int64_t
-                if (d > @as(u64, std.math.maxInt(i64))) {
-                    return err.ParseError.CompatibilityViolation;
-                }
-                // Check upstream ggml condition: total elements is representable (< INT64_MAX)
-                // (INT64_MAX / d <= element_product) => product * d >= INT64_MAX
-                if (@as(u64, std.math.maxInt(i64)) / d <= element_product) {
-                    return err.ParseError.CompatibilityViolation;
-                }
-                element_product *= d;
-            }
-            dims[d_idx] = d;
+            dims[d_idx] = try reader.readInt(u64, cur, endian);
             cur += 8;
         }
+        try arithmetic.validateDimensions(dims, profile);
 
         const tensor_type = try reader.readInt(u32, cur, endian);
         cur += 4;

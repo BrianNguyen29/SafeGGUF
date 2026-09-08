@@ -16,21 +16,23 @@ fn testOneProfileEndian(
     const slice_reader = reader_mod.SliceReader.init(bytes);
     const r = slice_reader.reader();
 
-    var quota_alloc = limits.QuotaAllocator.init(parent_alloc, fuzzer_limits.max_total_alloc_bytes);
-    const alloc = quota_alloc.allocator();
-    var budget = limits.WorkBudget.initWithLimits(fuzzer_limits.max_work_units, fuzzer_limits.max_scanned_bytes);
+    var val = safegguf.Validator.init(parent_alloc, fuzzer_limits, profile);
+    val.endian = endian;
 
-    var doc = parser.parseDocument(alloc, r, endian, fuzzer_limits, profile, &budget) catch return;
-    defer doc.deinit(alloc);
-
-    _ = structural.validateStructural(alloc, doc, profile, &budget) catch return;
+    var doc = val.validate(r) catch return;
+    defer val.deinitDocument(&doc);
 }
 
 pub fn fuzzBuffer(bytes: []const u8) void {
     if (bytes.len < 12) return;
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer {
+        const check = gpa.deinit();
+        if (check == .leak) {
+            @panic("Memory leak detected in fuzz target");
+        }
+    }
 
     const fuzzer_limits = limits.Limits{
         .max_tensors = 1000,

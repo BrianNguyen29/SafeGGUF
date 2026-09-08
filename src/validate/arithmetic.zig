@@ -22,6 +22,27 @@ pub fn checkedAlignUp(value: u64, alignment: u64) !u64 {
     return checkedAdd(value, alignment - remainder);
 }
 
+pub fn validateDimensions(dims: []const u64, profile: types.Profile) err.ParseError!void {
+    if (dims.len > 4) {
+        return err.ParseError.InvalidDimensionCount;
+    }
+    var element_product: u64 = 1;
+    for (dims) |d| {
+        if (d == 0) {
+            return err.ParseError.ZeroDimensionNotAllowed;
+        }
+        if (profile == .llama_cpp) {
+            if (d > @as(u64, std.math.maxInt(i64))) {
+                return err.ParseError.CompatibilityViolation;
+            }
+            if (@as(u64, std.math.maxInt(i64)) / d <= element_product) {
+                return err.ParseError.CompatibilityViolation;
+            }
+            element_product *= d;
+        }
+    }
+}
+
 pub fn checkedProduct(dims: []const u64) !u64 {
     if (dims.len == 0) return error.InvalidDimensionCount;
     var product: u64 = 1;
