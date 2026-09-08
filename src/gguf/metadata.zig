@@ -105,8 +105,11 @@ pub fn skipMetadataValue(
     val_type: types.MetadataType,
     endian: std.builtin.Endian,
     limit: limits.Limits,
+    profile: types.Profile,
+    work_budget: *limits.WorkBudget,
     depth: u32,
 ) err.ParseError!MetadataValue {
+    try work_budget.consume(1);
     var cur = offset_ptr.*;
     switch (val_type) {
         .uint8 => {
@@ -197,6 +200,11 @@ pub fn skipMetadataValue(
             if (raw_elem_type > 12) return err.ParseError.InvalidMetadataType;
             const elem_type: types.MetadataType = @enumFromInt(raw_elem_type);
 
+            // llama.cpp loader does not support nested arrays: rejects if element is array
+            if (profile == .llama_cpp and elem_type == .array) {
+                return err.ParseError.NestedArrayNotSupported;
+            }
+
             const count = try reader.readInt(u64, cur, endian);
             cur += 8;
             if (count > limit.max_array_elements) return err.ParseError.ResourceLimitExceeded;
@@ -205,6 +213,8 @@ pub fn skipMetadataValue(
             if (elem_type == .string or elem_type == .array) {
                 if (count > limit.max_variable_array_elements) return err.ParseError.ResourceLimitExceeded;
             }
+
+            try work_budget.consume(count);
 
             // Bool arrays: scan and validate that all bytes are <= 1 (0 or 1)
             if (elem_type == .bool_) {
@@ -246,7 +256,7 @@ pub fn skipMetadataValue(
 
             var i: u64 = 0;
             while (i < count) : (i += 1) {
-                _ = try skipMetadataValue(reader, &cur, elem_type, endian, limit, depth + 1);
+                _ = try skipMetadataValue(reader, &cur, elem_type, endian, limit, profile, work_budget, depth + 1);
             }
             offset_ptr.* = cur;
             return .{ .array = .{ .element_type = elem_type, .count = count } };

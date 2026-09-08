@@ -41,9 +41,10 @@ pub fn parseDocument(
     reader: Reader,
     endian: std.builtin.Endian,
     limit: limits.Limits,
+    profile: types.Profile,
+    work_budget: *limits.WorkBudget,
 ) err.ParseError!Document {
     var cur: u64 = 0;
-    var total_allocated_bytes: u64 = 0;
 
     // 1. Magic
     var magic_buf: [4]u8 = undefined;
@@ -56,8 +57,14 @@ pub fn parseDocument(
     // 2. Version
     const version = try reader.readInt(u32, cur, endian);
     cur += 4;
-    if (version != types.VERSION and version != 2) {
-        return err.ParseError.UnsupportedVersion;
+    if (profile == .gguf_spec) {
+        if (version != types.VERSION) {
+            return err.ParseError.UnsupportedVersion;
+        }
+    } else {
+        if (version != types.VERSION and version != 2) {
+            return err.ParseError.UnsupportedVersion;
+        }
     }
 
     // 3. Counts
@@ -94,15 +101,14 @@ pub fn parseDocument(
     // 4. Parse Metadata
     var m_idx: u64 = 0;
     while (m_idx < metadata_kv_count) : (m_idx += 1) {
+        try work_budget.consume(1);
+
         const key_len = try reader.readInt(u64, cur, endian);
         cur += 8;
         if (key_len > limit.max_string_bytes) return err.ParseError.ResourceLimitExceeded;
 
         const key_end = std.math.add(u64, cur, key_len) catch return err.ParseError.ArithmeticOverflow;
         if (key_end > reader.size) return err.ParseError.UnexpectedEof;
-
-        total_allocated_bytes = std.math.add(u64, total_allocated_bytes, key_len) catch return err.ParseError.ArithmeticOverflow;
-        if (total_allocated_bytes > limit.max_total_alloc_bytes) return err.ParseError.TotalAllocationLimitExceeded;
 
         const key_buf = allocator.alloc(u8, key_len) catch return err.ParseError.OutOfMemory;
         var key_registered = false;
@@ -139,7 +145,7 @@ pub fn parseDocument(
             if (align_val == 0) return err.ParseError.InvalidAlignment;
             if (align_val % 8 != 0) return err.ParseError.InvalidAlignment;
 
-            if (limit.profile == .llama_cpp) {
+            if (profile == .llama_cpp) {
                 // llama.cpp requires power-of-two alignment
                 if ((align_val & (align_val - 1)) != 0) {
                     return err.ParseError.CompatibilityViolation;
@@ -148,7 +154,7 @@ pub fn parseDocument(
 
             alignment = align_val;
         } else {
-            _ = try metadata_mod.skipMetadataValue(reader, &cur, val_type, endian, limit, 0);
+            _ = try metadata_mod.skipMetadataValue(reader, &cur, val_type, endian, limit, profile, work_budget, 0);
         }
     }
 
@@ -158,10 +164,6 @@ pub fn parseDocument(
     }
 
     // 5. Parse Tensor Descriptors
-    const tensors_alloc_size = std.math.mul(u64, tensor_count, @sizeOf(TensorInfo)) catch return err.ParseError.ArithmeticOverflow;
-    total_allocated_bytes = std.math.add(u64, total_allocated_bytes, tensors_alloc_size) catch return err.ParseError.ArithmeticOverflow;
-    if (total_allocated_bytes > limit.max_total_alloc_bytes) return err.ParseError.TotalAllocationLimitExceeded;
-
     const tensors = allocator.alloc(TensorInfo, tensor_count) catch return err.ParseError.OutOfMemory;
 
     var t_idx: u64 = 0;
@@ -174,15 +176,20 @@ pub fn parseDocument(
     }
 
     while (t_idx < tensor_count) {
+        try work_budget.consume(1);
+
         const name_len = try reader.readInt(u64, cur, endian);
         cur += 8;
-        if (name_len == 0 or name_len > limit.max_tensor_name_bytes) return err.ParseError.InvalidTensorName;
+
+        if (profile == .llama_cpp and name_len >= 64) {
+            return err.ParseError.TensorNameTooLong;
+        }
+        if (name_len == 0 or name_len > limit.max_tensor_name_bytes) {
+            return err.ParseError.InvalidTensorName;
+        }
 
         const name_end = std.math.add(u64, cur, name_len) catch return err.ParseError.ArithmeticOverflow;
         if (name_end > reader.size) return err.ParseError.UnexpectedEof;
-
-        total_allocated_bytes = std.math.add(u64, total_allocated_bytes, name_len) catch return err.ParseError.ArithmeticOverflow;
-        if (total_allocated_bytes > limit.max_total_alloc_bytes) return err.ParseError.TotalAllocationLimitExceeded;
 
         const name_buf = allocator.alloc(u8, name_len) catch return err.ParseError.OutOfMemory;
         errdefer allocator.free(name_buf);
@@ -199,16 +206,14 @@ pub fn parseDocument(
             return err.ParseError.InvalidDimensionCount;
         }
 
-        const dims_alloc_size = std.math.mul(u64, n_dims, @sizeOf(u64)) catch return err.ParseError.ArithmeticOverflow;
-        total_allocated_bytes = std.math.add(u64, total_allocated_bytes, dims_alloc_size) catch return err.ParseError.ArithmeticOverflow;
-        if (total_allocated_bytes > limit.max_total_alloc_bytes) return err.ParseError.TotalAllocationLimitExceeded;
-
         const dims = allocator.alloc(u64, n_dims) catch return err.ParseError.OutOfMemory;
         errdefer allocator.free(dims);
 
         var d_idx: u32 = 0;
         while (d_idx < n_dims) : (d_idx += 1) {
-            dims[d_idx] = try reader.readInt(u64, cur, endian);
+            const d = try reader.readInt(u64, cur, endian);
+            if (d == 0) return err.ParseError.ZeroDimensionNotAllowed;
+            dims[d_idx] = d;
             cur += 8;
         }
 

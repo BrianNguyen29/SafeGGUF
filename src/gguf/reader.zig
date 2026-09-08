@@ -86,3 +86,63 @@ pub const FileReader = struct {
         if (n < dest.len) return err.ParseError.UnexpectedEof;
     }
 };
+
+/// BufferedReader maintains a 64KB sliding cache window to eliminate
+/// individual pread syscalls during descriptor and metadata decoding.
+pub const BufferedReader = struct {
+    file: std.fs.File,
+    file_size: u64,
+    window_start: u64 = 0,
+    window_len: usize = 0,
+    window_buf: [65536]u8 = undefined,
+
+    pub fn init(file: std.fs.File, file_size: u64) BufferedReader {
+        return .{
+            .file = file,
+            .file_size = file_size,
+            .window_start = 0,
+            .window_len = 0,
+        };
+    }
+
+    pub fn reader(self: *BufferedReader) Reader {
+        return Reader{
+            .ptr = @ptrCast(self),
+            .vtable = &vtable,
+            .size = self.file_size,
+        };
+    }
+
+    const vtable = Reader.VTable{
+        .readBytes = readBytesImpl,
+    };
+
+    fn readBytesImpl(ctx: *anyopaque, offset: u64, dest: []u8) err.ParseError!void {
+        const self: *BufferedReader = @ptrCast(@alignCast(ctx));
+
+        // 1. Cache hit inside current sliding window
+        if (self.window_len > 0 and offset >= self.window_start) {
+            const rel_offset = offset - self.window_start;
+            if (rel_offset + dest.len <= self.window_len) {
+                @memcpy(dest, self.window_buf[rel_offset .. rel_offset + dest.len]);
+                return;
+            }
+        }
+
+        // 2. Large read bypassing cache
+        if (dest.len >= self.window_buf.len) {
+            const n = self.file.preadAll(dest, offset) catch return err.ParseError.IoError;
+            if (n < dest.len) return err.ParseError.UnexpectedEof;
+            return;
+        }
+
+        // 3. Cache miss: slide window to offset and prefetch 64KB
+        self.window_start = offset;
+        const to_read = @min(@as(u64, self.window_buf.len), self.file_size - offset);
+        const n = self.file.preadAll(self.window_buf[0..to_read], offset) catch return err.ParseError.IoError;
+        self.window_len = n;
+
+        if (dest.len > self.window_len) return err.ParseError.UnexpectedEof;
+        @memcpy(dest, self.window_buf[0..dest.len]);
+    }
+};

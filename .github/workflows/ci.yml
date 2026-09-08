@@ -37,26 +37,6 @@ jobs:
       - name: Generate Fixtures
         run: python tests/generate_fixtures.py
 
-      - name: Validate CLI Positive Tests
-        run: |
-          ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf
-          ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf --format json
-          ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf --profile gguf-spec
-          ./zig-out/bin/safegguf inspect tests/fixtures/valid.gguf --profile llama-cpp
+      - name: Run End-to-End CLI Integration Tests (Exact Exit Codes & Invariants)
+        run: python tests/cli_test.py
 
-      - name: Validate CLI Negative Tests (Must Reject)
-        run: |
-          # False-PASS Regression: NVFP4 truncated file must reject!
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/type40_truncated_false_pass.gguf
-          
-          # Other attack vectors & malformed inputs
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/overflow.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/out_of_bounds.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/overlap.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/duplicate_tensor.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/duplicate_key.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/invalid_key.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/hyphen_key.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/invalid_bool.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/removed_type_slot31.gguf
-          ! ./zig-out/bin/safegguf inspect tests/fixtures/alloc_dos_tensor.gguf

@@ -264,6 +264,99 @@ def build_removed_slot():
     with open(os.path.join(DIR, "removed_type_slot31.gguf"), "wb") as f:
         f.write(b)
 
+def build_gap():
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 2)
+    b += struct.pack("<Q", 0)
+
+    # Tensor 0: 32 elements F32 = 128 bytes, offset 0
+    t0 = b"t0"
+    b += struct.pack("<Q", len(t0))
+    b += t0
+    b += struct.pack("<I", 1)
+    b += struct.pack("<Q", 32)
+    b += struct.pack("<I", 0)
+    b += struct.pack("<Q", 0)
+
+    # Tensor 1: 32 elements F32 = 128 bytes, offset 256 (gap of 128 bytes from 128 to 256)
+    t1 = b"t1"
+    b += struct.pack("<Q", len(t1))
+    b += t1
+    b += struct.pack("<I", 1)
+    b += struct.pack("<Q", 32)
+    b += struct.pack("<I", 0)
+    b += struct.pack("<Q", 256)
+
+    data_base = align_up(len(b), 32)
+    b += b"\x00" * (data_base - len(b))
+    b += b"\x00" * 512
+
+    with open(os.path.join(DIR, "gap.gguf"), "wb") as f:
+        f.write(b)
+
+def build_nested_array():
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 0)
+    b += struct.pack("<Q", 1)
+
+    k = b"general.nested_arr"
+    b += struct.pack("<Q", len(k))
+    b += k
+    b += struct.pack("<I", 9) # ARRAY
+    b += struct.pack("<I", 9) # inner type ARRAY
+    b += struct.pack("<Q", 1) # 1 outer element
+    b += struct.pack("<I", 4) # inner inner type INT32
+    b += struct.pack("<Q", 1) # 1 inner element
+    b += struct.pack("<i", 42)
+
+    with open(os.path.join(DIR, "nested_array.gguf"), "wb") as f:
+        f.write(b)
+
+def build_name_64():
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 1)
+    b += struct.pack("<Q", 0)
+
+    # 64-byte name: exact limit in spec (<=64), but >= 64 in llama.cpp
+    t_name = b"a" * 64
+    b += struct.pack("<Q", len(t_name))
+    b += t_name
+    b += struct.pack("<I", 1)
+    b += struct.pack("<Q", 32)
+    b += struct.pack("<I", 0)
+    b += struct.pack("<Q", 0)
+
+    data_base = align_up(len(b), 32)
+    b += b"\x00" * (data_base - len(b))
+    b += b"\x00" * 128
+
+    with open(os.path.join(DIR, "name_64.gguf"), "wb") as f:
+        f.write(b)
+
+def build_v2():
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 2) # Version 2
+    b += struct.pack("<Q", 0)
+    b += struct.pack("<Q", 1)
+
+    k = b"general.architecture"
+    b += struct.pack("<Q", len(k))
+    b += k
+    b += struct.pack("<I", 8)
+    v = b"llama"
+    b += struct.pack("<Q", len(v))
+    b += v
+
+    with open(os.path.join(DIR, "version_2.gguf"), "wb") as f:
+        f.write(b)
+
 if __name__ == "__main__":
     build_valid()
     build_type40_false_pass()
@@ -277,4 +370,8 @@ if __name__ == "__main__":
     build_alloc_dos()
     build_invalid_bool()
     build_removed_slot()
+    build_gap()
+    build_nested_array()
+    build_name_64()
+    build_v2()
     print("All fixtures generated successfully.")

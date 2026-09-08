@@ -11,6 +11,17 @@ pub const GGML_PINNED_COMMIT = "e91ded11bdcd78c42f9c8d3978ff6686eb4c1226";
 pub const GGML_TYPE_COUNT: u32 = 43;
 pub const ACTIVE_TYPE_COUNT: u32 = 35;
 
+pub const Profile = enum {
+    gguf_spec, // Strict GGUF v3 specification profile
+    llama_cpp, // Upstream ggml / llama.cpp 0.23.0 loader compatibility profile
+};
+
+pub const CompatibilityTarget = struct {
+    project: []const u8 = "ggml",
+    version: []const u8 = GGML_PINNED_VERSION,
+    commit: []const u8 = GGML_PINNED_COMMIT,
+};
+
 pub const MetadataType = enum(u32) {
     uint8 = 0,
     int8 = 1,

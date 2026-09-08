@@ -1,5 +1,6 @@
 const std = @import("std");
 const err = @import("../gguf/error.zig");
+const types = @import("../gguf/types.zig");
 const parser = @import("../gguf/parser.zig");
 const arithmetic = @import("arithmetic.zig");
 
@@ -14,7 +15,11 @@ fn compareTensorRanges(ctx: void, a: TensorRange, b: TensorRange) bool {
     return a.start < b.start;
 }
 
-pub fn validateStructural(allocator: std.mem.Allocator, doc: parser.Document) err.ParseError!void {
+pub fn validateStructural(
+    allocator: std.mem.Allocator,
+    doc: parser.Document,
+    profile: types.Profile,
+) err.ParseError!void {
     if (doc.tensor_data_base % doc.alignment != 0) {
         return err.ParseError.InvalidAlignment;
     }
@@ -29,6 +34,18 @@ pub fn validateStructural(allocator: std.mem.Allocator, doc: parser.Document) er
             return err.ParseError.DuplicateTensorName;
         }
         seen_names.put(tensor.name, {}) catch return err.ParseError.OutOfMemory;
+    }
+
+    // Under llama.cpp profile: tensors must be strictly contiguous in descriptor order
+    if (profile == .llama_cpp) {
+        var expected_offset: u64 = 0;
+        for (doc.tensors) |tensor| {
+            if (tensor.offset != expected_offset) {
+                return err.ParseError.NonContiguousTensorOffset;
+            }
+            const nbytes = try arithmetic.computeTensorBytes(tensor.dimensions, tensor.tensor_type);
+            expected_offset = try arithmetic.checkedAlignUp(expected_offset + nbytes, doc.alignment);
+        }
     }
 
     const ranges = allocator.alloc(TensorRange, doc.tensors.len) catch return err.ParseError.OutOfMemory;
