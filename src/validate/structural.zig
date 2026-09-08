@@ -22,8 +22,14 @@ pub fn validateStructural(
     profile: types.Profile,
     work_budget: *limits.WorkBudget,
 ) err.ParseError!void {
-    if (doc.tensor_data_base % doc.alignment != 0) {
+    if (doc.alignment == 0 or doc.alignment % 8 != 0) {
         return err.ParseError.InvalidAlignment;
+    }
+    if (profile == .llama_cpp and !std.math.isPowerOfTwo(doc.alignment)) {
+        return err.ParseError.InvalidAlignment;
+    }
+    if (doc.tensor_data_base % doc.alignment != 0) {
+        return err.ParseError.MisalignedTensor;
     }
 
     if (doc.tensors.len == 0) return;

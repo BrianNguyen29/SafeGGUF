@@ -102,6 +102,8 @@ def main():
                 errors.append(f"Missing valid type in SafeGGUF: ID {t_id} ({up_info['name']}) with blck={up_info['block_size']}, size={up_info['type_size']}")
             else:
                 safe_info = safegguf_traits[t_id]
+                if safe_info["name"].lower() != up_info["name"].lower():
+                    errors.append(f"Type name mismatch for ID {t_id}: upstream={up_info['name']}, safegguf={safe_info['name']}")
                 if safe_info["block_size"] != up_info["block_size"]:
                     errors.append(f"Block size mismatch for ID {t_id} ({up_info['name']}): upstream={up_info['block_size']}, safegguf={safe_info['block_size']}")
                 if safe_info["type_size"] != up_info["type_size"]:

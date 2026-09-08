@@ -60,6 +60,11 @@ def test_positive():
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
+    # 9. Big-endian v3 under gguf-spec profile with --endian big
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "big_endian_v3.gguf"), "--endian", "big", "--profile", "gguf-spec")
+    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout
+
     # 8. Scalar tensor (n_dims == 0) under both profiles
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "scalar.gguf"), "--profile", "llama-cpp")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
@@ -83,6 +88,11 @@ def test_negative_validation():
         (["inspect", os.path.join(FIXTURES, "llama_cpp_overflow.gguf"), "--profile", "llama-cpp"], "E_ArithmeticOverflow"),
         # P0 regression: truncated final tensor padding under llama-cpp (HIGH-01)
         (["inspect", os.path.join(FIXTURES, "truncated_final_padding.gguf"), "--profile", "llama-cpp"], "E_TensorOutOfBounds"),
+        # Compatibility violation: non-native big-endian under llama-cpp
+        (["inspect", os.path.join(FIXTURES, "big_endian_v3.gguf"), "--endian", "big", "--profile", "llama-cpp"], "E_CompatibilityViolation"),
+        # Invalid alignment zero-padding
+        (["inspect", os.path.join(FIXTURES, "nonzero_header_padding.gguf"), "--profile", "gguf-spec"], "E_InvalidAlignmentPadding"),
+        (["inspect", os.path.join(FIXTURES, "nonzero_header_padding.gguf"), "--profile", "llama-cpp"], "E_InvalidAlignmentPadding"),
         # NVFP4 truncated file (regression)
         (["inspect", os.path.join(FIXTURES, "type40_truncated_false_pass.gguf")], "E_TensorOutOfBounds"),
         # Non-contiguous offset under llama-cpp
@@ -172,7 +182,7 @@ def test_help():
         rc, stdout, stderr = run_cli(flag)
         assert rc == 0, f"Expected returncode 0 for {flag}, got {rc}"
         output = stdout + stderr
-        assert "SafeGGUF v0.3.1" in output, f"Version missing in help: {output}"
+        assert "SafeGGUF v0.3.2" in output, f"Version missing in help: {output}"
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
         assert "default: little" in output, f"Default little endian missing in help: {output}"
         assert "--format <text|json>" in output

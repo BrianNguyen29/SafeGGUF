@@ -928,3 +928,80 @@ test "parser: reject empty tensor name" {
     const result = parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b);
     try std.testing.expectError(error.InvalidTensorName, result);
 }
+
+test "structural: public API rejects alignment == 0 without panic" {
+    var doc = parser.Document{
+        .header = .{ .version = 3, .tensor_count = 0, .metadata_kv_count = 0 },
+        .alignment = 0, // Malformed alignment passed directly via public API!
+        .tensor_data_base = 32,
+        .tensors = &[_]parser.TensorInfo{},
+        .file_size = 256,
+    };
+
+    var budget = limits.WorkBudget.init(1000);
+    try std.testing.expectError(error.InvalidAlignment, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &budget));
+
+    // alignment not multiple of 8
+    doc.alignment = 7;
+    try std.testing.expectError(error.InvalidAlignment, structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &budget));
+
+    // alignment not power of two under llama_cpp profile
+    doc.alignment = 24;
+    try std.testing.expectError(error.InvalidAlignment, structural.validateStructural(std.testing.allocator, doc, .llama_cpp, &budget));
+}
+
+test "parser: reject non-zero alignment padding bytes" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little); // 1 tensor
+    try writer.writeInt(u64, 0, .little); // 0 metadata
+
+    const name = "t0";
+    try writer.writeInt(u64, name.len, .little);
+    try writer.writeAll(name);
+    try writer.writeInt(u32, 1, .little);
+    try writer.writeInt(u64, 8, .little);
+    try writer.writeInt(u32, 0, .little); // F32
+    try writer.writeInt(u64, 0, .little); // offset 0
+
+    // Current length is 4 + 4 + 8 + 8 + (8 + 2 + 4 + 8 + 4 + 8) = 24 + 34 = 58.
+    // Alignment is 32 -> tensor_data_base is 64.
+    // Padding bytes are 58..64 (6 bytes).
+    // Write non-zero bytes in padding:
+    try writer.writeAll(&[_]u8{ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF });
+    try writer.writeAll(&[_]u8{0} ** 32); // tensor data
+
+    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    const r = slice_reader.reader();
+
+    var b = limits.WorkBudget.init(1000);
+    const result = parser.parseDocument(std.testing.allocator, r, .little, limits.Limits{}, .gguf_spec, &b);
+    try std.testing.expectError(error.InvalidAlignmentPadding, result);
+}
+
+test "parser: llama_cpp profile rejects non-native endianness" {
+    // Construct valid big-endian buffer
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .big);
+    try writer.writeInt(u64, 0, .big);
+    try writer.writeInt(u64, 0, .big);
+
+    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    const r = slice_reader.reader();
+
+    // In a little-endian host, big-endian under llama-cpp must return CompatibilityViolation
+    const host_endian = @import("builtin").cpu.arch.endian();
+    const opposite_endian: std.builtin.Endian = if (host_endian == .little) .big else .little;
+
+    var b = limits.WorkBudget.init(1000);
+    const result = parser.parseDocument(std.testing.allocator, r, opposite_endian, limits.Limits{}, .llama_cpp, &b);
+    try std.testing.expectError(error.CompatibilityViolation, result);
+}

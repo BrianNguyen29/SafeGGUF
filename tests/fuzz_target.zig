@@ -18,13 +18,12 @@ fn testOneProfileEndian(
 
     var quota_alloc = limits.QuotaAllocator.init(parent_alloc, fuzzer_limits.max_total_alloc_bytes);
     const alloc = quota_alloc.allocator();
-    var budget = limits.WorkBudget.init(fuzzer_limits.max_work_units);
+    var budget = limits.WorkBudget.initWithLimits(fuzzer_limits.max_work_units, fuzzer_limits.max_scanned_bytes);
 
     var doc = parser.parseDocument(alloc, r, endian, fuzzer_limits, profile, &budget) catch return;
     defer doc.deinit(alloc);
 
-    var val_budget = limits.WorkBudget.init(fuzzer_limits.max_work_units);
-    _ = structural.validateStructural(alloc, doc, profile, &val_budget) catch return;
+    _ = structural.validateStructural(alloc, doc, profile, &budget) catch return;
 }
 
 pub fn fuzzBuffer(bytes: []const u8) void {

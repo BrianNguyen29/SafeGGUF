@@ -16,7 +16,7 @@ SafeGGUF enforces pre-admission defense-in-depth before untrusted model files ar
 1. **Zero Unchecked Panics:** All arithmetic operations on dimensions, offsets, alignments, and sizes use checked arithmetic (`checkedAdd`, `checkedMul`, `checkedAlignUp`). Any integer overflow immediately terminates validation cleanly with exit code `2` (`REJECT`).
 2. **Resource Exhaustion Resistance (DoS Prevention):**
    - **Memory Quota:** Total memory allocated for metadata structures is capped at 128 MB via `QuotaAllocator`. Exceeding this quota fails closed with `E_TotalAllocationLimitExceeded` (exit code `2`).
-   - **Work Budget:** Parser and structural validator operations are tracked via monotonic work units (maximum 1,000,000 units).
+   - **Work Budget:** Parser and structural validator operations are tracked via monotonic work units (maximum 10,000,000 units).
    - **Byte Scanning Budget:** Streaming string validation, UTF-8 checks, and boolean scans are tracked against a 256 MB scanning limit via `WorkBudget.consumeBytes()`.
 3. **Fail-Closed Exit Taxonomy:**
    - `0`: Valid GGUF file meeting the requested profile constraints.
@@ -34,7 +34,7 @@ SafeGGUF enforces pre-admission defense-in-depth before untrusted model files ar
 If you discover a potential security vulnerability, memory safety bug, integer overflow bypass, or DoS vector in SafeGGUF:
 
 1. **Do not open a public GitHub issue.**
-2. Report the vulnerability privately via GitHub Security Advisories or by emailing the project maintainer at `duong.nguyen@example.com` (or the repository contact).
+2. Report the vulnerability privately via [GitHub Security Advisories](https://github.com/BrianNguyen29/SafeGGUF/security/advisories/new) or contact the project maintainer via GitHub.
 3. Include:
    - Detailed description of the vulnerability.
    - Minimal proof-of-concept (PoC) or `.gguf` fixture reproducing the issue.

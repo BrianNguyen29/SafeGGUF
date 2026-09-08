@@ -11,3 +11,5 @@ tests/corpus/*.gguf
 tests/oracle/ggml_oracle
 
 
+
+tests/fuzz-artifacts/

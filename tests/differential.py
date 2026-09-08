@@ -17,6 +17,10 @@ FIXTURES_DIR = os.path.join(SCRIPT_DIR, "fixtures")
 # Explicit, full expected matrix for all fixtures across:
 # (SafeGGUF llama-cpp, Upstream --load-data, Upstream --no-load, Description/Rationale)
 EXPECTED_MATRIX = {
+    "big_endian_v3.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Upstream ggml rejects non-native endianness; SafeGGUF enforces native under llama-cpp",
+    ),
     "alloc_dos_tensor.gguf": (
         "REJECT", "REJECT", "REJECT",
         "Allocation DoS tensor exceeds bounds/limits",
@@ -60,6 +64,10 @@ EXPECTED_MATRIX = {
     "nested_array.gguf": (
         "REJECT", "REJECT", "REJECT",
         "Nested metadata arrays rejected under llama-cpp profile",
+    ),
+    "nonzero_header_padding.gguf": (
+        "REJECT", "PASS", "PASS",
+        "SafeGGUF strictly enforces GGUF zero-padding requirement; upstream ggml skips padding unverified.",
     ),
     "out_of_bounds.gguf": (
         "REJECT", "REJECT", "REJECT",
@@ -121,7 +129,10 @@ def assert_oracle_identity():
 
 def run_safegguf(path: str):
     cmd = [SAFEGGUF_BIN, "inspect", path, "--profile", "llama-cpp"]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return "TIMEOUT", -1, "Execution timed out after 10s" 
 
     # Strict POSIX exit taxonomy
     if proc.returncode == 0:
@@ -137,12 +148,15 @@ def run_safegguf(path: str):
 
 def run_oracle(path: str, mode: str):
     cmd = [ORACLE_BIN, mode, path]
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return "TIMEOUT", -1
 
-    # Strict oracle exit taxonomy
+    # Strict oracle exit taxonomy: only exit 2 represents validation failure. Exit 1 is usage/IO error.
     if proc.returncode == 0:
         verdict = "PASS"
-    elif proc.returncode == 2 or proc.returncode == 1:
+    elif proc.returncode == 2:
         verdict = "REJECT"
     elif proc.returncode < 0:
         verdict = f"CRASH(SIG{-proc.returncode})"

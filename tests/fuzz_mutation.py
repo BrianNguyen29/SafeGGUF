@@ -18,6 +18,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 SAFEGGUF_BIN = os.path.join(REPO_ROOT, "zig-out", "bin", "safegguf")
 CORPUS_DIR = os.path.join(SCRIPT_DIR, "corpus")
+ARTIFACTS_DIR = os.path.join(SCRIPT_DIR, "fuzz-artifacts")
 
 INTERESTING_INTEGERS = [
     0, 1, 2, 3, 4, 7, 8, 15, 16, 31, 32, 63, 64, 65, 127, 128, 255, 256,
@@ -122,10 +123,32 @@ def main():
             profile = profiles[i % len(profiles)]
             cmd = [SAFEGGUF_BIN, "inspect", tmp_path, "--profile", profile]
 
+            def save_failing_artifact(kind: str, detail: str):
+                os.makedirs(ARTIFACTS_DIR, exist_ok=True)
+                base = f"crash-seed{args.seed}-iter{i}"
+                bin_path = os.path.join(ARTIFACTS_DIR, f"{base}.gguf")
+                meta_path = os.path.join(ARTIFACTS_DIR, f"{base}.json")
+                with open(bin_path, "wb") as bf:
+                    bf.write(mutated_buf)
+                meta = {
+                    "kind": kind,
+                    "detail": detail,
+                    "seed": args.seed,
+                    "iteration": i,
+                    "profile": profile,
+                    "payload_size": len(mutated_buf),
+                    "file": f"{base}.gguf"
+                }
+                with open(meta_path, "w") as mf:
+                    json.dump(meta, mf, indent=2)
+                print(f"  --> Preserved failing artifact: {bin_path}")
+
             try:
                 proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             except subprocess.TimeoutExpired:
-                failures.append(f"Iteration {i}: Timeout (> 5s) on profile {profile} (size={len(mutated_buf)})")
+                msg = f"Iteration {i}: Timeout (> 5s) on profile {profile} (size={len(mutated_buf)})"
+                failures.append(msg)
+                save_failing_artifact("TIMEOUT", msg)
                 break
 
             rc = proc.returncode
@@ -134,10 +157,14 @@ def main():
             elif rc == 2:
                 reject_count += 1
             elif rc < 0:
-                failures.append(f"Iteration {i}: CRASH with signal {-rc} on profile {profile} (size={len(mutated_buf)})")
+                msg = f"Iteration {i}: CRASH with signal {-rc} on profile {profile} (size={len(mutated_buf)})"
+                failures.append(msg)
+                save_failing_artifact(f"CRASH_SIG{-rc}", msg)
                 break
             else:
-                failures.append(f"Iteration {i}: Unexpected exit code {rc} on profile {profile} (Stderr: {proc.stderr.decode('utf-8', 'replace')[:100]})")
+                msg = f"Iteration {i}: Unexpected exit code {rc} on profile {profile} (Stderr: {proc.stderr.decode('utf-8', 'replace')[:100]})"
+                failures.append(msg)
+                save_failing_artifact(f"UNEXPECTED_EXIT_{rc}", msg)
                 break
 
             if i % 500 == 0 or i == args.iterations:

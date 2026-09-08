@@ -18,6 +18,7 @@ pub const ParseError = error{
     BlockDivisibilityViolation,
     InvalidAlignment,
     MisalignedTensor,
+    InvalidAlignmentPadding,
     TensorOutOfBounds,
     TensorOverlap,
     NonContiguousTensorOffset,

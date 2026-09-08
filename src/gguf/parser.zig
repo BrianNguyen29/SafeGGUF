@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const err = @import("error.zig");
 const types = @import("types.zig");
 const limits = @import("limits.zig");
@@ -44,6 +45,12 @@ pub fn parseDocument(
     profile: types.Profile,
     work_budget: *limits.WorkBudget,
 ) err.ParseError!Document {
+    // Under llama_cpp profile: upstream ggml 0.23.0 only supports host native endianness.
+    // Models with non-native endianness are actively rejected by upstream ggml with endian mismatch.
+    if (profile == .llama_cpp and endian != builtin.cpu.arch.endian()) {
+        return err.ParseError.CompatibilityViolation;
+    }
+
     var cur: u64 = 0;
 
     // 1. Magic
@@ -234,8 +241,26 @@ pub fn parseDocument(
         t_idx += 1;
     }
 
-    // 6. Compute Tensor Data Base
+    // 6. Compute Tensor Data Base and validate zero alignment padding
     const tensor_data_base = try arithmetic.checkedAlignUp(cur, alignment);
+    const check_end = @min(tensor_data_base, reader.size);
+    if (check_end > cur) {
+        const padding_len = check_end - cur;
+        try work_budget.consumeBytes(padding_len);
+        var pad_buf: [256]u8 = undefined;
+        var pad_cur = cur;
+        while (pad_cur < check_end) {
+            const chunk_len = @min(check_end - pad_cur, pad_buf.len);
+            const chunk = pad_buf[0..chunk_len];
+            try reader.readBytes(pad_cur, chunk);
+            for (chunk) |b| {
+                if (b != 0) {
+                    return err.ParseError.InvalidAlignmentPadding;
+                }
+            }
+            pad_cur += chunk_len;
+        }
+    }
 
     return Document{
         .header = header,
