@@ -64,7 +64,11 @@ fn run() anyerror!void {
     var endian: std.builtin.Endian = .little;
     var format: OutputFormat = .text;
     var profile: types.Profile = .gguf_spec;
-    const limit = limits.Limits{};
+    var limit = limits.Limits{};
+
+    // The variable-array cap is a sub-limit: max_array_elements is checked
+    // first, so an override above it could never take effect (contradictory).
+    const max_variable_array_elements_ceiling = limit.max_array_elements;
 
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--endian")) {
@@ -106,6 +110,23 @@ fn run() anyerror!void {
                 try stderr.print("Error: invalid profile value '{s}'\n", .{val_arg});
                 std.process.exit(64);
             }
+        } else if (std.mem.eql(u8, arg, "--max-variable-array-elements")) {
+            const val_arg = args.next() orelse {
+                try stderr.print("Error: --max-variable-array-elements requires a positive integer N\n", .{});
+                std.process.exit(64);
+            };
+            const parsed = std.fmt.parseInt(u64, val_arg, 10) catch {
+                try stderr.print("Error: invalid --max-variable-array-elements value '{s}' (expected an integer in 1..{d})\n", .{ val_arg, max_variable_array_elements_ceiling });
+                std.process.exit(64);
+            };
+            // Reject zero and contradictory values above the generic array cap;
+            // not a budget bypass either way (work/scan/alloc budgets still
+            // bound the actual parse cost).
+            if (parsed == 0 or parsed > max_variable_array_elements_ceiling) {
+                try stderr.print("Error: --max-variable-array-elements value {d} is out of range (expected 1..{d})\n", .{ parsed, max_variable_array_elements_ceiling });
+                std.process.exit(64);
+            }
+            limit.max_variable_array_elements = parsed;
         } else {
             // Fail closed: reject unknown arguments immediately
             try stderr.print("Error: unknown argument '{s}'\n\n", .{arg});
@@ -402,5 +423,6 @@ fn printUsage(writer: anytype) !void {
     try writer.print("  --profile <gguf-spec|llama-cpp> Validation profile (default: gguf-spec):\n", .{});
     try writer.print("                                    gguf-spec: resource-bounded GGUF v3 structural safe subset\n", .{});
     try writer.print("                                    llama-cpp: ggml 0.23.0 safe pre-admission subset\n", .{});
+    try writer.print("  --max-variable-array-elements <N> String/nested-array element sanity cap (default: {d})\n", .{(limits.Limits{}).max_variable_array_elements});
     try writer.print("  --help, -h                      Display this help message and exit\n", .{});
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const err = @import("error.zig");
 
 pub const Reader = struct {
@@ -63,14 +64,19 @@ pub const SliceReader = struct {
 pub const FileReader = struct {
     file: std.fs.File,
     file_size: u64,
+    /// Test-only instrumentation: count of underlying `preadAll` calls issued
+    /// by this reader. Gated on `builtin.is_test`, so production binaries never
+    /// write it (the increment compiles out; the field is only layout). The
+    /// bench reads it to gate sliding-cache assertions without procfs.
+    backend_reads: u64 = 0,
 
     pub fn init(file: std.fs.File, file_size: u64) FileReader {
         return .{ .file = file, .file_size = file_size };
     }
 
-    pub fn reader(self: *const FileReader) Reader {
+    pub fn reader(self: *FileReader) Reader {
         return Reader{
-            .ptr = @constCast(@ptrCast(self)),
+            .ptr = @ptrCast(self),
             .vtable = &vtable,
             .size = self.file_size,
         };
@@ -81,8 +87,9 @@ pub const FileReader = struct {
     };
 
     fn readBytesImpl(ctx: *anyopaque, offset: u64, dest: []u8) err.ParseError!void {
-        const self: *const FileReader = @ptrCast(@alignCast(ctx));
+        const self: *FileReader = @ptrCast(@alignCast(ctx));
         const n = self.file.preadAll(dest, offset) catch return err.ParseError.IoError;
+        if (builtin.is_test) self.backend_reads += 1;
         if (n < dest.len) return err.ParseError.UnexpectedEof;
     }
 };
@@ -95,6 +102,10 @@ pub const BufferedReader = struct {
     window_start: u64 = 0,
     window_len: usize = 0,
     window_buf: [65536]u8 = undefined,
+    /// Test-only instrumentation: count of underlying `preadAll` calls issued
+    /// (window slides plus large-read bypasses). Gated on `builtin.is_test`;
+    /// see FileReader.backend_reads.
+    backend_reads: u64 = 0,
 
     pub fn init(file: std.fs.File, file_size: u64) BufferedReader {
         return .{
@@ -132,6 +143,7 @@ pub const BufferedReader = struct {
         // 2. Large read bypassing cache
         if (dest.len >= self.window_buf.len) {
             const n = self.file.preadAll(dest, offset) catch return err.ParseError.IoError;
+            if (builtin.is_test) self.backend_reads += 1;
             if (n < dest.len) return err.ParseError.UnexpectedEof;
             return;
         }
@@ -140,6 +152,7 @@ pub const BufferedReader = struct {
         self.window_start = offset;
         const to_read = @min(@as(u64, self.window_buf.len), self.file_size - offset);
         const n = self.file.preadAll(self.window_buf[0..to_read], offset) catch return err.ParseError.IoError;
+        if (builtin.is_test) self.backend_reads += 1;
         self.window_len = n;
 
         if (dest.len > self.window_len) return err.ParseError.UnexpectedEof;

@@ -1,5 +1,6 @@
 import json
 import os
+import struct
 import subprocess
 import sys
 
@@ -229,6 +230,64 @@ def test_rich_rejection_context():
 
     print("  ✓ All rich rejection context tests passed.")
 
+def write_variable_array_fixture(path, count):
+    """Writes a minimal metadata-only GGUF v3 whose single metadata entry is
+    `tokenizer.ggml.tokens: array[string]` with `count` ASCII tokens."""
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)  # version
+    b += struct.pack("<Q", 0)  # tensor_count
+    b += struct.pack("<Q", 1)  # metadata_kv_count
+
+    key = b"tokenizer.ggml.tokens"
+    b += struct.pack("<Q", len(key))
+    b += key
+    b += struct.pack("<I", 9)  # MetadataType.array
+    b += struct.pack("<I", 8)  # MetadataType.string
+    b += struct.pack("<Q", count)
+    for i in range(count):
+        token = ("tok%d" % i).encode("ascii")
+        b += struct.pack("<Q", len(token))
+        b += token
+
+    pad = (32 - (len(b) % 32)) % 32
+    b += b"\x00" * pad
+    with open(path, "wb") as f:
+        f.write(b)
+
+def test_variable_array_cap_override():
+    print("Running variable-array cap override tests (F-01 flag contract)...")
+
+    fixture_path = os.path.join(FIXTURES, "variable_array_11.gguf")
+    write_variable_array_fixture(fixture_path, 11)
+
+    # 1. Default cap (1,000,000) admits the fixture.
+    rc, stdout, stderr = run_cli("inspect", fixture_path)
+    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout, f"Missing PASS: {stdout}"
+
+    # 2. Override at the exact element count still admits it.
+    rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "11")
+    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout, f"Missing PASS: {stdout}"
+
+    # 3. Override below the element count rejects as a local policy/resource
+    #    limit (exit 2), distinct from a format rejection.
+    rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "10", "--format", "json")
+    assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
+    data = json.loads(stdout)
+    assert data["status"] == "REJECT"
+    assert data["error_code"] == "E_ResourceLimitExceeded"
+    assert data["category"] == "resource"
+    assert data["findings"][0]["code"] == "E_ResourceLimitExceeded"
+
+    # 4. Text output mirrors the same code.
+    rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "10")
+    assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
+    assert "E_ResourceLimitExceeded" in stderr, f"Missing resource error: {stderr}"
+
+    print("  ✓ Variable-array cap override tests passed.")
+
 def test_usage_and_flags():
     print("Running usage and flag validation tests (must exit code 64)...")
 
@@ -240,6 +299,14 @@ def test_usage_and_flags():
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--profile", "invalid-profile"],
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--format", "yaml"],
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--endian", "middle"],
+        # F-01: --max-variable-array-elements fail-closed value contract
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements", "0"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements", "-1"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements", "abc"],
+        # u64 max + 1 (parse overflow) and one above the generic 10M array cap
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements", "18446744073709551616"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements", "10000001"],
     ]
 
     for args in bad_invocations:
@@ -276,6 +343,8 @@ def test_help():
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
         assert "default: little" in output, f"Default little endian missing in help: {output}"
         assert "--format <text|json>" in output
+        assert "--max-variable-array-elements <N>" in output, f"Variable-array cap flag missing in help: {output}"
+        assert "default: 1000000" in output, f"Variable-array cap default missing in help: {output}"
     print("  ✓ All help contract tests passed with exit code 0.")
 
 if __name__ == "__main__":
@@ -287,6 +356,7 @@ if __name__ == "__main__":
     test_negative_validation()
     test_negative_json()
     test_rich_rejection_context()
+    test_variable_array_cap_override()
     test_usage_and_flags()
     test_io_error()
     test_help()
