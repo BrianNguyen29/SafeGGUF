@@ -22,6 +22,8 @@ pub fn validateStructural(
     profile: types.Profile,
     work_budget: *limits.WorkBudget,
 ) err.ParseError!void {
+    if (work_budget.ctx) |c| c.beginPhase("structural");
+
     // Invariant verification: Document header tensor_count must match in-memory tensors length
     if (doc.header.tensor_count != doc.tensors.len) {
         return err.ParseError.CompatibilityViolation;
@@ -44,16 +46,24 @@ pub fn validateStructural(
     }
 
     // Validate tensor dimensions against bounds and zero-dimension rules
-    for (doc.tensors) |tensor| {
+    for (doc.tensors, 0..) |tensor, t_i| {
         try work_budget.consume(1);
+        if (work_budget.ctx) |c| {
+            c.tensor_index = t_i;
+            c.setTensorName(tensor.name);
+        }
         try arithmetic.validateDimensions(tensor.dimensions, profile);
     }
 
     var seen_names = std.StringHashMap(void).init(allocator);
     defer seen_names.deinit();
 
-    for (doc.tensors) |tensor| {
+    for (doc.tensors, 0..) |tensor, t_i| {
         try work_budget.consume(1);
+        if (work_budget.ctx) |c| {
+            c.tensor_index = t_i;
+            c.setTensorName(tensor.name);
+        }
         if (seen_names.contains(tensor.name)) {
             return err.ParseError.DuplicateTensorName;
         }
@@ -63,8 +73,14 @@ pub fn validateStructural(
     // Under llama.cpp profile: tensors must be strictly contiguous in descriptor order
     if (profile == .llama_cpp) {
         var expected_offset: u64 = 0;
-        for (doc.tensors) |tensor| {
+        for (doc.tensors, 0..) |tensor, t_i| {
             try work_budget.consume(1);
+            if (work_budget.ctx) |c| {
+                c.tensor_index = t_i;
+                c.setTensorName(tensor.name);
+                c.current_offset = tensor.offset;
+                c.expected_offset = expected_offset;
+            }
             if (tensor.offset != expected_offset) {
                 return err.ParseError.NonContiguousTensorOffset;
             }
@@ -83,6 +99,12 @@ pub fn validateStructural(
 
     for (doc.tensors, 0..) |tensor, i| {
         try work_budget.consume(1);
+        if (work_budget.ctx) |c| {
+            c.tensor_index = i;
+            c.setTensorName(tensor.name);
+            c.current_offset = tensor.offset;
+            c.expected_offset = null;
+        }
         if (tensor.offset % doc.alignment != 0) {
             return err.ParseError.MisalignedTensor;
         }

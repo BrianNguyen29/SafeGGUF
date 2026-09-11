@@ -13,7 +13,7 @@ SafeGGUF is designed as a memory-safe, overflow-checked pre-admission validation
 
 SafeGGUF enforces pre-admission defense-in-depth before untrusted model files are mapped into memory or parsed by upstream C/C++ runtimes (such as `llama.cpp` or `ggml`):
 
-1. **Zero Unchecked Panics:** All arithmetic operations on dimensions, offsets, alignments, and sizes use checked arithmetic (`checkedAdd`, `checkedMul`, `checkedAlignUp`). Any integer overflow immediately terminates validation cleanly with exit code `2` (`REJECT`).
+1. **Checked Arithmetic on Attacker-Controlled Values:** Arithmetic on file-controlled dimensions, offsets, alignments, and sizes uses checked arithmetic (`checkedAdd`, `checkedMul`, `checkedAlignUp`); integer overflow terminates validation with exit code `2` (`REJECT`) instead of wrapping. This invariant is enforced by the implementation and exercised by the regression suite, the differential harness against the pinned upstream ggml oracle, and mutation fuzzing — it is not guaranteed by construction alone.
 2. **Resource Exhaustion Resistance (DoS Prevention):**
    - **Memory Quota:** Total memory allocated for metadata structures is capped at 128 MB via `QuotaAllocator`. Exceeding this quota fails closed with `E_TotalAllocationLimitExceeded` (exit code `2`).
    - **Work Budget:** Parser and structural validator operations are tracked via monotonic work units (maximum 10,000,000 units).

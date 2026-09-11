@@ -1,4 +1,5 @@
 const std = @import("std");
+const err = @import("error.zig");
 
 pub const Limits = struct {
     max_tensors: u64 = 1_000_000,
@@ -19,6 +20,12 @@ pub const WorkBudget = struct {
     consumed_units: u64 = 0,
     max_scanned_bytes: u64 = 256 * 1024 * 1024,
     consumed_scanned_bytes: u64 = 0,
+    /// Optional diagnostics channel: when non-null, parse/structural raise
+    /// sites record a ParseContext snapshot before returning errors. This is
+    /// the only mutable pointer already threaded into parseDocument and
+    /// validateStructural, so it carries the Validator-held context without
+    /// changing their signatures. Null for low-level (non-Validator) users.
+    ctx: ?*err.ParseContext = null,
 
     pub fn init(max_units: u64) WorkBudget {
         return .{

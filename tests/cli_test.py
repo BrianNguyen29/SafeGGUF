@@ -6,6 +6,11 @@ import sys
 BINARY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "zig-out", "bin", "safegguf")
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
+# Pinned ggml provenance carried by every JSON output (PASS/REJECT/ERROR).
+# Emitted as "compatibility_target" under --profile llama-cpp and as
+# "type_layout_source" under gguf-spec.
+GGML_PROVENANCE = {"project": "ggml", "version": "0.23.0", "commit": "e91ded11bdcd78c42f9c8d3978ff6686eb4c1226"}
+
 def run_cli(*args):
     cmd = [BINARY] + list(args)
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
@@ -26,8 +31,7 @@ def test_positive():
     assert data["status"] == "PASS"
     assert data["profile"] == "gguf-spec"
     assert "type_layout_source" in data
-    assert data["type_layout_source"]["project"] == "ggml"
-    assert data["type_layout_source"]["version"] == "0.23.0"
+    assert data["type_layout_source"] == GGML_PROVENANCE
     assert data["checks"]["structural"] == "PASS"
     assert data["checks"]["arithmetic"] == "PASS"
 
@@ -38,7 +42,7 @@ def test_positive():
     assert data_llama["status"] == "PASS"
     assert data_llama["profile"] == "llama-cpp"
     assert "compatibility_target" in data_llama
-    assert data_llama["compatibility_target"]["project"] == "ggml"
+    assert data_llama["compatibility_target"] == GGML_PROVENANCE
 
     # 4. Gap file under gguf-spec
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "gap.gguf"), "--profile", "gguf-spec")
@@ -143,6 +147,8 @@ def test_negative_json():
     assert data["status"] == "REJECT"
     assert data["profile"] == "llama-cpp"
     assert data["error_code"] == "E_NonContiguousTensorOffset"
+    # Provenance accompanies REJECT JSON (llama-cpp profile field name).
+    assert data["compatibility_target"] == GGML_PROVENANCE
     assert len(data["findings"]) > 0
     assert data["findings"][0]["severity"] == "reject"
 
@@ -151,14 +157,77 @@ def test_negative_json():
     data_ov = json.loads(stdout)
     assert data_ov["status"] == "REJECT"
     assert data_ov["error_code"] == "E_ArithmeticOverflow"
+    assert data_ov["compatibility_target"] == GGML_PROVENANCE
 
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "overflow.gguf"), "--format", "json")
     assert rc == 2, f"Expected returncode 2, got {rc}"
     data = json.loads(stdout)
     assert data["status"] == "REJECT"
     assert data["error_code"] == "E_ArithmeticOverflow"
+    # Provenance accompanies REJECT JSON (gguf-spec profile field name).
+    assert data["type_layout_source"] == GGML_PROVENANCE
 
     print("  ✓ All negative JSON tests passed.")
+
+def test_rich_rejection_context():
+    print("Running rich rejection context tests (slice 11 findings)...")
+
+    # Canonical: non-contiguous tensor offset under llama-cpp (JSON) carries
+    # category, stage, tensor identity, and actual vs expected offset.
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "gap.gguf"), "--profile", "llama-cpp", "--format", "json")
+    assert rc == 2, f"Expected returncode 2, got {rc}"
+    data = json.loads(stdout)
+    assert data["status"] == "REJECT"
+    assert data["error_code"] == "E_NonContiguousTensorOffset"
+    assert data["category"] == "compatibility"
+    assert data["stage"] == "structural"
+    assert data["tensor_index"] == 1
+    assert data["tensor"] == "t1"
+    assert data["offset"] == 256
+    assert data["expected_offset"] == 128
+    f0 = data["findings"][0]
+    assert f0["code"] == "E_NonContiguousTensorOffset"
+    assert f0["severity"] == "reject"
+    assert f0["message"] == "Tensor offsets are not strictly contiguous (llama.cpp layout)"
+    assert f0["message"] != "Validator rejected untrusted GGUF stream"
+    assert f0["category"] == "compatibility"
+    assert f0["stage"] == "structural"
+    assert f0["tensor_index"] == 1
+    assert f0["tensor"] == "t1"
+    assert f0["offset"] == 256
+    assert f0["expected_offset"] == 128
+    assert "Validator rejected untrusted GGUF stream" not in stdout
+
+    # Parse-stage finding carries the offending metadata key (JSON).
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "invalid_key.gguf"), "--format", "json")
+    assert rc == 2, f"Expected returncode 2, got {rc}"
+    data = json.loads(stdout)
+    assert data["error_code"] == "E_InvalidKeyFormat"
+    assert data["category"] == "format"
+    assert data["stage"] == "parse"
+    assert data["key"] == "InvalidKeyWithUppercase"
+    assert data["findings"][0]["key"] == "InvalidKeyWithUppercase"
+
+    # Arithmetic category is surfaced for checked-arithmetic rejections (JSON).
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "overflow.gguf"), "--format", "json")
+    assert rc == 2, f"Expected returncode 2, got {rc}"
+    data = json.loads(stdout)
+    assert data["error_code"] == "E_ArithmeticOverflow"
+    assert data["category"] == "arithmetic"
+
+    # Text emission carries the same context for the canonical case.
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "gap.gguf"), "--profile", "llama-cpp")
+    assert rc == 2, f"Expected returncode 2, got {rc}"
+    assert "E_NonContiguousTensorOffset" in stderr
+    assert "stage: structural" in stderr
+    assert "category: compatibility" in stderr
+    assert "tensor_index: 1" in stderr
+    assert "tensor: t1" in stderr
+    assert "offset: 256" in stderr
+    assert "expected_offset: 128" in stderr
+    assert "Validator rejected untrusted GGUF stream" not in stderr
+
+    print("  ✓ All rich rejection context tests passed.")
 
 def test_usage_and_flags():
     print("Running usage and flag validation tests (must exit code 64)...")
@@ -192,6 +261,8 @@ def test_io_error():
     data = json.loads(stdout)
     assert data["status"] == "ERROR", f"Expected status ERROR, got {data['status']}"
     assert data["error_code"] == "E_FILE_OPEN_FAILED"
+    # Provenance accompanies ERROR JSON too (default gguf-spec profile).
+    assert data["type_layout_source"] == GGML_PROVENANCE
 
     print("  ✓ IO error tests passed with exit code 74 and status ERROR.")
 
@@ -215,6 +286,7 @@ if __name__ == "__main__":
     test_positive()
     test_negative_validation()
     test_negative_json()
+    test_rich_rejection_context()
     test_usage_and_flags()
     test_io_error()
     test_help()

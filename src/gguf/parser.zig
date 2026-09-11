@@ -45,6 +45,8 @@ pub fn parseDocument(
     profile: types.Profile,
     work_budget: *limits.WorkBudget,
 ) err.ParseError!Document {
+    if (work_budget.ctx) |c| c.beginPhase("parse");
+
     // Under llama_cpp profile: upstream ggml 0.23.0 only supports host native endianness.
     // Models with non-native endianness are actively rejected by upstream ggml with endian mismatch.
     if (profile == .llama_cpp and endian != builtin.cpu.arch.endian()) {
@@ -108,6 +110,10 @@ pub fn parseDocument(
     // 4. Parse Metadata
     var m_idx: u64 = 0;
     while (m_idx < metadata_kv_count) : (m_idx += 1) {
+        if (work_budget.ctx) |c| {
+            c.metadata_index = m_idx;
+            c.current_offset = cur;
+        }
         try work_budget.consume(1);
 
         const key_len = try reader.readInt(u64, cur, endian);
@@ -128,6 +134,9 @@ pub fn parseDocument(
 
         try reader.readBytes(cur, key_buf);
         cur = key_end;
+
+        // Snapshot the key into the context: key_buf may be freed on unwind.
+        if (work_budget.ctx) |c| c.setKey(key_buf);
 
         try metadata_mod.validateKey(key_buf);
 
@@ -184,6 +193,11 @@ pub fn parseDocument(
     }
 
     while (t_idx < tensor_count) {
+        if (work_budget.ctx) |c| {
+            c.tensor_index = t_idx;
+            c.metadata_index = null;
+            c.current_offset = cur;
+        }
         try work_budget.consume(1);
 
         const name_len = try reader.readInt(u64, cur, endian);
@@ -204,6 +218,9 @@ pub fn parseDocument(
         errdefer allocator.free(name_buf);
         try reader.readBytes(cur, name_buf);
         cur = name_end;
+
+        // Snapshot the name into the context: name_buf may be freed on unwind.
+        if (work_budget.ctx) |c| c.setTensorName(name_buf);
 
         if (!std.unicode.utf8ValidateSlice(name_buf)) {
             return err.ParseError.InvalidUtf8;
@@ -260,6 +277,7 @@ pub fn parseDocument(
             try reader.readBytes(pad_cur, chunk);
             for (chunk) |b| {
                 if (b != 0) {
+                    if (work_budget.ctx) |c| c.current_offset = pad_cur;
                     return err.ParseError.InvalidAlignmentPadding;
                 }
             }

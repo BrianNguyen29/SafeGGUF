@@ -1,0 +1,452 @@
+# Nightly fuzzing for SafeGGUF — scheduled deep fuzz campaign + persisted corpus.
+#
+# Budget: ~30-50 min/platform of sustained fuzzing executions (mutation legs + corpus
+#   evolution + in-process corpus sweep) on ubuntu-24.04; job timeout 75 min. Extend to
+#   a platform matrix if more platforms are wanted; budget is defined per platform.
+# Acceptance: 0 crash / 0 panic / 0 leak / 0 unexpected exit. Anything outside the strict
+#   exit contract {0 PASS, 2 REJECT} fails the run; the crashing input, its metadata, a
+#   truncation-minimized variant, and full repro context (commit, RNG seeds, corpus
+#   manifest with sha256) are uploaded as artifacts under tests/fuzz-artifacts/.
+# Profile x endian matrix: leg 1 runs both profiles (little endian) via
+#   tests/fuzz_mutation.py; leg 2 runs gguf-spec x llama-cpp x little x big via the
+#   inline matrix driver; `zig build fuzz` sweeps the whole corpus through the
+#   libFuzzer-ABI harness (tests/fuzz_target.zig), which validates every input under all
+#   four profile x endian combinations internally.
+# Corpus: tests/corpus (26 generated seeds) + evolved entries persisted across runs via
+#   actions/cache (.cache/fuzz-corpus, restore-keys "fuzz-corpus-"). New entries are
+#   added only when the strict llama-cpp profile accepts them AND all four profile x
+#   endian validations stay inside the {0, 2} contract, so crash/panic/leak inputs never
+#   enter the corpus.
+# Sanitizers: ReleaseSafe build (bounds/overflow/UB safety checks) + GeneralPurposeAllocator
+#   leak detection (panic on leak) + strict exit-code contract. NOTE: coverage-guided
+#   libFuzzer is NOT available on the pinned Zig 0.13.0 toolchain (no -fsanitize=fuzzer,
+#   no bundled sancov/libFuzzer runtime; Zig 0.14+ only), so this nightly drives the
+#   existing deterministic mutation fuzzer instead. Revisit with a Zig upgrade or a
+#   build.zig libFuzzer target to enable true coverage guidance.
+# Triggers: nightly cron (default branch) + manual workflow_dispatch.
+
+name: Nightly Fuzz
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  nightly-fuzz:
+    name: Nightly fuzz (mutation campaigns + corpus evolution + sweep) on ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.13.0
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Pick deterministic nightly RNG seeds
+        run: echo "NIGHTLY_SEED_BASE=$(date -u +%Y%m%d)" >> "$GITHUB_ENV"
+
+      - name: Generate Fixtures and Seed Corpus
+        run: python tests/generate_fixtures.py
+
+      - name: Restore persisted fuzz corpus
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .cache/fuzz-corpus
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Merge persisted corpus into seed corpus
+        run: |
+          if [ -d .cache/fuzz-corpus ]; then
+            cp .cache/fuzz-corpus/*.gguf tests/corpus/ 2>/dev/null || true
+          fi
+          echo "corpus size: $(ls tests/corpus/*.gguf 2>/dev/null | wc -l) files"
+
+      - name: Write nightly fuzz driver
+        run: |
+          mkdir -p .cache
+          cat > .cache/nightly_fuzz_driver.py <<'DRIVER_EOF'
+          #!/usr/bin/env python3
+          """Nightly fuzz driver for SafeGGUF (workflow-internal; written to .cache/, never committed).
+
+          Subcommands:
+            matrix-leg  Mutation campaign over both profiles x little/big endian through the
+                        safegguf CLI, enforcing the strict exit contract {0 PASS, 2 REJECT}.
+                        Persists failing artifacts via tests/fuzz_mutation.save_failing_artifact.
+            evolve      Grow the persisted corpus: mutate existing seeds, keep only inputs the
+                        strict llama-cpp profile accepts AND that stay crash-free under all
+                        four profile x endian combos; dedupe by sha256, cap growth, mirror to
+                        the cache staging dir.
+            report      Minimize the newest crash artifact (bounded prefix truncation) and write
+                        environment.info (commit, toolchain, sanitizer story, RNG seeds,
+                        corpus manifest) into tests/fuzz-artifacts for upload.
+
+          NOTE: coverage-guided libFuzzer is unavailable on the pinned Zig 0.13.0 toolchain
+          (no -fsanitize=fuzzer / sancov runtime); see the workflow header.
+          """
+
+          import argparse
+          import hashlib
+          import json
+          import os
+          import platform
+          import random
+          import shutil
+          import subprocess
+          import sys
+          import tempfile
+          import time
+
+          REPO = os.environ.get("GITHUB_WORKSPACE") or os.getcwd()
+          sys.path.insert(0, os.path.join(REPO, "tests"))
+          import fuzz_mutation as fm  # reuse mutate() + save_failing_artifact()
+
+          BIN = fm.SAFEGGUF_BIN
+          CORPUS = fm.CORPUS_DIR
+          ARTIFACTS = fm.ARTIFACTS_DIR
+          COMBOS = [(p, e) for p in ("gguf-spec", "llama-cpp") for e in ("little", "big")]
+          COMBO_TIMEOUT = 5  # seconds, mirrors tests/fuzz_mutation.py
+
+          def classify(rc):
+              if rc == -1:
+                  return "TIMEOUT"
+              if rc < 0:
+                  return "CRASH_SIG" + str(-rc)
+              return "UNEXPECTED_EXIT_" + str(rc)
+
+          def combo_rc(path, profile, endian):
+              try:
+                  proc = subprocess.run(
+                      [BIN, "inspect", path, "--profile", profile, "--endian", endian],
+                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=COMBO_TIMEOUT)
+                  return proc.returncode, (proc.stderr or proc.stdout).decode("utf-8", "replace")
+              except subprocess.TimeoutExpired:
+                  return -1, "timed out after 5s"
+
+          def corpus_names():
+              names = sorted(n for n in os.listdir(CORPUS) if n.endswith(".gguf"))
+              if not names:
+                  print("error: no corpus files in", CORPUS, "- run generate_fixtures.py first")
+                  sys.exit(1)
+              return names
+
+          def read_corpus():
+              return [bytearray(open(os.path.join(CORPUS, n), "rb").read()) for n in corpus_names()]
+
+          def cmd_matrix_leg(args):
+              random.seed(args.seed)
+              data = read_corpus()
+              fd, tmp = tempfile.mkstemp(suffix=".gguf")
+              os.close(fd)
+              passed = rejected = 0
+              start = time.time()
+              try:
+                  for i in range(1, args.iterations + 1):
+                      buf = fm.mutate(random.choice(data), data)
+                      with open(tmp, "wb") as f:
+                          f.write(buf)
+                      for profile, endian in COMBOS:
+                          label = profile + "/" + endian
+                          rc, text = combo_rc(tmp, profile, endian)
+                          if rc == 0:
+                              passed += 1
+                              continue
+                          if rc == 2:
+                              rejected += 1
+                              continue
+                          fm.save_failing_artifact(ARTIFACTS, args.seed, i, label, buf, classify(rc),
+                                                   "matrix leg iter " + str(i) + ": " + classify(rc) +
+                                                   " on " + label + " (size=" + str(len(buf)) + ")",
+                                                   rc, text)
+                          print("matrix leg: FAILED at iteration " + str(i) + " on " + label)
+                          return 1
+                      if i % 10000 == 0 or i == args.iterations:
+                          elapsed = time.time() - start
+                          rate = (passed + rejected) / elapsed if elapsed > 0 else 0
+                          print("  [matrix " + str(i) + "/" + str(args.iterations) + "] PASS " +
+                                str(passed) + " REJECT " + str(rejected) + " (" + ("%.0f" % rate) + " exec/s)")
+              finally:
+                  if os.path.exists(tmp):
+                      os.remove(tmp)
+              print("matrix leg PASSED: " + str(args.iterations) + " iterations (" +
+                    str(passed + rejected) + " executions, " + str(passed) + " PASS / " +
+                    str(rejected) + " REJECT); 0 crash / 0 panic / 0 leak / 0 unexpected exit")
+              return 0
+
+          def cmd_evolve(args):
+              random.seed(args.seed)
+              data = read_corpus()
+              seen = {hashlib.sha256(bytes(b)).hexdigest() for b in data}
+              fd, tmp = tempfile.mkstemp(suffix=".gguf")
+              os.close(fd)
+              added = 0
+              start = time.time()
+              try:
+                  for i in range(1, args.candidates + 1):
+                      if added >= args.max_adds:
+                          break
+                      buf = fm.mutate(random.choice(data), data)
+                      digest = hashlib.sha256(bytes(buf)).hexdigest()
+                      if digest in seen:
+                          continue
+                      with open(tmp, "wb") as f:
+                          f.write(buf)
+                      # Gate 1: strict profile must accept (structured input worth keeping).
+                      rc, text = combo_rc(tmp, "llama-cpp", "little")
+                      if rc == 2:
+                          continue
+                      if rc not in (0, 2):
+                          fm.save_failing_artifact(ARTIFACTS, args.seed, i, "llama-cpp/little", buf,
+                                                   classify(rc), "evolve candidate " + str(i) + ": " +
+                                                   classify(rc) + " on llama-cpp/little", rc, text)
+                          print("evolve: FAILED at candidate " + str(i) + " (" + classify(rc) +
+                                " on llama-cpp/little)")
+                          return 1
+                      # Gate 2: every other combo must stay inside the {0, 2} contract.
+                      for profile, endian in COMBOS:
+                          if profile == "llama-cpp" and endian == "little":
+                              continue
+                          rc, text = combo_rc(tmp, profile, endian)
+                          if rc not in (0, 2):
+                              fm.save_failing_artifact(ARTIFACTS, args.seed, i, profile + "/" + endian,
+                                                       buf, classify(rc), "evolve candidate " + str(i) +
+                                                       ": " + classify(rc) + " on " + profile + "/" + endian,
+                                                       rc, text)
+                              print("evolve: FAILED at candidate " + str(i) + " (" + classify(rc) +
+                                    " on " + profile + "/" + endian + ")")
+                              return 1
+                      with open(os.path.join(CORPUS, "evolved-" + digest[:16] + ".gguf"), "wb") as f:
+                          f.write(buf)
+                      seen.add(digest)
+                      added += 1
+              finally:
+                  if os.path.exists(tmp):
+                      os.remove(tmp)
+              prune_and_mirror(args.cap_count, args.cap_bytes)
+              print("evolve: added " + str(added) + " corpus entries from " + str(args.candidates) +
+                    " candidates in " + ("%.1f" % (time.time() - start)) + "s")
+              return 0
+
+          def prune_and_mirror(cap_count, cap_bytes):
+              staging = os.path.join(REPO, ".cache", "fuzz-corpus")
+              infos = []
+              for n in corpus_names():
+                  path = os.path.join(CORPUS, n)
+                  infos.append((os.path.getmtime(path), os.path.getsize(path), n))
+              infos.sort()  # oldest first
+              total = sum(s for _, s, _ in infos)
+              while (len(infos) > cap_count or total > cap_bytes) and len(infos) > 1:
+                  _, size, n = infos.pop(0)
+                  total -= size
+                  os.remove(os.path.join(CORPUS, n))
+              if os.path.isdir(staging):
+                  shutil.rmtree(staging)
+              os.makedirs(staging)
+              for _, _, n in infos:
+                  shutil.copy2(os.path.join(CORPUS, n), os.path.join(staging, n))
+              print("corpus: " + str(len(infos)) + " files, " + str(total // 1024) + " KiB; mirrored to " + staging)
+
+          def cmd_report(args):
+              os.makedirs(ARTIFACTS, exist_ok=True)
+              minimized = "no crash artifact found (failure likely from the corpus sweep; see sweep.log)"
+              crash_metas = []
+              if os.path.isdir(ARTIFACTS):
+                  for n in os.listdir(ARTIFACTS):
+                      if n.startswith("crash-") and n.endswith(".json"):
+                          crash_metas.append(os.path.join(ARTIFACTS, n))
+              crash_metas.sort(key=os.path.getmtime, reverse=True)
+              if crash_metas:
+                  with open(crash_metas[0], encoding="utf-8") as f:
+                      meta = json.load(f)
+                  orig_name = meta.get("file", "")
+                  orig = os.path.join(ARTIFACTS, orig_name)
+                  profile_field = meta.get("profile", "")
+                  if os.path.exists(orig) and profile_field:
+                      profile, endian = (profile_field.split("/", 1) + ["little"])[:2]
+                      data = open(orig, "rb").read()
+                      fd, tmp = tempfile.mkstemp(suffix=".gguf")
+                      os.close(fd)
+
+                      def is_bad(prefix):
+                          with open(tmp, "wb") as f:
+                              f.write(prefix)
+                          rc, _ = combo_rc(tmp, profile, endian)
+                          return rc not in (0, 2)
+
+                      try:
+                          if not is_bad(data):
+                              minimized = "crashing input did not reproduce (timing/flake); original preserved"
+                          else:
+                              lo, hi = 1, len(data)
+                              while lo < hi:
+                                  mid = (lo + hi) // 2
+                                  if is_bad(data[:mid]):
+                                      hi = mid
+                                  else:
+                                      lo = mid + 1
+                              if lo < len(data):
+                                  min_name = "minimized-from-" + orig_name
+                                  with open(os.path.join(ARTIFACTS, min_name), "wb") as f:
+                                      f.write(data[:lo])
+                                  out = dict(meta)
+                                  out.update({
+                                      "file": min_name,
+                                      "minimized_from": orig_name,
+                                      "original_size": len(data),
+                                      "minimized_size": lo,
+                                      "minimization": "truncation-based prefix minimization "
+                                                      "(libFuzzer -minimize_crash unavailable on Zig 0.13.0)",
+                                  })
+                                  with open(os.path.join(ARTIFACTS, min_name[:-5] + ".json"), "w",
+                                            encoding="utf-8") as f:
+                                      json.dump(out, f, indent=2)
+                                  minimized = ("minimized " + orig_name + ": " + str(len(data)) + " -> " +
+                                               str(lo) + " bytes (" + min_name + ")")
+                              else:
+                                  minimized = ("crash reproduces on " + orig_name +
+                                               " but prefix truncation does not shrink it")
+                      finally:
+                          if os.path.exists(tmp):
+                              os.remove(tmp)
+                  else:
+                      minimized = "crash artifact " + (orig_name or "?") + " missing or unusable; kept as-is"
+              print("minimize:", minimized)
+
+              def safe_int(v):
+                  try:
+                      return int(v)
+                  except (TypeError, ValueError):
+                      return 0
+
+              base = os.environ.get("NIGHTLY_SEED_BASE") or "0"
+              lines = []
+
+              def add(k, v):
+                  lines.append(str(k) + ": " + str(v))
+
+              add("generated_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+              commit = "unknown"
+              try:
+                  p = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                                     timeout=5, cwd=REPO)
+                  if p.returncode == 0:
+                      commit = p.stdout.strip()
+              except Exception:
+                  pass
+              add("git_commit", commit)
+              try:
+                  zv = subprocess.run(["zig", "version"], capture_output=True, text=True, timeout=10)
+                  add("zig_version", zv.stdout.strip() or "unknown")
+              except Exception:
+                  add("zig_version", "unknown")
+              add("platform", platform.system() + " " + platform.machine() + " " + platform.release())
+              add("binary_build", "zig build -Doptimize=ReleaseSafe (bounds/overflow/UB safety checks on)")
+              add("sweep_build", "zig build fuzz -Doptimize=Debug (maximum safety checks)")
+              add("sanitizers", "ReleaseSafe safety checks + GeneralPurposeAllocator leak detection "
+                                "(panic on leak) + strict exit contract {0 PASS, 2 REJECT}; libFuzzer/"
+                                "sancov coverage runtime unavailable on Zig 0.13.0 - see workflow header")
+              add("rng_seeds", "base=" + base + " leg1_mutation=" + base + " leg2_matrix=" +
+                  str(safe_int(base) + 1) + " evolve=" + str(safe_int(base) + 2))
+              add("profile_endian_matrix", "gguf-spec,llama-cpp x little,big (sweep harness covers all 4 "
+                                           "internally; leg1 little; leg2 + evolve all 4)")
+              names = corpus_names()
+              add("corpus_dir", CORPUS)
+              add("corpus_count", len(names))
+              add("corpus_manifest_sha256", "name<TAB>size<TAB>sha256 per file below")
+              for n in names:
+                  blob = open(os.path.join(CORPUS, n), "rb").read()
+                  add("corpus[" + n + "]", str(len(blob)) + "\t" + hashlib.sha256(blob).hexdigest())
+              add("minimization", minimized)
+              server = os.environ.get("GITHUB_SERVER_URL", "")
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              run_id = os.environ.get("GITHUB_RUN_ID", "")
+              if server and repo:
+                  add("run_url", server + "/" + repo + "/actions/runs/" + run_id if run_id else server + "/" + repo)
+              info_path = os.path.join(ARTIFACTS, "environment.info")
+              with open(info_path, "w", encoding="utf-8") as f:
+                  f.write("\n".join(lines) + "\n")
+              print("repro context written:", info_path)
+              return 0
+
+          def main():
+              ap = argparse.ArgumentParser(description=__doc__,
+                                           formatter_class=argparse.RawDescriptionHelpFormatter)
+              sub = ap.add_subparsers(dest="cmd", required=True)
+
+              p = sub.add_parser("matrix-leg", help="both profiles x both endians mutation campaign")
+              p.add_argument("--iterations", type=int, required=True)
+              p.add_argument("--seed", type=int, required=True)
+              p.set_defaults(fn=cmd_matrix_leg)
+
+              p = sub.add_parser("evolve", help="acceptance-filtered corpus growth + cache mirror")
+              p.add_argument("--candidates", type=int, required=True)
+              p.add_argument("--max-adds", type=int, required=True)
+              p.add_argument("--seed", type=int, required=True)
+              p.add_argument("--cap-count", type=int, default=3000)
+              p.add_argument("--cap-bytes", type=int, default=64 * 1024 * 1024)
+              p.set_defaults(fn=cmd_evolve)
+
+              p = sub.add_parser("report", help="minimize newest crash + write environment.info")
+              p.set_defaults(fn=cmd_report)
+
+              args = ap.parse_args()
+              sys.exit(args.fn(args))
+
+          if __name__ == "__main__":
+              main()
+          DRIVER_EOF
+          python3 -m py_compile .cache/nightly_fuzz_driver.py
+
+      - name: Build ReleaseSafe CLI binary
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Sweep corpus through fuzz harness (all profiles x endians, GPA leak check)
+        run: |
+          set -o pipefail
+          mkdir -p tests/fuzz-artifacts
+          zig build fuzz -Doptimize=Debug 2>&1 | tee tests/fuzz-artifacts/sweep.log
+
+      - name: Evolve persisted corpus (acceptance-filtered mutations)
+        run: python3 .cache/nightly_fuzz_driver.py evolve --candidates 15000 --max-adds 300 --seed $((NIGHTLY_SEED_BASE + 2))
+
+      - name: Mutation campaign — both profiles, little endian (leg 1)
+        run: python tests/fuzz_mutation.py --iterations 100000 --seed "${NIGHTLY_SEED_BASE}"
+
+      - name: Mutation campaign — both profiles x both endians (leg 2)
+        run: python3 .cache/nightly_fuzz_driver.py matrix-leg --iterations 50000 --seed $((NIGHTLY_SEED_BASE + 1))
+
+      - name: Save evolved corpus for next run
+        if: always()
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          key: fuzz-corpus-${{ github.run_id }}
+          path: .cache/fuzz-corpus
+
+      - name: Minimize crashing input and collect repro context
+        if: failure()
+        run: python3 .cache/nightly_fuzz_driver.py report
+
+      - name: Upload Nightly Fuzz Crash Artifacts on Failure
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-fuzz-artifacts-ubuntu-24.04
+          path: tests/fuzz-artifacts/
+          if-no-files-found: ignore

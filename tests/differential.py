@@ -2,11 +2,17 @@
 True Differential Testing Harness for SafeGGUF vs Upstream ggml 0.23.0
 Compares acceptance verdicts between SafeGGUF (--profile llama-cpp)
 and the compiled upstream ggml oracle (commit e91ded11bdcd78c42f9c8d3978ff6686eb4c1226).
+
+Besides the hand-written fixtures in tests/fixtures/, the harness also sweeps
+the systematically generated differential matrix from tests/differential_matrix.py
+(tests/fixtures/matrix/, roadmap issue #7) when it has been generated.
 """
 
 import os
 import subprocess
 import sys
+
+import differential_matrix
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -123,6 +129,12 @@ EXPECTED_MATRIX = {
     ),
 }
 
+# Roadmap issue #7: wire in the systematically generated differential matrix
+# (all 35 active GGML types x boundary shapes + n_dims/alignment/metadata
+# boundaries). Generated entries are marked by the "matrix/" key prefix and a
+# "[GENERATED]" rationale prefix; see tests/differential_matrix.py.
+EXPECTED_MATRIX.update(differential_matrix.generated_expected_entries())
+
 def ensure_binaries():
     if not os.path.exists(SAFEGGUF_BIN):
         print(f"SafeGGUF binary not found at {SAFEGGUF_BIN}. Running zig build...")
@@ -183,13 +195,21 @@ def main():
     assert_oracle_identity()
 
     fixtures = sorted([f for f in os.listdir(FIXTURES_DIR) if f.endswith(".gguf")])
+    matrix_dir = os.path.join(FIXTURES_DIR, "matrix")
+    if os.path.isdir(matrix_dir):
+        fixtures += ["matrix/" + f for f in sorted(os.listdir(matrix_dir)) if f.endswith(".gguf")]
+    else:
+        print("Note: generated matrix not found; run `python tests/differential_matrix.py` to include it.\n")
+    fixtures.sort()
     if not fixtures:
         print("Error: No test fixtures found. Run generate_fixtures.py first.")
         sys.exit(1)
 
-    print(f"Loaded {len(fixtures)} fixtures from {FIXTURES_DIR}\n")
-    print(f"{'Fixture':<34} | {'SafeGGUF':<8} | {'Upstream Load':<13} | {'Upstream NoLoad':<15} | {'Verdict'}")
-    print("-" * 105)
+    generated_count = sum(1 for f in fixtures if f.startswith(differential_matrix.MATRIX_PREFIX))
+    print(f"Loaded {len(fixtures)} fixtures from {FIXTURES_DIR} "
+          f"({len(fixtures) - generated_count} hand-written + {generated_count} generated matrix)\n")
+    print(f"{'Fixture':<44} | {'SafeGGUF':<8} | {'Upstream Load':<13} | {'Upstream NoLoad':<15} | {'Verdict'}")
+    print("-" * 115)
 
     failures = []
     for f in fixtures:
@@ -230,16 +250,18 @@ def main():
         else:
             status_note = "MATCH (100% UNANIMOUS)"
 
-        print(f"{f:<34} | {safe_verdict:<8} | {up_load_verdict:<13} | {up_noload_verdict:<15} | {status_note}")
+        print(f"{f:<44} | {safe_verdict:<8} | {up_load_verdict:<13} | {up_noload_verdict:<15} | {status_note}")
 
-    print("-" * 105)
+    print("-" * 115)
     if failures:
         print("\nDIFFERENTIAL FAILURES DETECTED:")
         for fail in failures:
             print("  X " + fail)
         sys.exit(1)
 
-    print(f"\n✓ True Differential Test Suite PASSED! All {len(fixtures)} fixtures verified with full 3-column assertions against upstream ggml 0.23.0.")
+    print(f"\n✓ True Differential Test Suite PASSED! All {len(fixtures)} fixtures verified with full 3-column "
+          f"assertions against upstream ggml 0.23.0 "
+          f"({len(fixtures) - generated_count} hand-written + {generated_count} generated matrix).")
 
 if __name__ == "__main__":
     main()
