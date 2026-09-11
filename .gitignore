@@ -11,6 +11,8 @@ tests/fixtures/negative/
 tests/corpus/*.gguf
 .cache/
 tests/oracle/ggml_oracle
+tests/oracle/ggml_oracle_pinned
+tests/oracle/ggml_oracle_rolling
 
 
 

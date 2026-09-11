@@ -23,6 +23,37 @@ fn testOneProfileEndian(
     defer val.deinitDocument(&doc);
 }
 
+/// Fuzzer limits kept tight enough for in-process coverage fuzzing (4 MB
+/// quota, bounded work) while still exercising parser/validator paths.
+const fuzz_limits = limits.Limits{
+    .max_tensors = 1000,
+    .max_metadata_entries = 1000,
+    .max_string_bytes = 1024,
+    .max_tensor_name_bytes = 64,
+    .max_dimensions = 4,
+    .max_array_elements = 10_000,
+    .max_variable_array_elements = 1000,
+    .max_metadata_depth = 16,
+    .max_total_alloc_bytes = 4 * 1024 * 1024, // 4 MB quota for fuzzer
+    .max_work_units = 100_000,
+};
+
+/// Single profile x endian entry point for the coverage-guided lane (A5),
+/// where each fuzz target fuzzes exactly one combination.
+pub fn fuzzOne(bytes: []const u8, profile: safegguf.types.Profile, endian: std.builtin.Endian) void {
+    if (bytes.len < 12) return;
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer {
+        const check = gpa.deinit();
+        if (check == .leak) {
+            @panic("Memory leak detected in fuzz target");
+        }
+    }
+
+    testOneProfileEndian(bytes, profile, endian, fuzz_limits, gpa.allocator());
+}
+
 pub fn fuzzBuffer(bytes: []const u8) void {
     if (bytes.len < 12) return;
 
@@ -34,25 +65,12 @@ pub fn fuzzBuffer(bytes: []const u8) void {
         }
     }
 
-    const fuzzer_limits = limits.Limits{
-        .max_tensors = 1000,
-        .max_metadata_entries = 1000,
-        .max_string_bytes = 1024,
-        .max_tensor_name_bytes = 64,
-        .max_dimensions = 4,
-        .max_array_elements = 10_000,
-        .max_variable_array_elements = 1000,
-        .max_metadata_depth = 16,
-        .max_total_alloc_bytes = 4 * 1024 * 1024, // 4 MB quota for fuzzer
-        .max_work_units = 100_000,
-    };
-
     const profiles = [_]safegguf.types.Profile{ .gguf_spec, .llama_cpp };
     const endians = [_]std.builtin.Endian{ .little, .big };
 
     for (profiles) |p| {
         for (endians) |e| {
-            testOneProfileEndian(bytes, p, e, fuzzer_limits, gpa.allocator());
+            testOneProfileEndian(bytes, p, e, fuzz_limits, gpa.allocator());
         }
     }
 }

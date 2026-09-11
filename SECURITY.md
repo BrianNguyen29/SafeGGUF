@@ -11,6 +11,33 @@ SafeGGUF is designed as a memory-safe, overflow-checked pre-admission validation
 | 0.3.x   | :white_check_mark: |
 | < 0.3.0 | :x:                |
 
+## Release Verification
+
+Tagged releases publish the cross-platform binaries, `SHA256SUMS.txt`, a keyless Sigstore signature bundle (`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`). GitHub artifact attestations cover the release binaries and the SBOM. The release workflow verifies checksums, signature, and attestations **before** publishing and aborts on any failure.
+
+Signing is keyless (the release workflow's GitHub OIDC identity; no long-lived release private key). Verify a downloaded release before use:
+
+```bash
+# 1. Verify the checksum manifest's keyless Sigstore signature
+cosign verify-blob \
+  --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/BrianNguyen29/SafeGGUF/\.github/workflows/ci\.yml@refs/tags/.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS.txt
+
+# 2. Verify the binaries against the signed manifest
+sha256sum -c SHA256SUMS.txt
+
+# 3. Verify the GitHub build provenance attestation for a binary
+gh attestation verify safegguf-x86_64-linux --repo BrianNguyen29/SafeGGUF
+```
+
+`safegguf --version` reports the embedded version, source commit, Zig version, build mode, target, and pinned ggml target/commit.
+
+### Regression Fixture Provenance
+
+Security regression claims are provenance-tiered: `synthetic-class-exemplar` fixtures exercise a malformed-input bug class and never carry a CVE/advisory identity, while advisory regressions require a verifiable primary source and a documented rejection mechanism. Mechanism-equivalent cases are labeled as such and are not claimed as byte-for-byte reproductions of downstream behavior.
+
 ## Threat Model & Security Invariants
 
 SafeGGUF enforces pre-admission defense-in-depth before untrusted model files are mapped into memory or parsed by upstream C/C++ runtimes (such as `llama.cpp` or `ggml`):
