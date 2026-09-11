@@ -93,6 +93,8 @@ SafeGGUF incorporates an exhaustive, multi-tier verification harness:
    Provides an official `LLVMFuzzerTestOneInput` C ABI entry point for libFuzzer/OSS-Fuzz and a corpus runner (`zig build fuzz`) verifying parser memory safety across 26 adversarial seed fixtures.
 4. **Leak-Free Unit & Regression Suite (`zig build test`):**
    47 exhaustive unit and regression tests verifying arithmetic overflows, trailing padding truncation, zero-tensor spec alignment, signed dimension bounds, Validator reuse lifecycle, quota tracking, and DoS limits with 0 memory leaks under `std.testing.allocator` (enforced on Ubuntu & macOS in CI).
+5. **Negative Corpus & Advisory Provenance (`tests/negative_corpus.py`):**
+   Reject-contract corpus split by provenance: `synthetic-class-exemplar` fixtures are hand-built malformed inputs for a specific bug class and never borrow a CVE/advisory identity, while `advisory-regression` cases are admitted only with a verifiable primary source and a documented rejection mechanism. Mechanism-equivalent cases are labeled as such and are not presented as byte-for-byte reproductions of downstream behavior.
 
 ---
 
@@ -105,6 +107,27 @@ SafeGGUF acts as a fast pre-admission barrier inspecting headers before runtime 
   1. **Immutable Content-Addressed Storage (CAS):** Store models in read-only volumes (e.g., S3/OCI read-only layers, dm-verity) and validate before promoting to the admitted store.
   2. **File Descriptor Chaining:** In programmatic / library integrations, open the file descriptor once with read-only permissions (`O_RDONLY`), validate the descriptor via SafeGGUF, and pass the same descriptor to the runtime loader.
   3. **Digest Verification:** Verify SHA-256 or BLAKE3 digests of admitted artifacts before deployment.
+
+### Verifying Release Artifacts
+
+Tagged releases publish the cross-platform binaries, `SHA256SUMS.txt`, a keyless Sigstore signature bundle (`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`). GitHub artifact attestations cover the release binaries and the SBOM, and the release workflow verifies checksums, signature, and attestations **before** publishing — any failure aborts the release (no long-lived release signing key is used; signatures are issued to the release workflow's OIDC identity).
+
+```bash
+# 1. Verify the checksum manifest's keyless Sigstore signature
+cosign verify-blob \
+  --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/BrianNguyen29/SafeGGUF/\.github/workflows/ci\.yml@refs/tags/.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS.txt
+
+# 2. Verify the binaries against the signed manifest
+sha256sum -c SHA256SUMS.txt
+
+# 3. Verify the GitHub build provenance attestation for a binary
+gh attestation verify safegguf-x86_64-linux --repo BrianNguyen29/SafeGGUF
+```
+
+Do not rely on a manually compared checksum alone: the manifest is only meaningful when its signature and the binaries' provenance attestations verify.
 
 ---
 
@@ -186,7 +209,25 @@ pub fn validateGgufFile(allocator: std.mem.Allocator, file: std.fs.File) !void {
 
 ## 💻 CLI Usage
 
-Optional flags: `--endian <little|big>`, `--format <text|json>`, `--profile <gguf-spec|llama-cpp>`, and `--max-variable-array-elements <N>` — the string/nested-array element sanity cap (default `1,000,000`, raised from 100,000 so real tokenizer vocabularies are admitted; accepted range `1..10,000,000`). The override flag and the raised default are **unreleased `main`** behavior: the v0.3.5 release has no override and caps at 100,000.
+Optional flags: `--endian <little|big>`, `--format <text|json>`, `--profile <gguf-spec|llama-cpp>`, and `--max-variable-array-elements <N>` — the string/nested-array element sanity cap (default `1,000,000`, raised from 100,000 so real tokenizer vocabularies are admitted; accepted range `1..10,000,000`). The override flag and the raised default are **unreleased `main`** behavior: the v0.3.5 release has no override and caps at 100,000. `--version` prints build provenance and exits `0`; unknown flags fail closed with exit code `64`.
+
+### Build Provenance (`--version`)
+
+```bash
+safegguf --version
+```
+
+```text
+SafeGGUF 0.3.5
+source_commit: 1036a2766c397192af6d97a5fe9c9ba2ffa9b945
+zig: 0.13.0
+build_mode: ReleaseSafe
+target: x86_64-linux
+ggml_target: 0.23.0
+ggml_commit: e91ded11bdcd78c42f9c8d3978ff6686eb4c1226
+```
+
+All values are injected at build time from the source tree, toolchain, and build options (`-Dversion=` overrides the version); no wall-clock timestamp is embedded.
 
 ### Inspect a Model (Human-Readable Output)
 

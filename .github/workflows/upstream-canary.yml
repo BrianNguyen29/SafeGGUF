@@ -1,0 +1,95 @@
+# Rolling-upstream canary (F-09, Oracle B) — advisory drift detection against
+# the moving upstream ggml default branch.
+#
+# Resolves refs/heads/master to exactly one full commit SHA, builds the rolling
+# oracle from that SHA through tests/build_oracle.sh --name rolling (isolated
+# cache .cache/oracle/rolling/<sha>/ and binary tests/oracle/ggml_oracle_rolling),
+# then runs tests/differential.py --oracle <rolling> --report-json, which
+# compares the rolling type table first and then sweeps the pinned fixture
+# matrix.
+#
+# Report-only: divergence findings never fail this workflow; only
+# infrastructure failures (resolve/build/identity/differential run) can go red.
+# SafeGGUF's pinned Oracle A (tests/oracle/ggml_oracle, ggml v0.23.0
+# e91ded11...) stays blocking in ci.yml and is never touched or replaced here.
+# Baseline changes require human review and an explicit commit — no automatic
+# baseline update.
+#
+# Non-blocking for PRs: this workflow has no pull_request trigger and is not a
+# required check.
+#
+# Triggers: nightly cron + manual workflow_dispatch (optional full-SHA override).
+
+name: Upstream Canary (rolling oracle)
+
+on:
+  schedule:
+    - cron: '43 4 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Upstream ggml full commit SHA (blank: resolve refs/heads/master once)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-canary
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: Rolling upstream drift report on ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.13.0
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Generate Fixtures and Differential Matrix
+        run: |
+          python tests/generate_fixtures.py
+          python tests/differential_matrix.py
+
+      - name: Build SafeGGUF (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Run rolling upstream canary (resolve SHA, build Oracle B, drift report)
+        env:
+          CANARY_REF: ${{ github.event.inputs.ref }}
+        run: |
+          args=(--report .cache/canary/upstream-canary-report.json
+                --summary .cache/canary/upstream-canary-summary.md)
+          if [ -n "${CANARY_REF:-}" ]; then
+            args+=(--ref "${CANARY_REF}")
+          fi
+          python tests/canary_drift.py "${args[@]}"
+
+      - name: Publish canary summary
+        if: always()
+        run: |
+          if [ -f .cache/canary/upstream-canary-summary.md ]; then
+            cat .cache/canary/upstream-canary-summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "canary summary not produced" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload canary report and summary
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: upstream-canary-report
+          path: .cache/canary/
+          if-no-files-found: ignore

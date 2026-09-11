@@ -359,6 +359,23 @@ test "arithmetic: computeTensorBytes for Q4_0 and divisibility" {
     try std.testing.expectError(error.ArithmeticOverflow, arithmetic.computeTensorBytes(&overflow_dims, 0));
 }
 
+test "arithmetic: computeTensorBytes rejects flagship and cumulative-overflow dims" {
+    // Flagship advisory shape (CVE-2026-33298 class): F32 [1024, 1024,
+    // 2^42 + 1, 1]. The cumulative element product 2^62 + 2^20 fits u64, so
+    // rejection must come from the checked byte multiplication
+    // (x4 = 2^64 + 2^22), never from wrapping.
+    const flagship_dims = [_]u64{ 1024, 1024, (1 << 42) + 1, 1 };
+    try std.testing.expectEqual(@as(u64, (1 << 62) + (1 << 20)), try arithmetic.checkedProduct(&flagship_dims));
+    try std.testing.expectError(error.ArithmeticOverflow, arithmetic.computeTensorBytes(&flagship_dims, 0));
+
+    // Cumulative-overflow dims: the running product itself crosses u64 while
+    // the dimension list is multiplied (2^21 x 2^21 x 2^21 x 2 = 2^64), so
+    // the overflow is caught before any block/byte arithmetic.
+    const cumulative_dims = [_]u64{ 1 << 21, 1 << 21, 1 << 21, 2 };
+    try std.testing.expectError(error.ArithmeticOverflow, arithmetic.checkedProduct(&cumulative_dims));
+    try std.testing.expectError(error.ArithmeticOverflow, arithmetic.computeTensorBytes(&cumulative_dims, 0));
+}
+
 // Deterministic LCG stream; identical constants are used by tests/arithmetic_oracle.py.
 fn nextRandomU64(state: *u64) u64 {
     state.* = state.* *% 6364136223846793005 +% 1442695040888963407;
@@ -1560,22 +1577,36 @@ test "quota_allocator: allocation, resize, free, and quota limit" {
 /// Parent allocator that passes alloc/free through but always refuses
 /// in-place resizes, simulating a parent that cannot grow a buffer.
 const ParentNoResize = struct {
+    /// Dual-toolchain shim, mirroring src/gguf/limits.zig: Zig 0.13 vtable
+    /// alignment is `u8`, Zig 0.14+ uses `std.mem.Alignment` and requires a
+    /// `remap` entry. The mock still refuses every in-place resize.
+    const VtableAlignment = if (@hasDecl(std.mem, "Alignment")) std.mem.Alignment else u8;
+
     backing: std.mem.Allocator,
 
     fn allocator(self: *ParentNoResize) std.mem.Allocator {
-        return .{ .ptr = self, .vtable = &.{
-            .alloc = rawAlloc,
-            .resize = rawResize,
-            .free = rawFree,
-        } };
+        const vtable: *const std.mem.Allocator.VTable = if (comptime @hasField(std.mem.Allocator.VTable, "remap"))
+            &.{ .alloc = rawAlloc, .resize = rawResize, .free = rawFree, .remap = rawNoRemap }
+        else
+            &.{ .alloc = rawAlloc, .resize = rawResize, .free = rawFree };
+        return .{ .ptr = self, .vtable = vtable };
     }
 
-    fn rawAlloc(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
+    fn rawNoRemap(ctx: *anyopaque, buf: []u8, buf_align: VtableAlignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        _ = ctx;
+        _ = buf;
+        _ = buf_align;
+        _ = new_len;
+        _ = ret_addr;
+        return null;
+    }
+
+    fn rawAlloc(ctx: *anyopaque, len: usize, ptr_align: VtableAlignment, ret_addr: usize) ?[*]u8 {
         const self: *ParentNoResize = @ptrCast(@alignCast(ctx));
         return self.backing.rawAlloc(len, ptr_align, ret_addr);
     }
 
-    fn rawResize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
+    fn rawResize(ctx: *anyopaque, buf: []u8, buf_align: VtableAlignment, new_len: usize, ret_addr: usize) bool {
         _ = ctx;
         _ = buf;
         _ = buf_align;
@@ -1584,7 +1615,7 @@ const ParentNoResize = struct {
         return false;
     }
 
-    fn rawFree(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
+    fn rawFree(ctx: *anyopaque, buf: []u8, buf_align: VtableAlignment, ret_addr: usize) void {
         const self: *ParentNoResize = @ptrCast(@alignCast(ctx));
         self.backing.rawFree(buf, buf_align, ret_addr);
     }

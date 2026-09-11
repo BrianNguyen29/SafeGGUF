@@ -139,6 +139,17 @@ def build_int_overflow_nbytes():
     return _header(1, 0) + _tensor_desc(b"ovf_bytes", 2, [0x4000000000000000, 1], 0, 0)
 
 
+def build_int_overflow_flagship_nbytes():
+    # Flagship checked byte-size overflow shape (mechanism-level exemplar for
+    # the CVE-2026-33298 advisory placeholder; not an advisory reproduction):
+    # F32 [1024, 1024, 2^42 + 1, 1]. The element product 2^62 + 2^20 fits u64,
+    # but the byte multiplication (x4 = 2^64 + 2^22) wraps u64. Kept as a
+    # synthetic-* exemplar until the placeholder's provenance is triaged.
+    return _header(1, 0) + _tensor_desc(
+        b"ovf_flagship", 4, [1024, 1024, 0x400000000001, 1], 0, 0
+    )
+
+
 def build_dims_ndims_5():
     # n_dims = 5 exceeds the GGUF v3 maximum of 4.
     return _header(1, 0) + _tensor_desc(b"five_dims", 5, [1, 1, 1, 1, 1], 0, 0)
@@ -280,6 +291,27 @@ CASES = [
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_ArithmeticOverflow): "
             "byte-size computation overflows u64 under checked arithmetic."
+        ),
+        "expected_error_code": "E_ArithmeticOverflow",
+        "cli_args": [],
+    },
+    {
+        "name": "synthetic-int-overflow-flagship-nbytes.gguf",
+        "fixture_type": "synthetic-class-exemplar",
+        "bug_class": "int-overflow",
+        "build": build_int_overflow_flagship_nbytes,
+        "source": (
+            "Synthetic bug-class exemplar (no advisory provenance): flagship "
+            "checked byte-size overflow shape - F32 [1024, 1024, 2^42 + 1, 1]; "
+            "the element product 2^62 + 2^20 fits u64, but nbytes x 4 wraps "
+            "u64 (2^64 + 2^22)."
+        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
+        "expected_behavior": (
+            "SafeGGUF rejects (exit 2, error_code E_ArithmeticOverflow): "
+            "checked byte-size computation overflows u64 before allocation."
         ),
         "expected_error_code": "E_ArithmeticOverflow",
         "cli_args": [],
@@ -537,20 +569,36 @@ ADVISORY_PLACEHOLDERS = [
 ]
 
 
+# Fields a promoted cve-* case must populate before generation, covering the
+# advisory provenance schema available today: fixture category, primary
+# source_url, affected/patched references and the fixture sha256. Synthetic
+# cases legitimately carry null provenance (no advisory exists) and
+# ADVISORY_PLACEHOLDERS stay manifest-only with TRIAGE-PENDING fields; only
+# cve-* entries in CASES are held to triaged values for every field here.
+REQUIRED_CVE_FIELDS = (
+    "fixture_type",
+    "source_url",
+    "affected_commit",
+    "patched_commit",
+    "sha256",
+)
+
+
 def _require_triaged_provenance():
     """A cve-* fixture may only exist once its advisory provenance is triaged.
 
     Enforces the corpus invariant mechanically: synthetic fixtures must not
-    borrow an advisory identity, and a cve-* case must carry a verifiable
-    primary source plus affected/patched references (never TRIAGE-PENDING).
+    borrow an advisory identity, and a cve-* case must carry every
+    REQUIRED_CVE_FIELDS entry with a triaged value (never missing, empty,
+    null or TRIAGE-PENDING).
     """
     for case in CASES:
         if not case["name"].startswith("cve-"):
             continue
         missing = [
             field
-            for field in ("source_url", "affected_commit", "patched_commit")
-            if not case[field] or case[field] == "TRIAGE-PENDING"
+            for field in REQUIRED_CVE_FIELDS
+            if not case.get(field) or case.get(field) == "TRIAGE-PENDING"
         ]
         if missing:
             raise SystemExit(

@@ -1,0 +1,118 @@
+# Coverage-guided fuzz lane (A5) — advisory nightly search on the fuzz-only
+# Zig 0.14.1 toolchain. Production stays pinned to 0.13.0: the PR-blocking
+# `test`, `fuzz` (corpus sweep) and `bench` steps in ci.yml are unchanged, and
+# this workflow has no pull_request trigger.
+#
+# What runs: tests/fuzz/coverage_lane.py drives `zig build --fuzz` once per
+# profile x endian target under a hard time budget, parses the built-in
+# fuzzer's machine-readable artifacts (<cache>/v/<digest> coverage bitmap,
+# <cache>/f/<test>/N corpus entries) and reports a coverage summary.
+#
+# Budget: 30 min/platform of fuzzing (--budget-seconds 1800) split across the
+# required targets gguf-spec/little, gguf-spec/big, llama-cpp/little, plus a
+# 5 min llama-cpp/big smoke target; job timeout 90 min covers the instrumented
+# rebuilds. Override via workflow_dispatch inputs.
+#
+# Corpus policy (mirrors nightly.yml, see tests/fuzz/README.md): coverage is
+# the only promotion gate (never PASS); malformed inputs high-value; persisted
+# corpus <= 10,000 entries / 256 MiB, sha256-deduped, oldest pruned first,
+# restored/saved through actions/cache under coverage-fuzz-corpus-*.
+#
+# Crash policy: a harness panic/signal (trace tops out in src/ or tests/),
+# unexpected early exit, startup or stall timeout fails the lane and uploads
+# original + repro-validated minimized input + metadata (target, profile,
+# endian, crash site, repro result, engine + Zig version, compiler, commit,
+# coverage stats, sanitizer story, repro command) under
+# tests/fuzz-artifacts/coverage-fuzz/. A crash inside Zig 0.14.1's built-in
+# fuzzer (lib/fuzzer.zig) whose recovered input does not replay is preserved
+# as an advisory `engine_crash` artifact and does not fail the lane.
+# Promotion to a deterministic regression happens on the pinned 0.13.0
+# toolchain.
+#
+# Triggers: nightly cron + manual workflow_dispatch.
+
+name: Coverage Fuzz (Zig 0.14.1 advisory)
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      budget_seconds:
+        description: 'Fuzzing budget for the required targets (default 1800 = 30 min)'
+        required: false
+        type: string
+      smoke_seconds:
+        description: 'Budget for the llama-cpp/big smoke target (default 300)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-fuzz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  coverage-fuzz:
+    name: Coverage-guided fuzz on ubuntu-24.04 (Zig 0.14.1, advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Zig (fuzz-only lane)
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.1
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Generate Fixtures and Seed Corpus
+        run: python tests/generate_fixtures.py
+
+      - name: Restore persisted coverage corpus
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .cache/coverage-fuzz/corpus
+          key: coverage-fuzz-corpus-${{ github.run_id }}
+          restore-keys: |
+            coverage-fuzz-corpus-
+
+      - name: Run bounded coverage fuzz lane
+        env:
+          BUDGET_SECONDS: ${{ github.event.inputs.budget_seconds || '1800' }}
+          SMOKE_SECONDS: ${{ github.event.inputs.smoke_seconds || '300' }}
+        run: |
+          python tests/fuzz/coverage_lane.py \
+            --budget-seconds "$BUDGET_SECONDS" \
+            --smoke-seconds "$SMOKE_SECONDS"
+
+      - name: Publish coverage summary
+        if: always()
+        run: |
+          if [ -f tests/fuzz-artifacts/coverage-fuzz/coverage_summary.txt ]; then
+            cat tests/fuzz-artifacts/coverage-fuzz/coverage_summary.txt >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "coverage summary not produced" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Save evolved corpus for next run
+        if: always()
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          key: coverage-fuzz-corpus-${{ github.run_id }}
+          path: .cache/coverage-fuzz/corpus
+
+      - name: Upload coverage summary and crash artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-fuzz-artifacts-ubuntu-24.04
+          path: tests/fuzz-artifacts/coverage-fuzz/
+          if-no-files-found: ignore

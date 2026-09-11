@@ -1,5 +1,6 @@
 const std = @import("std");
 const safegguf = @import("safegguf");
+const build_info = @import("build_info.zig");
 
 const types = safegguf.types;
 const err_types = safegguf.error_types;
@@ -41,6 +42,11 @@ fn run() anyerror!void {
 
     if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "help")) {
         try printUsage(stdout);
+        std.process.exit(0);
+    }
+
+    if (std.mem.eql(u8, cmd, "--version")) {
+        try printVersion(stdout);
         std.process.exit(0);
     }
 
@@ -414,8 +420,18 @@ fn writeTextValue(w: anytype, s: []const u8) !void {
     }
 }
 
+fn printVersion(writer: anytype) !void {
+    try writer.print("SafeGGUF {s}\n", .{build_info.version});
+    try writer.print("source_commit: {s}\n", .{build_info.source_commit});
+    try writer.print("zig: {s}\n", .{build_info.zig_version});
+    try writer.print("build_mode: {s}\n", .{build_info.build_mode});
+    try writer.print("target: {s}\n", .{build_info.target});
+    try writer.print("ggml_target: {s}\n", .{build_info.ggml_target});
+    try writer.print("ggml_commit: {s}\n", .{build_info.ggml_commit});
+}
+
 fn printUsage(writer: anytype) !void {
-    try writer.print("SafeGGUF v0.3.5 - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{});
+    try writer.print("SafeGGUF v{s} - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{build_info.version});
     try writer.print("Usage: safegguf inspect <path_to_model.gguf> [options]\n", .{});
     try writer.print("Options:\n", .{});
     try writer.print("  --endian <little|big>           Byte order (default: little)\n", .{});
@@ -425,4 +441,5 @@ fn printUsage(writer: anytype) !void {
     try writer.print("                                    llama-cpp: ggml 0.23.0 safe pre-admission subset\n", .{});
     try writer.print("  --max-variable-array-elements <N> String/nested-array element sanity cap (default: {d})\n", .{(limits.Limits{}).max_variable_array_elements});
     try writer.print("  --help, -h                      Display this help message and exit\n", .{});
+    try writer.print("  --version                       Print version and build provenance and exit\n", .{});
 }

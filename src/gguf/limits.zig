@@ -1,6 +1,13 @@
 const std = @import("std");
 const err = @import("error.zig");
 
+/// Dual-toolchain shim: Zig 0.13 spells `std.mem.Allocator` vtable alignment as
+/// `u8`; Zig 0.14+ uses `std.mem.Alignment`. The pinned production toolchain
+/// remains 0.13.0; the coverage-fuzz lane (A5) compiles this module with the
+/// fuzz-only 0.14.1 toolchain against the same source. No runtime behavior
+/// differs on either toolchain.
+const VtableAlignment = if (@hasDecl(std.mem, "Alignment")) std.mem.Alignment else u8;
+
 pub const Limits = struct {
     max_tensors: u64 = 1_000_000,
     max_metadata_entries: u64 = 1_000_000,
@@ -93,17 +100,20 @@ pub const QuotaAllocator = struct {
     }
 
     pub fn allocator(self: *QuotaAllocator) std.mem.Allocator {
+        // Zig 0.14+ requires the `remap` vtable entry; 0.13 rejects it. The
+        // conditional is comptime-known, so only the matching branch is
+        // semantically analyzed on each toolchain.
+        const vtable: *const std.mem.Allocator.VTable = if (comptime @hasField(std.mem.Allocator.VTable, "remap"))
+            &.{ .alloc = alloc, .resize = resize, .free = free, .remap = remap }
+        else
+            &.{ .alloc = alloc, .resize = resize, .free = free };
         return .{
             .ptr = self,
-            .vtable = &.{
-                .alloc = alloc,
-                .resize = resize,
-                .free = free,
-            },
+            .vtable = vtable,
         };
     }
 
-    fn alloc(ctx: *anyopaque, len: usize, ptr_align: u8, ret_addr: usize) ?[*]u8 {
+    fn alloc(ctx: *anyopaque, len: usize, ptr_align: VtableAlignment, ret_addr: usize) ?[*]u8 {
         const self: *QuotaAllocator = @ptrCast(@alignCast(ctx));
         const new_total = std.math.add(u64, self.allocated_bytes, len) catch {
             self.quota_exceeded = true;
@@ -122,7 +132,7 @@ pub const QuotaAllocator = struct {
         return result;
     }
 
-    fn resize(ctx: *anyopaque, buf: []u8, buf_align: u8, new_len: usize, ret_addr: usize) bool {
+    fn resize(ctx: *anyopaque, buf: []u8, buf_align: VtableAlignment, new_len: usize, ret_addr: usize) bool {
         const self: *QuotaAllocator = @ptrCast(@alignCast(ctx));
         if (new_len > buf.len) {
             const diff = new_len - buf.len;
@@ -153,7 +163,15 @@ pub const QuotaAllocator = struct {
         }
     }
 
-    fn free(ctx: *anyopaque, buf: []u8, buf_align: u8, ret_addr: usize) void {
+    /// Zig 0.14+ vtable entry: in-place resize with relocation allowed. This
+    /// allocator never relocates (quota accounting would need to move), so it
+    /// either resizes in place or reports "allocate + copy" via null.
+    fn remap(ctx: *anyopaque, buf: []u8, buf_align: VtableAlignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        if (resize(ctx, buf, buf_align, new_len, ret_addr)) return buf.ptr;
+        return null;
+    }
+
+    fn free(ctx: *anyopaque, buf: []u8, buf_align: VtableAlignment, ret_addr: usize) void {
         const self: *QuotaAllocator = @ptrCast(@alignCast(ctx));
         self.parent_allocator.rawFree(buf, buf_align, ret_addr);
         if (self.allocated_bytes >= buf.len) {

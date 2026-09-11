@@ -259,34 +259,41 @@ def test_variable_array_cap_override():
     print("Running variable-array cap override tests (F-01 flag contract)...")
 
     fixture_path = os.path.join(FIXTURES, "variable_array_11.gguf")
-    write_variable_array_fixture(fixture_path, 11)
 
-    # 1. Default cap (1,000,000) admits the fixture.
-    rc, stdout, stderr = run_cli("inspect", fixture_path)
-    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
-    assert "Result: PASS" in stdout, f"Missing PASS: {stdout}"
+    try:
+        write_variable_array_fixture(fixture_path, 11)
 
-    # 2. Override at the exact element count still admits it.
-    rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "11")
-    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
-    assert "Result: PASS" in stdout, f"Missing PASS: {stdout}"
+        # 1. Default cap (1,000,000) admits the fixture.
+        rc, stdout, stderr = run_cli("inspect", fixture_path)
+        assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+        assert "Result: PASS" in stdout, f"Missing PASS: {stdout}"
 
-    # 3. Override below the element count rejects as a local policy/resource
-    #    limit (exit 2), distinct from a format rejection.
-    rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "10", "--format", "json")
-    assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
-    data = json.loads(stdout)
-    assert data["status"] == "REJECT"
-    assert data["error_code"] == "E_ResourceLimitExceeded"
-    assert data["category"] == "resource"
-    assert data["findings"][0]["code"] == "E_ResourceLimitExceeded"
+        # 2. Override at the exact element count still admits it.
+        rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "11")
+        assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+        assert "Result: PASS" in stdout, f"Missing PASS: {stdout}"
 
-    # 4. Text output mirrors the same code.
-    rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "10")
-    assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
-    assert "E_ResourceLimitExceeded" in stderr, f"Missing resource error: {stderr}"
+        # 3. Override below the element count rejects as a local policy/resource
+        #    limit (exit 2), distinct from a format rejection.
+        rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "10", "--format", "json")
+        assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
+        data = json.loads(stdout)
+        assert data["status"] == "REJECT"
+        assert data["error_code"] == "E_ResourceLimitExceeded"
+        assert data["category"] == "resource"
+        assert data["findings"][0]["code"] == "E_ResourceLimitExceeded"
 
-    print("  ✓ Variable-array cap override tests passed.")
+        # 4. Text output mirrors the same code.
+        rc, stdout, stderr = run_cli("inspect", fixture_path, "--max-variable-array-elements", "10")
+        assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
+        assert "E_ResourceLimitExceeded" in stderr, f"Missing resource error: {stderr}"
+
+        print("  ✓ Variable-array cap override tests passed.")
+    finally:
+        # This scratch fixture is not registered in differential.py's
+        # EXPECTED_MATRIX; remove it so later fixture sweeps stay clean.
+        if os.path.exists(fixture_path):
+            os.remove(fixture_path)
 
 def test_usage_and_flags():
     print("Running usage and flag validation tests (must exit code 64)...")
