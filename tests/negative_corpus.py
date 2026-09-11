@@ -1,38 +1,43 @@
 """
-Negative CVE/upstream regression corpus (roadmap issue #9).
+Negative corpus: synthetic bug-class exemplars + advisory placeholder registry
+(roadmap issue #9; provenance split per deep-review F-02).
 
-Turns PoC-inspired malformed GGUF inputs (parse / int-overflow / dims /
-types / alloc / metadata bug classes) into regression fixtures and asserts
-that SafeGGUF rejects every one of them (exit 2) with the expected error
-code.
+Two provenance categories - never mix them:
 
-Naming convention
------------------
-  cve-YYYY-NNNN[-slug].gguf     Advisory-sourced case (CVE id); the optional
-                                slug disambiguates multiple mechanisms from
-                                one advisory.
-  upstream-issue-NNNN[-slug].gguf  Upstream tracker case; NNNN is the upstream
-                                issue/PR number. IDs 0001-0009 are reserved
-                                placeholders for bug-class exemplars that do
-                                not yet have a specific tracker link; when a
-                                concrete PoC is triaged, rename the fixture to
-                                the real issue number and update `source` and
-                                `affected_commit` in CASES below.
+1. Synthetic bug-class exemplars (generated + verified fixtures)
+   Name:  synthetic-<bug-class>-<slug>.gguf
+   Hand-built malformed inputs that exercise a specific bug class (parse /
+   int-overflow / dims / types / alloc / metadata). They are NOT
+   reproductions of any specific CVE/advisory and must not carry an advisory
+   identity; `source` states the mechanism only.
+
+2. True advisory regressions (placeholders until triaged)
+   Name:  cve-YYYY-NNNN[-slug].gguf  (reserved)
+   A fixture may use a cve-* name only once it has a verifiable primary
+   source: `source_url` plus affected/patched version-or-commit recorded in
+   the CASES entry. Until then the advisory lives in ADVISORY_PLACEHOLDERS as
+   a manifest-only entry (fixture: null, provenance fields TRIAGE-PENDING) and
+   is neither generated nor verified. Never invent tracker URLs or commit
+   SHAs; promote a placeholder to a real cve-* fixture only after triage.
 
 Per-case comment convention (the CASES registry is the committed record;
 tests/fixtures/negative/manifest.json is the regenerated snapshot):
 
-  source            Where the case comes from (advisory or tracker reference
-                    plus a one-line description of the bug family).
-  affected_commit   Upstream commit/version range known to be affected, plus
-                    the pinned ggml 0.23.0 commit (e91ded11...) used by this
-                    repo as the upstream behavior reference.
-  expected_behavior What SafeGGUF must do: exit 2 (REJECT) and the expected
-                    error_code surfaced on stderr / JSON.
+  fixture_type       synthetic-class-exemplar | advisory-regression.
+  source             Mechanism description for synthetic cases; primary
+                     advisory reference for triaged advisory cases.
+  source_url         Verifiable primary source URL; None for synthetic cases
+                     (no advisory exists), TRIAGE-PENDING for placeholders.
+  affected_commit    Upstream version/commit range known to be affected, or
+                     None/TRIAGE-PENDING when no advisory provenance exists.
+  patched_commit     Upstream version/commit containing the fix, or
+                     None/TRIAGE-PENDING when no advisory provenance exists.
+  expected_behavior  What SafeGGUF must do: exit 2 (REJECT) and the expected
+                     error_code surfaced on stderr / JSON.
 
-Fixtures are PoC-inspired class exemplars: the byte layout exercises the same
-unchecked-count / unchecked-length family as the advisory, it is not a byte
-copy of the original PoC.
+All cases and fixtures are behavior-referenced against the pinned upstream in
+UPSTREAM_REF (ggml 0.23.0 e91ded11...) and the manifest records that pin
+top-level as `upstream_behavior_reference`.
 
 Generation is fully deterministic: fixed little-endian bytes, no randomness,
 no timestamps, sorted manifest keys. Re-running overwrites the fixture
@@ -199,18 +204,18 @@ def build_metadata_array_count_dos():
 
 CASES = [
     {
-        "name": "cve-2024-25664-parse-metadata-string-past-eof.gguf",
+        "name": "synthetic-parse-metadata-string-past-eof.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "parse",
         "build": build_parse_string_past_eof,
         "source": (
-            "CVE-2024-25664 (ggml-org/llama.cpp, 2024-02 GHSA advisory batch): "
-            "heap overflow in GGUF metadata KV parsing. PoC-inspired class "
-            "exemplar: metadata string whose declared length extends past EOF."
+            "Synthetic bug-class exemplar (no advisory provenance): metadata "
+            "string value declares 60000 bytes while only 8 bytes remain in "
+            "the file; exercises the string-length / EOF-boundary class."
         ),
-        "affected_commit": (
-            "llama.cpp prior to the 2024-02-15 advisory patch release "
-            "(b2490-era); behavior reference for this repo: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_UnexpectedEof): declared "
             "string length extends past end of file; fail closed instead of "
@@ -220,17 +225,18 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "upstream-issue-0001-parse-truncated-tensor-descriptor.gguf",
+        "name": "synthetic-parse-truncated-tensor-descriptor.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "parse",
         "build": build_parse_truncated_tensor_descriptor,
         "source": (
-            "Bug-class exemplar (placeholder upstream-issue-0001, no specific "
-            "tracker link yet): parser trusts the declared tensor count and "
-            "reads a descriptor table that is truncated mid-entry."
+            "Synthetic bug-class exemplar (no advisory provenance): parser "
+            "trusts the declared tensor count and reads a descriptor table "
+            "that is truncated mid-entry."
         ),
-        "affected_commit": (
-            "n/a - class exemplar; behavior reference: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_UnexpectedEof): tensor "
             "descriptor table extends past end of file."
@@ -239,18 +245,18 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "cve-2024-25665-int-overflow-dims-product.gguf",
+        "name": "synthetic-int-overflow-dims-product.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "int-overflow",
         "build": build_int_overflow_dims_product,
         "source": (
-            "CVE-2024-25665 (ggml-org/llama.cpp, 2024-02 GHSA advisory batch): "
-            "attacker-controlled count x size integer overflow. PoC-inspired "
-            "class exemplar in the tensor path: dims [2^63, 2] wrap u64."
+            "Synthetic bug-class exemplar (no advisory provenance): "
+            "element-count product overflow in the tensor path; dims "
+            "[2^63, 2] wrap u64."
         ),
-        "affected_commit": (
-            "llama.cpp prior to the 2024-02-15 advisory patch release "
-            "(b2490-era); behavior reference for this repo: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_ArithmeticOverflow): "
             "element-count product 2^64 overflows u64 under checked arithmetic."
@@ -259,19 +265,18 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "cve-2024-25665-int-overflow-nbytes.gguf",
+        "name": "synthetic-int-overflow-nbytes.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "int-overflow",
         "build": build_int_overflow_nbytes,
         "source": (
-            "CVE-2024-25665 (ggml-org/llama.cpp, 2024-02 GHSA advisory batch): "
-            "attacker-controlled count x size integer overflow. PoC-inspired "
-            "class exemplar: elements fit u64 (2^62) but nbytes = 2^62 x 4 "
-            "wraps u64."
+            "Synthetic bug-class exemplar (no advisory provenance): "
+            "byte-size multiplication overflow; elements fit u64 (2^62) but "
+            "nbytes = 2^62 x 4 wraps u64."
         ),
-        "affected_commit": (
-            "llama.cpp prior to the 2024-02-15 advisory patch release "
-            "(b2490-era); behavior reference for this repo: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_ArithmeticOverflow): "
             "byte-size computation overflows u64 under checked arithmetic."
@@ -280,17 +285,17 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "upstream-issue-0002-dims-ndims-5.gguf",
+        "name": "synthetic-dims-ndims-5.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "dims",
         "build": build_dims_ndims_5,
         "source": (
-            "Bug-class exemplar (placeholder upstream-issue-0002, no specific "
-            "tracker link yet): dimension-count field above the GGUF v3 "
-            "maximum of 4."
+            "Synthetic bug-class exemplar (no advisory provenance): "
+            "dimension-count field above the GGUF v3 maximum of 4."
         ),
-        "affected_commit": (
-            "n/a - class exemplar; behavior reference: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_InvalidDimensionCount): "
             "n_dims 5 > 4."
@@ -299,17 +304,18 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "upstream-issue-0003-dims-uint32-max.gguf",
+        "name": "synthetic-dims-uint32-max.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "dims",
         "build": build_dims_uint32_max,
         "source": (
-            "Bug-class exemplar (placeholder upstream-issue-0003, no specific "
-            "tracker link yet): dim-count field set to UINT32_MAX, claiming a "
-            "4 GiB dimension array from a ~30-byte file."
+            "Synthetic bug-class exemplar (no advisory provenance): "
+            "dim-count field set to UINT32_MAX, claiming a 4 GiB dimension "
+            "array from a ~30-byte file."
         ),
-        "affected_commit": (
-            "n/a - class exemplar; behavior reference: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_InvalidDimensionCount): "
             "n_dims 0xFFFFFFFF > 4."
@@ -318,19 +324,18 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "cve-2024-25668-types-invalid-tensor-type-43.gguf",
+        "name": "synthetic-types-invalid-tensor-type-43.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "types",
         "build": build_types_invalid_tensor_type_43,
         "source": (
-            "CVE-2024-25668 (ggml-org/llama.cpp, 2024-02 GHSA advisory batch): "
-            "integer overflow in GGUF type handling. PoC-inspired class "
-            "exemplar: tensor type id 43, beyond the pinned 43-slot GGML "
-            "table, must never be coerced to a layout."
+            "Synthetic bug-class exemplar (no advisory provenance): tensor "
+            "type id 43, beyond the pinned 43-slot GGML table, must never be "
+            "coerced to a layout."
         ),
-        "affected_commit": (
-            "llama.cpp prior to the 2024-02-15 advisory patch release "
-            "(b2490-era); behavior reference for this repo: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_InvalidTensorType): "
             "tensor type ids >= 43 are rejected."
@@ -339,17 +344,18 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "upstream-issue-0004-types-metadata-value-type-99.gguf",
+        "name": "synthetic-types-metadata-value-type-99.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "types",
         "build": build_types_metadata_value_type_99,
         "source": (
-            "Bug-class exemplar (placeholder upstream-issue-0004, no specific "
-            "tracker link yet): metadata value type id outside the valid "
-            "GGUF range (0..12), type-confusion class."
+            "Synthetic bug-class exemplar (no advisory provenance): "
+            "metadata value type id outside the valid GGUF range (0..12), "
+            "type-confusion class."
         ),
-        "affected_commit": (
-            "n/a - class exemplar; behavior reference: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_InvalidMetadataType): "
             "value type 99 > 12."
@@ -358,18 +364,19 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "upstream-issue-0005-alloc-kv-count-dos.gguf",
+        "name": "synthetic-alloc-kv-count-dos.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "alloc",
         "build": build_alloc_kv_count_dos,
         "source": (
-            "Bug-class exemplar (placeholder upstream-issue-0005, no specific "
-            "tracker link yet): allocation-DoS class - header declares "
-            "UINT64_MAX metadata entries; parsers that allocate per declared "
-            "count before validating exhaust memory."
+            "Synthetic bug-class exemplar (no advisory provenance): "
+            "allocation-DoS class - header declares UINT64_MAX metadata "
+            "entries; parsers that allocate per declared count before "
+            "validating exhaust memory."
         ),
-        "affected_commit": (
-            "n/a - class exemplar; behavior reference: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_ResourceLimitExceeded): "
             "n_kv exceeds the 1,000,000-entry limit before any allocation."
@@ -378,17 +385,18 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "upstream-issue-0006-alloc-key-string-len-dos.gguf",
+        "name": "synthetic-alloc-key-string-len-dos.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "alloc",
         "build": build_alloc_key_string_len_dos,
         "source": (
-            "Bug-class exemplar (placeholder upstream-issue-0006, no specific "
-            "tracker link yet): allocation-DoS class - key length 0xFFFFFFFF "
-            "(4 GiB) declared from a 32-byte file."
+            "Synthetic bug-class exemplar (no advisory provenance): "
+            "allocation-DoS class - key length 0xFFFFFFFF (4 GiB) declared "
+            "from a 32-byte file."
         ),
-        "affected_commit": (
-            "n/a - class exemplar; behavior reference: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_ResourceLimitExceeded): "
             "key length exceeds the 65536-byte string cap."
@@ -397,17 +405,17 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "upstream-issue-0007-metadata-invalid-utf8-value.gguf",
+        "name": "synthetic-metadata-invalid-utf8-value.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "metadata",
         "build": build_metadata_invalid_utf8_value,
         "source": (
-            "Bug-class exemplar (placeholder upstream-issue-0007, no specific "
-            "tracker link yet): metadata class - string value 0xFF 0xFE 0xFD "
-            "0xFA is not valid UTF-8."
+            "Synthetic bug-class exemplar (no advisory provenance): metadata "
+            "class - string value 0xFF 0xFE 0xFD 0xFA is not valid UTF-8."
         ),
-        "affected_commit": (
-            "n/a - class exemplar; behavior reference: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_InvalidUtf8): string "
             "values must be valid UTF-8."
@@ -416,17 +424,18 @@ CASES = [
         "cli_args": [],
     },
     {
-        "name": "upstream-issue-0008-metadata-array-count-dos.gguf",
+        "name": "synthetic-metadata-array-count-dos.gguf",
+        "fixture_type": "synthetic-class-exemplar",
         "bug_class": "metadata",
         "build": build_metadata_array_count_dos,
         "source": (
-            "Bug-class exemplar (placeholder upstream-issue-0008, no specific "
-            "tracker link yet): metadata class - fixed-size I32 array "
-            "declares 10,000,001 elements, one over the 10M array cap."
+            "Synthetic bug-class exemplar (no advisory provenance): metadata "
+            "class - fixed-size I32 array declares 10,000,001 elements, one "
+            "over the 10M array cap."
         ),
-        "affected_commit": (
-            "n/a - class exemplar; behavior reference: " + UPSTREAM_REF
-        ),
+        "source_url": None,
+        "affected_commit": None,
+        "patched_commit": None,
         "expected_behavior": (
             "SafeGGUF rejects (exit 2, error_code E_ResourceLimitExceeded): "
             "array element count exceeds the 10,000,000 limit."
@@ -436,9 +445,123 @@ CASES = [
     },
 ]
 
+# Advisory placeholders: manifest-only entries for CVEs whose primary-source
+# provenance has not been triaged yet. Each entry carries a mechanism and the
+# expected SafeGGUF protection path, but no fixture file and no verified
+# assertion; all provenance fields stay "TRIAGE-PENDING" (never invent tracker
+# URLs, advisory links or commit SHAs). Promote an entry into CASES - and only
+# then generate a cve-<id>-<mechanism>.gguf fixture - once source_url and the
+# affected/patched references are recorded from a verifiable primary source.
+ADVISORY_PLACEHOLDERS = [
+    {
+        "id": "CVE-2025-53630",
+        "fixture_type": "advisory-regression",
+        "triage_status": "TRIAGE-PENDING",
+        "fixture": None,
+        "source_url": "TRIAGE-PENDING",
+        "source_title": "TRIAGE-PENDING",
+        "affected_commit": "TRIAGE-PENDING",
+        "patched_commit": "TRIAGE-PENDING",
+        "sha256": None,
+        "mechanism": (
+            "Cumulative tensor data size overflow in GGUF parsing: tensor "
+            "byte sizes accumulate past u64 before the data region is "
+            "admitted."
+        ),
+        "expected_protection": (
+            "compute tensor bytes -> checkedAlignUp -> checked cumulative "
+            "offset/size -> REJECT on overflow (E_ArithmeticOverflow)."
+        ),
+        "expected_error_code": "E_ArithmeticOverflow",
+        "promotion_note": (
+            "Promote to a cve-2025-53630-<mechanism>.gguf fixture only after "
+            "triaging source_url and affected/patched references from a "
+            "verifiable primary source; then move the entry into CASES."
+        ),
+    },
+    {
+        "id": "CVE-2026-27940",
+        "fixture_type": "advisory-regression",
+        "triage_status": "TRIAGE-PENDING",
+        "fixture": None,
+        "source_url": "TRIAGE-PENDING",
+        "source_title": "TRIAGE-PENDING",
+        "affected_commit": "TRIAGE-PENDING",
+        "patched_commit": "TRIAGE-PENDING",
+        "sha256": None,
+        "mechanism": (
+            "Bypass of the CVE-2025-53630 fix via final context memory size "
+            "arithmetic; SafeGGUF does not allocate the same downstream ggml "
+            "context, so no byte-for-byte reproduction exists."
+        ),
+        "expected_protection": (
+            "Admission rejects impossible cumulative tensor sizing before any "
+            "allocation; the regression must state the equivalent admission "
+            "property it proves."
+        ),
+        "expected_error_code": "E_ArithmeticOverflow",
+        "promotion_note": (
+            "Promote to a cve-2026-27940-<mechanism>.gguf fixture only after "
+            "triaging source_url and affected/patched references from a "
+            "verifiable primary source; then move the entry into CASES."
+        ),
+    },
+    {
+        "id": "CVE-2026-33298",
+        "fixture_type": "advisory-regression",
+        "triage_status": "TRIAGE-PENDING",
+        "fixture": None,
+        "source_url": "TRIAGE-PENDING",
+        "source_title": "TRIAGE-PENDING",
+        "affected_commit": "TRIAGE-PENDING",
+        "patched_commit": "TRIAGE-PENDING",
+        "sha256": None,
+        "flagship": True,
+        "mechanism": (
+            "ggml_nbytes() dimension/stride arithmetic overflow drastically "
+            "underestimates tensor bytes; advisory example tensor is F32 "
+            "with shape [1024, 1024, 2^42 + 1, 1]."
+        ),
+        "expected_protection": (
+            "Checked element-count / block / byte-size arithmetic rejects "
+            "the shape (E_ArithmeticOverflow) before allocation; flagship "
+            "regression should assert this checked byte-size path."
+        ),
+        "expected_error_code": "E_ArithmeticOverflow",
+        "promotion_note": (
+            "Promote to a cve-2026-33298-<mechanism>.gguf fixture only after "
+            "triaging source_url and affected/patched references from a "
+            "verifiable primary source; then move the entry into CASES."
+        ),
+    },
+]
+
+
+def _require_triaged_provenance():
+    """A cve-* fixture may only exist once its advisory provenance is triaged.
+
+    Enforces the corpus invariant mechanically: synthetic fixtures must not
+    borrow an advisory identity, and a cve-* case must carry a verifiable
+    primary source plus affected/patched references (never TRIAGE-PENDING).
+    """
+    for case in CASES:
+        if not case["name"].startswith("cve-"):
+            continue
+        missing = [
+            field
+            for field in ("source_url", "affected_commit", "patched_commit")
+            if not case[field] or case[field] == "TRIAGE-PENDING"
+        ]
+        if missing:
+            raise SystemExit(
+                f"provenance error: {case['name']} claims a CVE identity "
+                f"without triaged {', '.join(missing)}"
+            )
+
 
 def generate():
     """Deterministically write all fixtures and the manifest; prune stale files."""
+    _require_triaged_provenance()
     os.makedirs(NEGATIVE_DIR, exist_ok=True)
 
     manifest_cases = []
@@ -450,11 +573,14 @@ def generate():
         manifest_cases.append(
             {
                 "file": case["name"],
+                "fixture_type": case["fixture_type"],
                 "bug_class": case["bug_class"],
                 "size_bytes": len(payload),
                 "sha256": hashlib.sha256(payload).hexdigest(),
                 "source": case["source"],
+                "source_url": case["source_url"],
                 "affected_commit": case["affected_commit"],
+                "patched_commit": case["patched_commit"],
                 "expected_behavior": case["expected_behavior"],
                 "expected_error_code": case["expected_error_code"],
                 "cli_args": ["inspect", case["name"]] + case["cli_args"],
@@ -470,16 +596,27 @@ def generate():
 
     manifest = {
         "description": (
-            "Negative CVE/upstream regression corpus (roadmap issue #9); "
-            "regenerated by tests/negative_corpus.py - do not hand-edit."
+            "Negative corpus (roadmap issue #9): synthetic bug-class exemplars "
+            "+ advisory regression placeholders; regenerated by "
+            "tests/negative_corpus.py - do not hand-edit."
         ),
         "naming_convention": (
-            "cve-YYYY-NNNN[-slug].gguf for advisory-sourced cases; "
-            "upstream-issue-NNNN[-slug].gguf for tracker cases; ids "
-            "0001-0009 are reserved class-exemplar placeholders pending a "
-            "specific upstream reference."
+            "synthetic-<bug-class>-<slug>.gguf for synthetic class exemplars "
+            "(no advisory identity); cve-YYYY-NNNN[-slug].gguf is reserved for "
+            "triaged advisory regressions with a verifiable primary source in "
+            "source_url."
         ),
+        "provenance_rules": (
+            "'cases' entries are generated and verified fixtures. "
+            "'advisory_placeholders' are manifest-only stubs (fixture null) "
+            "and must not be promoted to a cve-* fixture until source_url and "
+            "affected/patched references are triaged from a verifiable primary "
+            "source. null = no advisory provenance; TRIAGE-PENDING = "
+            "explicitly unresolved."
+        ),
+        "upstream_behavior_reference": UPSTREAM_REF,
         "cases": manifest_cases,
+        "advisory_placeholders": ADVISORY_PLACEHOLDERS,
     }
     manifest_path = os.path.join(NEGATIVE_DIR, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
@@ -526,14 +663,20 @@ def verify():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Negative CVE/upstream regression corpus (issue #9)")
+    parser = argparse.ArgumentParser(
+        description="Negative corpus: synthetic bug-class exemplars + advisory placeholders (issue #9)"
+    )
     parser.add_argument("--generate-only", action="store_true", help="generate fixtures + manifest, skip verification")
     parser.add_argument("--verify-only", action="store_true", help="verify existing fixtures without regenerating")
     args = parser.parse_args()
 
     if not args.verify_only:
         manifest_path = generate()
-        print(f"Generated {len(CASES)} negative fixtures + manifest at {manifest_path}")
+        print(
+            f"Generated {len(CASES)} synthetic fixtures + "
+            f"{len(ADVISORY_PLACEHOLDERS)} advisory placeholders (manifest-only, "
+            f"unverified) at {manifest_path}"
+        )
 
     if args.generate_only:
         return 0
@@ -557,6 +700,10 @@ def main():
         return 1
 
     print(f"\nAll {len(CASES)} negative cases rejected (exit 2); bug classes covered: {classes_covered}")
+    print(
+        "Advisory placeholders still TRIAGE-PENDING (manifest-only, not fixtures, "
+        "not verified): " + ", ".join(p["id"] for p in ADVISORY_PLACEHOLDERS)
+    )
     return 0
 
 

@@ -38,7 +38,7 @@ python tests/fuzz_mutation.py --iterations 2000   # 4,000 executions across both
 ## Entrypoints
 
 - `src/root.zig` — library root; re-exports all public modules (import as `safegguf`).
-- `src/main.zig` — only CLI: `safegguf inspect <file> [--endian little|big] [--format text|json] [--profile gguf-spec|llama-cpp]`; fail-closed (unknown args exit 64).
+- `src/main.zig` — only CLI: `safegguf inspect <file> [--endian little|big] [--format text|json] [--profile gguf-spec|llama-cpp] [--max-variable-array-elements N]`; fail-closed (unknown args exit 64). `N` caps `array[string]`/nested-array elements (default 1,000,000; accepted range 1..10,000,000).
 - `src/gguf/` — `types.zig` (pinned ggml type table + `Profile`), `error.zig`, `limits.zig` (quota/budget config), `reader.zig` (64 KiB sliding window), `metadata.zig`, `parser.zig`.
 - `src/validate/` — `arithmetic.zig` (checked ops), `structural.zig` (profile rules), `validator.zig` (facade managing QuotaAllocator + WorkBudget).
 - `tests/validator_test.zig` + `tests/fuzz_target.zig` — Zig test roots wired in `build.zig` (`zig build test` runs both; `zig build fuzz` runs the corpus sweep only). Python harnesses live in `tests/*.py`.
@@ -48,7 +48,7 @@ python tests/fuzz_mutation.py --iterations 2000   # 4,000 executions across both
 - `zig build test` fails on a fresh clone: the fuzz target opens `tests/corpus` relative to CWD and that dir is generated, not committed. Always run `generate_fixtures.py` first.
 - Generated artifacts are gitignored — never commit or hand-edit; regenerate instead: `zig-out/`, `.zig-cache/`, `tests/fixtures/*.gguf`, `tests/fixtures/matrix/`, `tests/fixtures/negative/`, `tests/corpus/*.gguf`, `tests/oracle/ggml_oracle`, `tests/fuzz-artifacts/`, `.cache/`.
 - `cli_test.py` silently tests whatever binary sits at `zig-out/bin/safegguf` — a stale binary yields misleading passes; rebuild ReleaseSafe before running it.
-- Zero-filled descriptor padding (`0x00`) is a deliberate anti-tamper safe-subset invariant, stricter than the GGUF spec — do not relax it.
+- Zero-filled descriptor padding (`0x00`) is a deliberate anti-tamper safe-subset invariant enforcing the GGUF spec's zero-padding requirement — stricter than upstream runtimes, which may align past those bytes without validating their contents. Do not relax it.
 - Quota exhaustion (`QuotaAllocator` ceiling exceeded) exits 2 (REJECT); unbudgeted host OOM exits 70. Do not conflate them.
 
 ## Exit codes (contract asserted by cli_test.py; do not renumber)

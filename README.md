@@ -6,6 +6,9 @@
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
 [![Release](https://img.shields.io/badge/release-v0.3.5-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
 
+> [!NOTE]
+> **Release status:** the latest tagged release is **v0.3.5**; `main` is unreleased and carries post-v0.3.5 assurance work (v0.3.6). This README documents `main` unless a statement is explicitly marked as release-only.
+
 A memory-safe, overflow-checked GGUF v3 structural and arithmetic pre-admission validator written in **Zig**, designed to inspect model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes.
 
 SafeGGUF operates purely on file headers and descriptors without loading multi-gigabyte tensor payload data into host memory.
@@ -25,7 +28,7 @@ SafeGGUF acts as a hardened **pre-admission gateway** in model supply chain pipe
 
 ---
 
-## 🛡️ Architectural Guarantees & Features (v0.3.5)
+## 🛡️ Architectural Guarantees & Features (unreleased `main`; latest release v0.3.5)
 
 ### 1. Canonical Upstream Type Table Verified by C Oracle
 Supports all **35 active GGML types** matching `ggml 0.23.0` (`e91ded11`):
@@ -50,25 +53,31 @@ Different runtimes enforce different constraints. SafeGGUF strictly decouples sp
 | **Alignment** | Multiple of 8 (uint32) | Power-of-two (uint32) |
 
 > [!NOTE]
-> Both `--profile gguf-spec` and `--profile llama-cpp` are **safe pre-admission subsets** designed for defense-in-depth. `--profile llama-cpp` is derived from and differential-tested directly against pinned `ggml 0.23.0` (`e91ded11`). Furthermore, SafeGGUF deliberately requires zero-filled descriptor padding (`0x00`) as an anti-tamper safe-subset canonicalization invariant (whereas the base GGUF specification defines padding alignment length without prescribing byte values).
+> Both `--profile gguf-spec` and `--profile llama-cpp` are **safe pre-admission subsets** designed for defense-in-depth. `--profile llama-cpp` is derived from and differential-tested directly against pinned `ggml 0.23.0` (`e91ded11`). Furthermore, SafeGGUF explicitly enforces the GGUF specification's zero-padding requirement (required padding must be `0x00` bytes to the next alignment boundary) even where a particular upstream runtime may align past those bytes without validating their contents.
 
-### 3. Comprehensive Multi-Layer Resource Budgeting (Anti-DoS)
-* **Global Quota Allocator:** Wraps GPA / test allocator with hard live and peak memory ceilings (`max_total_alloc_bytes = 128 MB`), bounding memory consumption across all parser tables, hash maps, strings, and sorting buffers.
+### 3. Validator-Managed Resource Budgets (Anti-DoS)
+* **Allocation Quota (validator-managed):** Wraps the caller's allocator and tracks live and peak bytes allocated through it (`max_total_alloc_bytes = 128 MB`), bounding memory used by parser tables, hash maps, strings, and sorting buffers. This is a quota on allocations routed through `QuotaAllocator` — it is not an OS-level process/RSS limit.
 * **Quota Exhaustion vs Host OOM:** Quota exhaustion explicitly flags `isQuotaExceeded()` and exits with code `2` (`E_TotalAllocationLimitExceeded`), while unbudgeted host memory starvation exits with code `70` (`EX_SOFTWARE`).
-* **Global Work Budget:** Monotonically charged across parsing, metadata traversal, descriptor decoding, sorting $O(N \log N)$, and interval scanning (`max_work_units = 10_000_000`) to prevent CPU algorithmic complexity attacks.
-* **Byte-Scanning Budget:** Dedicated accounting (`max_scanned_bytes = 256 MB`) charging every byte read during UTF-8 stream validation, boolean array scanning, key validation, and string parsing to eliminate CPU/IO sink attacks.
+* **Logical Work Budget:** Monotonically charged in deterministic logical units across parsing, metadata traversal, descriptor decoding, sorting $O(N \log N)$, and interval scanning (`max_work_units = 10_000_000`) to bound algorithmic complexity in the validator. It is not a CPU-instruction or wall-clock cap.
+* **Scanned-Byte Budget:** Validator-managed accounting (`max_scanned_bytes = 256 MB`) charging every byte read during UTF-8 stream validation, boolean array scanning, key validation, and string parsing to bound validator CPU/I/O work; combine with an OS file-size limit for hostile uploads.
 * **Buffered I/O (64 KiB Sliding Window):** Caches reads to protect the host against syscall exhaustion attacks from fragmented metadata streams.
+
+> [!IMPORTANT]
+> **Deployment limits:** SafeGGUF's budgets are validator-managed quotas over its own allocations and logical work; they do not cap process RSS, page cache, stack, or CPU/wall-clock time. For hostile multi-tenant uploads, run validation under OS/container limits as well — cgroup/job-object memory limit, CPU quota plus wall-clock timeout, input file-size limit, read-only filesystem where possible, and a seccomp/sandbox profile.
 
 ### 4. Fail-Closed CLI & Standard Exit Code Taxonomy
 SafeGGUF uses standard, deterministic exit codes suitable for automated CI/CD and deployment pipelines:
 
 | Exit Code | Constant | Meaning |
 | :---: | :--- | :--- |
-| **`0`** | `PASS` | Model successfully passed all structural, arithmetic, and profile checks. |
+| **`0`** | `PASS` | File satisfies the selected profile's structural, arithmetic, and resource-policy checks. Not a trust or malware verdict (see scope note below). |
 | **`2`** | `REJECT` | File is malformed, out-of-bounds, corrupted, or violates profile/security invariants. |
 | **`64`** | `EX_USAGE` | Command-line syntax error, missing argument, or unknown option (fail-closed). |
 | **`70`** | `EX_SOFTWARE` | Internal system error or host out-of-memory. |
 | **`74`** | `EX_IOERR` | Target file could not be opened, `stat()` failed, or stream read I/O error. |
+
+> [!IMPORTANT]
+> **`PASS` scope:** `PASS` means the file satisfies the selected SafeGGUF structural, arithmetic, and resource-policy checks. It is not a trust or malware verdict: it does not prove model weights are benign, the chat template is semantically safe, downstream architecture-specific code or GPU kernels are vulnerability-free, the publisher is trusted, or that file contents cannot change after validation (see [Supply Chain & TOCTOU Considerations](#-supply-chain--toctou-considerations)).
 
 ---
 
@@ -149,7 +158,7 @@ python tests/fuzz_mutation.py --iterations 2000
 
 ## 📦 Library API Usage (Embedding SafeGGUF)
 
-For embedding in inference engines, model gateways, or custom admission controllers, use the high-level `Validator` struct which automatically manages memory quotas (`QuotaAllocator`) and monotonic execution budgets (`WorkBudget`):
+For embedding in inference engines, model gateways, or custom admission controllers, use the high-level `Validator` struct which automatically manages validator-scoped memory quotas (`QuotaAllocator`) and logical work budgets (`WorkBudget`):
 
 ```zig
 const std = @import("std");
@@ -160,7 +169,7 @@ pub fn validateGgufFile(allocator: std.mem.Allocator, file: std.fs.File) !void {
     var buf_reader = safegguf.reader.BufferedReader.init(file, stat.size);
     const r = buf_reader.reader();
 
-    // Configure limits (defaults: 128 MB allocation quota, 10M work units, 256 MB scan limit)
+    // Configure limits (defaults: 128 MB validator-managed allocation quota, 10M logical work units, 256 MB scanned-byte limit)
     const limits = safegguf.limits.Limits{};
     
     // Choose validation profile: .gguf_spec or .llama_cpp
@@ -176,6 +185,8 @@ pub fn validateGgufFile(allocator: std.mem.Allocator, file: std.fs.File) !void {
 ---
 
 ## 💻 CLI Usage
+
+Optional flags: `--endian <little|big>`, `--format <text|json>`, `--profile <gguf-spec|llama-cpp>`, and `--max-variable-array-elements <N>` — the string/nested-array element sanity cap (default `1,000,000`, raised from 100,000 so real tokenizer vocabularies are admitted; accepted range `1..10,000,000`). The override flag and the raised default are **unreleased `main`** behavior: the v0.3.5 release has no override and caps at 100,000.
 
 ### Inspect a Model (Human-Readable Output)
 
@@ -216,6 +227,8 @@ Valid file output (`--profile gguf-spec`):
 ```
 
 Every JSON result (PASS, REJECT, and ERROR) carries this provenance object — `compatibility_target` under `--profile llama-cpp`, `type_layout_source` under `gguf-spec` — recording the pinned ggml 0.23.0 (`e91ded11…`) type-table source; the `llama-cpp` profile is a safe pre-admission subset derived from that pinned ggml, not a claim of compatibility with all of llama.cpp.
+
+A `PASS` status reflects only those selected checks; it is not a trust or malware verdict for the model or its publisher (see the `PASS` scope note with the exit-code table).
 
 ---
 

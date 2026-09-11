@@ -1844,3 +1844,141 @@ test "structural: low-level API validateStructural charges WorkBudget for dimens
     const res = structural.validateStructural(std.testing.allocator, doc, .gguf_spec, &tight_budget);
     try std.testing.expectError(error.ResourceLimitExceeded, res);
 }
+
+// ---------------------------------------------------------------------------
+// 8. Variable-Array Sanity Cap Boundaries (F-01)
+// ---------------------------------------------------------------------------
+
+/// Builds a minimal metadata-only GGUF v3 document whose single entry is
+/// `tokenizer.ggml.tokens: array[string]` with `token_count` payload entries of
+/// `token_len` ASCII bytes each (0 = zero-length token). Alignment padding is
+/// zero-filled so the document is structurally valid in both profiles.
+/// Caller frees the returned bytes.
+fn buildTokenizerTokensDoc(
+    allocator: std.mem.Allocator,
+    token_count: u64,
+    token_len: usize,
+) ![]u8 {
+    const key = "tokenizer.ggml.tokens";
+    const fixed_len: usize = 4 + 4 + 8 + 8 + (8 + key.len + 4) + (4 + 8);
+    const raw_len = fixed_len + @as(usize, @intCast(token_count)) * (8 + token_len);
+    const padded_len = (raw_len + 31) & ~@as(usize, 31);
+
+    const buf = try allocator.alloc(u8, padded_len);
+    errdefer allocator.free(buf);
+    @memset(buf, 0);
+
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+
+    try w.writeAll("GGUF");
+    try w.writeInt(u32, 3, .little);
+    try w.writeInt(u64, 0, .little); // tensor_count
+    try w.writeInt(u64, 1, .little); // metadata_kv_count
+
+    try w.writeInt(u64, key.len, .little);
+    try w.writeAll(key);
+    try w.writeInt(u32, 9, .little); // MetadataType.array
+    try w.writeInt(u32, 8, .little); // MetadataType.string
+    try w.writeInt(u64, token_count, .little);
+
+    var i: u64 = 0;
+    while (i < token_count) : (i += 1) {
+        try w.writeInt(u64, token_len, .little);
+        if (token_len > 0) try w.writeByteNTimes('a', token_len);
+    }
+
+    return buf;
+}
+
+/// Declares `token_count` elements without materializing any element payload:
+/// the parser must reject on the count cap before scanning a single element.
+fn buildDeclaredTokenizerTokensDoc(allocator: std.mem.Allocator, token_count: u64) ![]u8 {
+    const key = "tokenizer.ggml.tokens";
+    // Fixed header ends at 69 bytes; 96 keeps the required 32-byte padding.
+    const buf = try allocator.alloc(u8, 96);
+    errdefer allocator.free(buf);
+    @memset(buf, 0);
+
+    var fbs = std.io.fixedBufferStream(buf);
+    const w = fbs.writer();
+
+    try w.writeAll("GGUF");
+    try w.writeInt(u32, 3, .little);
+    try w.writeInt(u64, 0, .little); // tensor_count
+    try w.writeInt(u64, 1, .little); // metadata_kv_count
+
+    try w.writeInt(u64, key.len, .little);
+    try w.writeAll(key);
+    try w.writeInt(u32, 9, .little); // MetadataType.array
+    try w.writeInt(u32, 8, .little); // MetadataType.string
+    try w.writeInt(u64, token_count, .little);
+
+    return buf;
+}
+
+test "limits: tokenizer-scale string arrays pass the default variable-array cap" {
+    // Qwen2 declares 151,936 tokens and Llama 3 ~128,256; the former default
+    // cap of 100,000 false-rejected both. All of these must parse and validate.
+    const counts = [_]u64{ 99_999, 100_000, 100_001, 128_256, 151_936, 250_000 };
+    const policy = limits.Limits{};
+
+    for (counts) |count| {
+        const bytes = try buildTokenizerTokensDoc(std.testing.allocator, count, 0);
+        defer std.testing.allocator.free(bytes);
+
+        for ([_]types.Profile{ .gguf_spec, .llama_cpp }) |profile| {
+            var parse_budget = limits.WorkBudget.initWithLimits(policy.max_work_units, policy.max_scanned_bytes);
+            const r = reader_mod.SliceReader.init(bytes).reader();
+            var doc = try parser.parseDocument(std.testing.allocator, r, .little, policy, profile, &parse_budget);
+            defer doc.deinit(std.testing.allocator);
+
+            var structural_budget = limits.WorkBudget.initWithLimits(policy.max_work_units, policy.max_scanned_bytes);
+            try structural.validateStructural(std.testing.allocator, doc, profile, &structural_budget);
+        }
+    }
+}
+
+test "limits: string array one past the default sanity cap is rejected" {
+    const policy = limits.Limits{};
+    const count = policy.max_variable_array_elements + 1;
+    const bytes = try buildDeclaredTokenizerTokensDoc(std.testing.allocator, count);
+    defer std.testing.allocator.free(bytes);
+
+    var budget = limits.WorkBudget.initWithLimits(policy.max_work_units, policy.max_scanned_bytes);
+    const r = reader_mod.SliceReader.init(bytes).reader();
+    try std.testing.expectError(
+        error.ResourceLimitExceeded,
+        parser.parseDocument(std.testing.allocator, r, .little, policy, .gguf_spec, &budget),
+    );
+}
+
+test "limits: work budget still bounds variable arrays within the sanity cap" {
+    const bytes = try buildTokenizerTokensDoc(std.testing.allocator, 2_000, 0);
+    defer std.testing.allocator.free(bytes);
+
+    // Count is within the raised semantic cap, but the traversal cost must
+    // still be charged against max_work_units before scanning elements.
+    const policy = limits.Limits{};
+    var budget = limits.WorkBudget.initWithLimits(1_000, policy.max_scanned_bytes);
+    const r = reader_mod.SliceReader.init(bytes).reader();
+    try std.testing.expectError(
+        error.ResourceLimitExceeded,
+        parser.parseDocument(std.testing.allocator, r, .little, policy, .gguf_spec, &budget),
+    );
+}
+
+test "limits: scanned-byte budget still bounds string payloads within the sanity cap" {
+    // 1,000 one-byte tokens = 1,000 payload bytes scanned; a 100-byte scan
+    // budget must reject mid-traversal regardless of the raised count cap.
+    const bytes = try buildTokenizerTokensDoc(std.testing.allocator, 1_000, 1);
+    defer std.testing.allocator.free(bytes);
+
+    const policy = limits.Limits{};
+    var budget = limits.WorkBudget.initWithLimits(policy.max_work_units, 100);
+    const r = reader_mod.SliceReader.init(bytes).reader();
+    try std.testing.expectError(
+        error.ResourceLimitExceeded,
+        parser.parseDocument(std.testing.allocator, r, .little, policy, .gguf_spec, &budget),
+    );
+}

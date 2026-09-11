@@ -27,27 +27,35 @@
 //!                     high-water mark across the whole suite run; n/a off-Linux);
 //!   logical_reads   - logical Reader.readBytes calls (CountingReader below);
 //!   logical_bytes   - bytes requested through the Reader interface;
-//!   read_syscalls   - procfs /proc/self/io "syscr" delta around the run
-//!                     (preads count here; window overhead is +1 per snapshot
-//!                     read; n/a off-Linux);
+//!   backend_reads   - actual underlying preadAll calls, counted by the
+//!                     builtin.is_test instrumentation in src/gguf/reader.zig
+//!                     (deterministic, always available on every platform);
+//!   read_syscalls   - procfs /proc/self/io "syscr" delta around the run.
+//!                     Telemetry only -- never a gate: it is process-global,
+//!                     includes non-validation reads and may be absent
+//!                     (n/a off-Linux or with /proc restricted);
 //!   work_units      - Validator WorkBudget.consumed_units;
 //!   scanned_bytes   - Validator WorkBudget.consumed_scanned_bytes.
 //!
 //! Enforced gates (structural, stable across runners -- not runner-relative):
 //!   * every generated document must PASS validation (header counts asserted);
 //!   * logical read counts must be identical for both reader kinds;
-//!   * buffered read_syscalls <= file_size / 64 KiB + 16: actual read syscalls
-//!     are bounded by window slides, not by per-field logical reads. Removing
-//!     the sliding cache turns each logical read into a pread (~700k at the
-//!     100k-descriptor scale, ~7M at 1M) and trips this gate;
-//!   * buffered read_syscalls < direct read_syscalls whenever the direct row
-//!     issued >= 1000 preads (the "sliding cache reduces syscalls" claim,
-//!     head-to-head on the same file).
+//!   * buffered backend_reads <= file_size / (64 KiB - 4 KiB) + 64: a sliding
+//!     cache miss can strand at most one 4 KiB UTF-8 scan chunk (the largest
+//!     read the bench documents issue through the cache path) at the tail of
+//!     the outgoing window, so each slide must advance the window by >= 60 KiB.
+//!     Removing the sliding cache turns every logical read into a pread
+//!     (~700k at the 100k-descriptor scale, ~7M at 1M) and trips this gate;
+//!   * buffered backend_reads * 4 <= direct backend_reads whenever the direct
+//!     row issued >= 1000 preads (the "sliding cache reduces syscalls" claim,
+//!     head-to-head on the same file; observed ratios are >100x on the
+//!     descriptor/key scales and ~18x on strings).
 //!
 //! Baselines (informational, runner-relative -- NOT gates):
 //!   Local run 2026-09-11, WSL2 Linux, Zig 0.13.0, `zig build bench`
-//!   (compile 26s + run 9s; read_syscalls n/a locally: /proc/self/io absent --
-//!   CI ubuntu exercises those syscall gates, macOS rows skip them by design):
+//!   (compile 26s + run 9s; read_syscalls n/a locally: /proc/self/io absent.
+//!   The backend_reads gates above run on every platform; procfs telemetry is
+//!   recorded where available):
 //!     descriptors  10: direct 0.17ms   buffered 0.15ms   peak_alloc 1.4KiB
 //!     descriptors  1k: direct 8.29ms   buffered 1.10ms   peak_alloc 148KiB
 //!     descriptors 10k: direct 36.49ms  buffered 9.21ms   peak_alloc 1.3MiB
@@ -71,6 +79,11 @@ const err = safegguf.error_types;
 
 /// Sliding window size of src/gguf/reader.zig BufferedReader.
 const window_bytes: u64 = 65536;
+
+/// Largest read the bench documents issue through the buffered cache path:
+/// the 4 KiB UTF-8 scan chunk in src/gguf/metadata.zig (keys, scalar values
+/// and tensor names are all smaller). See expectCacheEffectiveness.
+const max_cache_read: u64 = 4096;
 
 /// 64 KiB block of repeating 2-byte UTF-8 sequences (U+00E9). Value lengths
 /// are even, so every 4096-byte validateUtf8Stream chunk boundary splits a code
@@ -265,6 +278,7 @@ const RunMetrics = struct {
     vmhwm_kb: ?u64,
     logical_reads: u64,
     logical_bytes: u64,
+    backend_reads: u64,
     read_syscalls: ?u64,
     work_units: u64,
     scanned_bytes: u64,
@@ -279,7 +293,7 @@ fn runOnce(
     expected_tensors: u64,
     expected_kv: u64,
 ) !RunMetrics {
-    const direct_reader = reader_mod.FileReader.init(file, file_size);
+    var direct_reader = reader_mod.FileReader.init(file, file_size);
     var window_reader = reader_mod.BufferedReader.init(file, file_size);
     var counting = CountingReader{
         .inner = if (buffered) window_reader.reader() else direct_reader.reader(),
@@ -307,6 +321,7 @@ fn runOnce(
         .vmhwm_kb = currentVmHwmKb(),
         .logical_reads = counting.reads,
         .logical_bytes = counting.bytes,
+        .backend_reads = if (buffered) window_reader.backend_reads else direct_reader.backend_reads,
         .read_syscalls = if (syscr_before != null and syscr_after != null)
             syscr_after.? - syscr_before.?
         else
@@ -352,7 +367,7 @@ fn printRow(out: anytype, m: RunMetrics) !void {
     var b5: [32]u8 = undefined;
     var b6: [32]u8 = undefined;
     try out.print(
-        "  [{s:<8}] file={s} wall={s} peak_alloc={s} vmhwm={s} logical_reads={d} logical_bytes={s} read_syscalls={s} work_units={d} scanned_bytes={s}\n",
+        "  [{s:<8}] file={s} wall={s} peak_alloc={s} vmhwm={s} logical_reads={d} logical_bytes={s} backend_reads={d} read_syscalls={s} work_units={d} scanned_bytes={s}\n",
         .{
             m.reader_kind,
             sizeStr(&b0, m.file_size),
@@ -361,6 +376,7 @@ fn printRow(out: anytype, m: RunMetrics) !void {
             optKbStr(&b3, m.vmhwm_kb),
             m.logical_reads,
             sizeStr(&b4, m.logical_bytes),
+            m.backend_reads,
             optNumStr(&b5, m.read_syscalls),
             m.work_units,
             sizeStr(&b6, m.scanned_bytes),
@@ -369,18 +385,20 @@ fn printRow(out: anytype, m: RunMetrics) !void {
 }
 
 fn expectCacheEffectiveness(direct: RunMetrics, buffered: RunMetrics) !void {
-    // The 64 KiB sliding window must bound actual read syscalls by window
-    // slides (file_size / 64 KiB), not by per-field logical reads. The +16
-    // slack covers the +1 syscr snapshot overhead and short-read retries.
-    if (buffered.read_syscalls) |sys| {
-        const slides_bound = buffered.file_size / window_bytes + 16;
-        try std.testing.expect(sys <= slides_bound);
+    // Access-pattern bound, measured on instrumented backend reads (not
+    // procfs): a cache miss strands at most one max_cache_read-sized read at
+    // the tail of the outgoing window, so each slide must advance the 64 KiB
+    // window by at least window_bytes - max_cache_read bytes. The +64 slack
+    // covers the initial slide, per-document rounding and alignment.
+    const slides_bound = buffered.file_size / (window_bytes - max_cache_read) + 64;
+    try std.testing.expect(buffered.backend_reads <= slides_bound);
 
-        if (direct.logical_reads >= 1000) {
-            if (direct.read_syscalls) |direct_sys| {
-                try std.testing.expect(sys < direct_sys);
-            }
-        }
+    // Head-to-head on the same file: once the direct reader issues enough
+    // preads for the ratio to be meaningful, the sliding cache must cut
+    // backend reads by at least 4x. A disabled or never-reusing cache turns
+    // every logical read into a pread and trips this gate.
+    if (direct.backend_reads >= 1000) {
+        try std.testing.expect(buffered.backend_reads * 4 <= direct.backend_reads);
     }
 }
 

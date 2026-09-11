@@ -8,7 +8,13 @@ pub const Limits = struct {
     max_tensor_name_bytes: u64 = 64,
     max_dimensions: u32 = 4,
     max_array_elements: u64 = 10_000_000,
-    max_variable_array_elements: u64 = 100_000,
+    /// Structural sanity ceiling for variable-length element arrays
+    /// (array[string] / nested arrays). Real tokenizers exceed the former
+    /// 100_000 bound: Qwen2 declares 151,936 tokens and Llama 3 ~128K, so the
+    /// default must admit them. This is a fail-before-you-scan sanity bound,
+    /// NOT the primary DoS control: max_work_units, max_scanned_bytes and
+    /// max_total_alloc_bytes remain the budgets that bound actual resource use.
+    max_variable_array_elements: u64 = 1_000_000,
     max_metadata_depth: u32 = 16,
     max_total_alloc_bytes: u64 = 128 * 1024 * 1024,
     max_work_units: u64 = 10_000_000,
