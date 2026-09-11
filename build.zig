@@ -40,4 +40,18 @@ pub fn build(b: *std.Build) void {
 
     const fuzz_step = b.step("fuzz", "Run corpus through fuzz harness");
     fuzz_step.dependOn(&run_fuzz.step);
+
+    // Benchmarks are pinned to ReleaseSafe: wall-time numbers are meaningless in
+    // Debug, and ReleaseSafe preserves the shipped binary's checked-arithmetic
+    // posture (mirrors the fuzz addTest/addRunArtifact pair above).
+    const bench_tests = b.addTest(.{
+        .root_source_file = b.path("tests/bench_scales.zig"),
+        .target = target,
+        .optimize = .ReleaseSafe,
+    });
+    bench_tests.root_module.addImport("safegguf", safegguf_mod);
+
+    const run_bench = b.addRunArtifact(bench_tests);
+    const bench_step = b.step("bench", "Run resource-budget benchmark suite");
+    bench_step.dependOn(&run_bench.step);
 }

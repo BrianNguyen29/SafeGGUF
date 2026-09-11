@@ -215,6 +215,8 @@ Valid file output (`--profile gguf-spec`):
 }
 ```
 
+Every JSON result (PASS, REJECT, and ERROR) carries this provenance object — `compatibility_target` under `--profile llama-cpp`, `type_layout_source` under `gguf-spec` — recording the pinned ggml 0.23.0 (`e91ded11…`) type-table source; the `llama-cpp` profile is a safe pre-admission subset derived from that pinned ggml, not a claim of compatibility with all of llama.cpp.
+
 ---
 
 ## 📄 License

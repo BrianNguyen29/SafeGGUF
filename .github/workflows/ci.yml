@@ -45,11 +45,23 @@ jobs:
       - name: Run End-to-End CLI Integration Tests (Exact Exit Codes & Invariants)
         run: python tests/cli_test.py
 
+      - name: Run Negative CVE & Upstream Regression Corpus (Exit 2 Reject Contract)
+        run: python tests/negative_corpus.py
+
+      - name: Run Resource-Budget Benchmark Suite (Scales + Structural Gates)
+        run: zig build bench --summary all
+
       - name: Build Upstream ggml 0.23.0 Oracle
         run: bash tests/build_oracle.sh
 
+      - name: Run Independent Arithmetic Oracle Verification (Python Bigint)
+        run: python tests/arithmetic_oracle.py
+
       - name: Run Independent Type Oracle Verification
         run: python tests/test_oracle_types.py
+
+      - name: Generate Differential Matrix Fixtures
+        run: python tests/differential_matrix.py
 
       - name: Run True Differential Test Suite (SafeGGUF vs Upstream ggml 0.23.0)
         run: python tests/differential.py
