@@ -15,7 +15,9 @@ Pipeline per entry (plan sections 12/14/15):
 
 Failure taxonomy (a network outage is never a compatibility regression):
 
-  DOWNLOAD_ERROR            network/IO failure while fetching (advisory)
+  DOWNLOAD_ERROR            network/IO failure while fetching (advisory; with
+                            --tolerate-download-errors it is reported as an
+                            entry skip and does not fail the run)
   SIZE_MISMATCH             downloaded bytes != manifest size (Content-Length ignored)
   HASH_MISMATCH             streamed sha256 != manifest sha256 (fails closed; no promote)
   SAFEGGUF_ERROR            exit code outside the {0 PASS, 2 REJECT} contract
@@ -23,11 +25,16 @@ Failure taxonomy (a network outage is never a compatibility regression):
   PASS                      validator verdict matched the expectation
 
 Exit status: 0 = every selected entry matched its expectations (or nothing was
-selected / the manifest is empty); 1 = at least one failure or a manifest
-schema error. A JSON report is written even for an empty manifest.
+selected / the manifest is empty, or - with --tolerate-download-errors - only
+download errors occurred); 1 = at least one failure or a manifest schema error.
+Gate exception: --tolerate-download-errors downgrades DOWNLOAD_ERROR to a
+reported skip (exit 0) so network outages never block CI; size/hash/verdict
+mismatches and Safegguf CLI errors still fail. A JSON report is written even
+for an empty manifest.
 
 Run:  python tests/real_corpus.py [--tier 1] [--report PATH]
       python tests/real_corpus.py --tier all
+      python tests/real_corpus.py --tolerate-download-errors   # CI gate mode
 Verification needs the ReleaseSafe binary at zig-out/bin/safegguf only when the
 manifest selects entries (zig build -Doptimize=ReleaseSafe).
 """
@@ -101,6 +108,10 @@ def parse_args():
                         help="per-entry streaming download cap in bytes (default: %(default)s)")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                         help="seconds per download and per CLI invocation (default: %(default)s)")
+    parser.add_argument("--tolerate-download-errors", action="store_true",
+                        help="gate mode: report DOWNLOAD_ERROR entries as skipped and exit 0; "
+                             "size/hash/verdict mismatches and CLI errors still fail "
+                             "(default: off, every non-PASS fails)")
     return parser.parse_args()
 
 
@@ -366,6 +377,7 @@ def base_report(args, entries, selected, results, counts, note=None, schema_erro
         "entries_total": len(entries),
         "entries_selected": len(selected),
         "entries_skipped": len(entries) - len(selected),
+        "tolerate_download_errors": args.tolerate_download_errors,
         "counts": counts,
         "results": results,
     }
@@ -436,15 +448,28 @@ def main():
     results = [evaluate_entry(entry, args) for entry in selected]
     counts = print_results(results)
 
+    # --tolerate-download-errors is a network-outage exception, not a laxer
+    # compatibility contract: every other non-PASS status still fails the run.
+    tolerated = counts.get(STATUS_DOWNLOAD_ERROR, 0) if args.tolerate_download_errors else 0
+    note = None
+    if tolerated:
+        note = ("%d/%d entries skipped after download errors (--tolerate-download-errors); "
+                "network failures are not compatibility findings" % (tolerated, len(results)))
+
     report_path = args.report
-    write_report(report_path, base_report(args, entries, selected, results, counts))
+    write_report(report_path, base_report(args, entries, selected, results, counts, note=note))
     print("real-corpus: report written to " + report_path)
 
     failed = sorted(status for status, count in counts.items() if status != STATUS_PASS and count)
+    if args.tolerate_download_errors:
+        failed = [status for status in failed if status != STATUS_DOWNLOAD_ERROR]
     if failed:
         print("FAILED: %s" % ", ".join("%s x%d" % (s, counts[s]) for s in failed), file=sys.stderr)
         return 1
-    print("real-corpus: all %d selected entries matched their expected verdicts" % len(results))
+    if tolerated:
+        print("real-corpus: %d/%d entries skipped on download error(s); no compatibility finding" % (
+            tolerated, len(results)))
+    print("real-corpus: all %d selected entries matched their expected verdicts" % (len(results) - tolerated))
     return 0
 
 

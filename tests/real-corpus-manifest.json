@@ -1,14 +1,87 @@
 {
-  "$comment": "Real-world corpus manifest (F-04 / B1). Ships EMPTY by design: tests/real_corpus.py exits 0 vacuously until a maintainer supplies approved immutable entries, so the advisory workflow stays green. NEVER invent URLs, sha256 digests, sizes or license claims - every populated entry must come from a verifiable primary source and sha256 is the authoritative identity.",
+  "$comment": "Real-world corpus manifest (F-04 / B1). Populated with verified immutable entries: every URL pins an exact revision, and every sha256/size was measured from the downloaded bytes and cross-checked against the hosting server's own content digest (Hugging Face LFS sha256) for the same revision. While this list is empty the runner exits 0 vacuously; with entries populated it verifies downloads and compares safegguf verdicts. NEVER invent URLs, sha256 digests, sizes or license claims - every populated entry must come from a verifiable primary source and sha256 is the authoritative identity.",
   "schema_version": 1,
   "entry_schema": {
     "name": "stable entry id used in reports (unique non-empty string)",
     "url": "immutable download URL pinned to a revision (http/https; no moving refs)",
+    "revision": "optional immutable source revision the URL pins (recorded so the pin is auditable without parsing the URL)",
     "sha256": "lowercase hex sha256 of the exact file bytes (authoritative identity)",
     "size": "declared file size in bytes (positive integer; verified against the streamed download)",
     "license": "license identifier as verified from the source (never guessed)",
+    "license_source": "optional primary source documenting the license identifier (used where the hosting repository does not declare the license itself)",
     "tier": "1 = nightly-bounded (~0.5-1 GB total), 2 = weekly/manual (larger models)",
     "expected_profile": "expected safegguf verdict per profile, e.g. {\"gguf-spec\": \"pass\", \"llama-cpp\": \"pass\"}; values: pass | reject"
   },
-  "entries": []
+  "entries": [
+    {
+      "name": "ggml-org-tiny-llamas-stories260K",
+      "url": "https://huggingface.co/ggml-org/tiny-llamas/resolve/99dd1a73db5a37100bd4ae633f4cfce6560e1567/stories260K.gguf",
+      "revision": "99dd1a73db5a37100bd4ae633f4cfce6560e1567",
+      "sha256": "047bf46455a544931cff6fef14d7910154c56afbc23ab1c5e56a72e69912c04b",
+      "size": 1185376,
+      "license": "mit",
+      "license_source": "https://huggingface.co/karpathy/tinyllamas (license: mit; upstream weights converted to GGUF for llama.cpp; the ggml-org hosting repos declare no separate license)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "ggml-org-models-moved-stories260K",
+      "url": "https://huggingface.co/ggml-org/models-moved/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/stories260K.gguf",
+      "revision": "499bc8821c6b12b4e53c5bffcb21ec206f212d81",
+      "sha256": "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d",
+      "size": 1185376,
+      "license": "mit",
+      "license_source": "https://huggingface.co/karpathy/tinyllamas (license: mit; upstream weights converted to GGUF for llama.cpp CI; the ggml-org hosting repos declare no separate license)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "ggml-org-models-moved-stories15M-q4_0",
+      "url": "https://huggingface.co/ggml-org/models-moved/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/stories15M-q4_0.gguf",
+      "revision": "499bc8821c6b12b4e53c5bffcb21ec206f212d81",
+      "sha256": "66967fbece6dbe97886593fdbb73589584927e29119ec31f08090732d1861739",
+      "size": 19077344,
+      "license": "mit",
+      "license_source": "https://huggingface.co/karpathy/tinyllamas (license: mit; upstream weights converted to GGUF for llama.cpp CI; the ggml-org hosting repos declare no separate license)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "tensorblock-tinyllama-15M-Q2_K",
+      "url": "https://huggingface.co/tensorblock/tinyllama-15M-GGUF/resolve/5e7c799b2e0bebb86ec42859322762a53e20e6a9/tinyllama-15M-Q2_K.gguf",
+      "revision": "5e7c799b2e0bebb86ec42859322762a53e20e6a9",
+      "sha256": "aa933426e277777f8e225080b40ec9632111993098a75fe693109983babfd5bb",
+      "size": 13717312,
+      "license": "mit",
+      "license_source": "https://huggingface.co/tensorblock/tinyllama-15M-GGUF/blob/5e7c799b2e0bebb86ec42859322762a53e20e6a9/README.md (license: mit; general.license=mit in the file's own GGUF metadata; base model nickypro/tinyllama-15M)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "tensorblock-tinyllama-15M-Q3_K_M",
+      "url": "https://huggingface.co/tensorblock/tinyllama-15M-GGUF/resolve/5e7c799b2e0bebb86ec42859322762a53e20e6a9/tinyllama-15M-Q3_K_M.gguf",
+      "revision": "5e7c799b2e0bebb86ec42859322762a53e20e6a9",
+      "sha256": "35aadaef37a3d8e1b76aa7830bcd62b07733f12f309312d10a340f54aeb2737f",
+      "size": 14028352,
+      "license": "mit",
+      "license_source": "https://huggingface.co/tensorblock/tinyllama-15M-GGUF/blob/5e7c799b2e0bebb86ec42859322762a53e20e6a9/README.md (license: mit; general.license=mit in the file's own GGUF metadata; base model nickypro/tinyllama-15M)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    }
+  ]
 }

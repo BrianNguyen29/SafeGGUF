@@ -48,6 +48,38 @@ jobs:
       - name: Run Negative Corpus & Advisory Provenance Checks (Exit 2 Reject Contract)
         run: python tests/negative_corpus.py
 
+  # Blocking tier-1 real-corpus gate (F-04/B1): evaluates manifest-selected
+  # entries against the ReleaseSafe binary. --tolerate-download-errors turns
+  # network/DNS failures into reported skips so an outage never reddens a PR,
+  # while real findings (size/hash mismatch, verdict mismatch, CLI error) still
+  # fail this job. PR-only lane; the nightly advisory run with cache + report
+  # artifact stays in .github/workflows/real-corpus.yml.
+  real-corpus:
+    name: Real-corpus gate (tier 1) on ubuntu-24.04
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.13.0
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Build Binary (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Run Real-Corpus Gate (Tier 1; Download Failures Skip, Mismatches Block)
+        run: python tests/real_corpus.py --tier 1 --tolerate-download-errors
+          --report .cache/real-corpus/real-corpus-report.json
+
   oracle:
     name: "Oracle & differential on ${{ matrix.os }}"
     runs-on: ${{ matrix.os }}
