@@ -1,10 +1,19 @@
 """
-Real-world corpus runner (F-04 / B1): manifest-driven, advisory.
+Real-world corpus runner (F-04 / B1): manifest-driven gate with coverage floors.
 
-The manifest (tests/real-corpus-manifest.json) ships EMPTY by design: URLs,
-sha256 digests, sizes and licenses must never be invented. With no entries the
-runner exits 0 vacuously with a clear note, so the advisory workflow stays
-green until a maintainer supplies approved immutable entries.
+The manifest (tests/real-corpus-manifest.json) holds maintainer-approved
+immutable entries only: URLs, sha256 digests, sizes and licenses must never be
+invented. Entries carry a tier, selected with --tier:
+
+  tier 1  nightly-bounded corpus of small models (~0.5-1 GB total); runs in the
+          blocking PR/release gate (.github/workflows/ci.yml) and in the
+          nightly advisory lane (.github/workflows/real-corpus.yml)
+  tier 2  weekly/manual corpus of larger models; run explicitly with --tier 2
+  all     every tier; the floors then apply to the union of verified entries
+
+A run can never PASS vacuously: exit 0 requires the coverage floors to be met
+by successfully verified entries (size + sha256 verified and every
+expected_profile verdict matched).
 
 Pipeline per entry (plan sections 12/14/15):
   schema validate -> tier select -> bounded streaming download to a temp file
@@ -15,26 +24,38 @@ Pipeline per entry (plan sections 12/14/15):
 
 Failure taxonomy (a network outage is never a compatibility regression):
 
-  DOWNLOAD_ERROR            network/IO failure while fetching (advisory; with
-                            --tolerate-download-errors it is reported as an
-                            entry skip and does not fail the run)
+  DOWNLOAD_ERROR            network/IO failure while fetching (never PASS; with
+                            --tolerate-download-errors it yields NEUTRAL)
   SIZE_MISMATCH             downloaded bytes != manifest size (Content-Length ignored)
   HASH_MISMATCH             streamed sha256 != manifest sha256 (fails closed; no promote)
   SAFEGGUF_ERROR            exit code outside the {0 PASS, 2 REJECT} contract
   EXPECTED_RESULT_MISMATCH  validator verdict != expected_profile verdict
   PASS                      validator verdict matched the expectation
 
-Exit status: 0 = every selected entry matched its expectations (or nothing was
-selected / the manifest is empty, or - with --tolerate-download-errors - only
-download errors occurred); 1 = at least one failure or a manifest schema error.
-Gate exception: --tolerate-download-errors downgrades DOWNLOAD_ERROR to a
-reported skip (exit 0) so network outages never block CI; size/hash/verdict
-mismatches and Safegguf CLI errors still fail. A JSON report is written even
-for an empty manifest.
+Coverage floors (0 files tested can never PASS):
+  --min-successful-entries N  at least N entries must have verified and matched
+                              (default 1; values < 1 are rejected)
+  --min-successful-bytes N    at least N verified bytes must come from
+                              successful entries (default 0 = disabled)
+
+Exit status (the JSON report mirrors status/exit_code/coverage):
+  0  PASS          every selected entry matched and both floors are met
+  1  FAIL          any size/hash/verdict mismatch, Safegguf CLI error, manifest
+                   schema error, coverage floor miss, or a download error while
+                   --tolerate-download-errors is off (fail-closed default)
+  3  INCONCLUSIVE  NEUTRAL: tolerated network-only failure - no real finding,
+                   but at least one selected entry could not be verified
+
+Gate policy: the PR lane runs with --tolerate-download-errors and accepts
+0 | 3; the release lane runs fail-closed (no flag) so an outage, a skipped
+entry or a missed floor always blocks a release. Size/hash/verdict mismatches
+and Safegguf CLI errors fail in every mode. A JSON report is written for every
+outcome, including an empty manifest.
 
 Run:  python tests/real_corpus.py [--tier 1] [--report PATH]
       python tests/real_corpus.py --tier all
-      python tests/real_corpus.py --tolerate-download-errors   # CI gate mode
+      python tests/real_corpus.py --tolerate-download-errors   # PR gate mode
+      python tests/real_corpus.py --min-successful-entries 5 --min-successful-bytes 10000000
 Verification needs the ReleaseSafe binary at zig-out/bin/safegguf only when the
 manifest selects entries (zig build -Doptimize=ReleaseSafe).
 """
@@ -70,6 +91,17 @@ STATUS_SIZE_MISMATCH = "SIZE_MISMATCH"
 STATUS_HASH_MISMATCH = "HASH_MISMATCH"
 STATUS_SAFEGGUF_ERROR = "SAFEGGUF_ERROR"
 STATUS_EXPECTED_RESULT_MISMATCH = "EXPECTED_RESULT_MISMATCH"
+
+# Run-level outcome (report status + process exit code). Exit 0 is reserved for
+# a fully verified run with the coverage floors met; a run with 0 verified
+# entries can never exit 0. Exit 3 is the NEUTRAL/inconclusive gate outcome for
+# tolerated network-only failures, distinct from both PASS and FAIL.
+RUN_STATUS_PASS = "pass"
+RUN_STATUS_FAIL = "fail"
+RUN_STATUS_INCONCLUSIVE = "inconclusive"
+EXIT_PASS = 0
+EXIT_FAIL = 1
+EXIT_INCONCLUSIVE = 3
 
 CHUNK_BYTES = 1024 * 1024
 USER_AGENT = "safegguf-real-corpus/1"
@@ -108,10 +140,18 @@ def parse_args():
                         help="per-entry streaming download cap in bytes (default: %(default)s)")
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                         help="seconds per download and per CLI invocation (default: %(default)s)")
+    parser.add_argument("--min-successful-entries", type=int, default=1,
+                        help="coverage floor: minimum successfully verified entries required "
+                             "for PASS (default: %(default)s; values < 1 are rejected so that "
+                             "0 files tested can never PASS)")
+    parser.add_argument("--min-successful-bytes", type=int, default=0,
+                        help="coverage floor: minimum successfully verified bytes required for "
+                             "PASS (default: %(default)s = disabled)")
     parser.add_argument("--tolerate-download-errors", action="store_true",
-                        help="gate mode: report DOWNLOAD_ERROR entries as skipped and exit 0; "
-                             "size/hash/verdict mismatches and CLI errors still fail "
-                             "(default: off, every non-PASS fails)")
+                        help="PR gate mode: a network-only failure makes the run INCONCLUSIVE "
+                             "(exit 3, report status 'inconclusive') instead of failing; a "
+                             "download error can never produce PASS, and size/hash/verdict "
+                             "mismatches and CLI errors still fail (default: off, fail closed)")
     return parser.parse_args()
 
 
@@ -365,10 +405,12 @@ def write_report(path, payload):
         f.write("\n")
 
 
-def base_report(args, entries, selected, results, counts, note=None, schema_errors=None):
+def base_report(args, entries, selected, results, counts, run, schema_errors=None):
     payload = {
-        "description": ("Real-world corpus runner report (F-04/B1); advisory lane, "
-                        "findings never block CI."),
+        "description": ("Real-world corpus runner report (F-04/B1); status pass|fail|inconclusive, "
+                        "exit_code 0|1|3; a run with 0 verified entries never passes."),
+        "status": run["status"],
+        "exit_code": run["exit_code"],
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "manifest": os.path.abspath(args.manifest),
         "tier": args.tier,
@@ -378,11 +420,12 @@ def base_report(args, entries, selected, results, counts, note=None, schema_erro
         "entries_selected": len(selected),
         "entries_skipped": len(entries) - len(selected),
         "tolerate_download_errors": args.tolerate_download_errors,
+        "coverage": run["coverage"],
         "counts": counts,
         "results": results,
     }
-    if note:
-        payload["note"] = note
+    if run.get("note"):
+        payload["note"] = run["note"]
     if schema_errors:
         payload["schema_errors"] = schema_errors
     return payload
@@ -403,20 +446,88 @@ def print_results(results):
     return counts
 
 
+def coverage_summary(args, results):
+    """Verified coverage against the configured floors.
+
+    Only PASS entries count as successful: an entry reaches PASS only after its
+    bytes were size + sha256 verified and every expected_profile verdict matched.
+    """
+    successful = [result for result in results if result["status"] == STATUS_PASS]
+    successful_entries = len(successful)
+    successful_bytes = sum(result["size"] for result in successful)
+    return {
+        "successful_entries": successful_entries,
+        "successful_bytes": successful_bytes,
+        "min_successful_entries": args.min_successful_entries,
+        "min_successful_bytes": args.min_successful_bytes,
+        "floors_met": (successful_entries >= args.min_successful_entries
+                       and successful_bytes >= args.min_successful_bytes),
+    }
+
+
+def run_outcome(status, exit_code, coverage, note=None):
+    """Bundle the run-level gate verdict that is written to the JSON report."""
+    return {"status": status, "exit_code": exit_code, "coverage": coverage, "note": note}
+
+
+def classify_run(args, results, counts, coverage):
+    """Gate contract: exit 0 PASS / 1 FAIL / 3 INCONCLUSIVE (NEUTRAL) + report note.
+
+    FAIL dominates: size/hash mismatches, verdict mismatches, Safegguf CLI errors
+    and schema problems always fail, and a download error also fails unless
+    --tolerate-download-errors is set (fail-closed default). With the flag, a
+    network-only failure is NEUTRAL (exit 3): the run never becomes PASS without
+    floors met by verified entries. Floors are checked last because a tolerated
+    network skip explains an unmet floor, while real findings are never excused.
+    """
+    real_failures = sorted(status for status, count in counts.items()
+                           if status not in (STATUS_PASS, STATUS_DOWNLOAD_ERROR) and count)
+    if real_failures:
+        detail = ", ".join("%s x%d" % (status, counts[status]) for status in real_failures)
+        return run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage, note="real finding(s): " + detail)
+
+    download_errors = counts.get(STATUS_DOWNLOAD_ERROR, 0)
+    if download_errors and not args.tolerate_download_errors:
+        return run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage, note=(
+            "%d/%d entries failed to download; failing closed without "
+            "--tolerate-download-errors" % (download_errors, len(results))))
+    if download_errors:
+        return run_outcome(RUN_STATUS_INCONCLUSIVE, EXIT_INCONCLUSIVE, coverage, note=(
+            "%d/%d entries skipped after download errors (--tolerate-download-errors); "
+            "network failures are not compatibility findings and can never PASS"
+            % (download_errors, len(results))))
+
+    if not coverage["floors_met"]:
+        shortfalls = []
+        if coverage["successful_entries"] < coverage["min_successful_entries"]:
+            shortfalls.append("successful entries %d < %d"
+                              % (coverage["successful_entries"], coverage["min_successful_entries"]))
+        if coverage["successful_bytes"] < coverage["min_successful_bytes"]:
+            shortfalls.append("successful bytes %d < %d"
+                              % (coverage["successful_bytes"], coverage["min_successful_bytes"]))
+        return run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage,
+                           note="coverage floor not met: " + ", ".join(shortfalls))
+    return run_outcome(RUN_STATUS_PASS, EXIT_PASS, coverage)
+
+
 def main():
     args = parse_args()
+    if args.min_successful_entries < 1 or args.min_successful_bytes < 0:
+        print("Error: coverage floors must satisfy --min-successful-entries >= 1 and "
+              "--min-successful-bytes >= 0 (0 files tested can never PASS)", file=sys.stderr)
+        return EXIT_FAIL
     try:
         manifest = load_manifest(args.manifest)
     except (OSError, ValueError) as exc:
         print("Error: cannot read manifest %s: %s" % (args.manifest, exc), file=sys.stderr)
-        return 1
+        return EXIT_FAIL
     if not isinstance(manifest, dict):
         print("Error: manifest root must be a JSON object", file=sys.stderr)
-        return 1
+        return EXIT_FAIL
     entries = manifest.get("entries")
     if not isinstance(entries, list):
         print("Error: manifest 'entries' must be an array", file=sys.stderr)
-        return 1
+        return EXIT_FAIL
 
     schema_errors = validate_entries(entries)
     if schema_errors:
@@ -424,23 +535,32 @@ def main():
               file=sys.stderr)
         for error in schema_errors:
             print("  - " + error, file=sys.stderr)
-        write_report(args.report, base_report(args, entries, [], [], {}, schema_errors=schema_errors))
-        return 1
+        run = run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage_summary(args, []),
+                          note="manifest schema invalid; no entries evaluated")
+        write_report(args.report, base_report(args, entries, [], [], {}, run,
+                                              schema_errors=schema_errors))
+        return EXIT_FAIL
 
     selected = [entry for entry in entries if args.tier == "all" or entry["tier"] == int(args.tier)]
     if not selected:
-        note = ("manifest has no entries; nothing to run (vacuous pass by design - "
-                "supply approved immutable entries)") if not entries else (
-                "no manifest entries match tier %s; nothing to run" % args.tier)
-        write_report(args.report, base_report(args, entries, selected, [], {}, note=note))
+        if not entries:
+            note = ("manifest has no entries; nothing to run - 0 files tested can never PASS "
+                    "(floor: %d successful entries, %d bytes); supply approved immutable entries"
+                    % (args.min_successful_entries, args.min_successful_bytes))
+        else:
+            note = ("no manifest entries match tier %s; nothing to run - "
+                    "0 files tested can never PASS" % args.tier)
+        run = run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage_summary(args, []), note=note)
+        write_report(args.report, base_report(args, entries, selected, [], {}, run))
         print("real-corpus: " + note)
         print("real-corpus: report written to " + args.report)
-        return 0
+        print("FAILED: coverage floor not met (0 files tested)", file=sys.stderr)
+        return EXIT_FAIL
 
     if not os.path.exists(args.binary):
         print("Error: binary %s does not exist. Run: zig build -Doptimize=ReleaseSafe" % args.binary,
               file=sys.stderr)
-        return 1
+        return EXIT_FAIL
 
     print("real-corpus: %d/%d entries selected (tier %s), evaluating against %s" % (
         len(selected), len(entries), args.tier, args.binary))
@@ -448,29 +568,20 @@ def main():
     results = [evaluate_entry(entry, args) for entry in selected]
     counts = print_results(results)
 
-    # --tolerate-download-errors is a network-outage exception, not a laxer
-    # compatibility contract: every other non-PASS status still fails the run.
-    tolerated = counts.get(STATUS_DOWNLOAD_ERROR, 0) if args.tolerate_download_errors else 0
-    note = None
-    if tolerated:
-        note = ("%d/%d entries skipped after download errors (--tolerate-download-errors); "
-                "network failures are not compatibility findings" % (tolerated, len(results)))
+    coverage = coverage_summary(args, results)
+    run = classify_run(args, results, counts, coverage)
+    write_report(args.report, base_report(args, entries, selected, results, counts, run))
+    print("real-corpus: report written to " + args.report)
 
-    report_path = args.report
-    write_report(report_path, base_report(args, entries, selected, results, counts, note=note))
-    print("real-corpus: report written to " + report_path)
-
-    failed = sorted(status for status, count in counts.items() if status != STATUS_PASS and count)
-    if args.tolerate_download_errors:
-        failed = [status for status in failed if status != STATUS_DOWNLOAD_ERROR]
-    if failed:
-        print("FAILED: %s" % ", ".join("%s x%d" % (s, counts[s]) for s in failed), file=sys.stderr)
-        return 1
-    if tolerated:
-        print("real-corpus: %d/%d entries skipped on download error(s); no compatibility finding" % (
-            tolerated, len(results)))
-    print("real-corpus: all %d selected entries matched their expected verdicts" % (len(results) - tolerated))
-    return 0
+    if run["status"] == RUN_STATUS_PASS:
+        print("real-corpus: PASS - all %d selected entries matched their expected verdicts; "
+              "coverage floors met (%d entries / %d bytes)"
+              % (len(results), coverage["successful_entries"], coverage["successful_bytes"]))
+    elif run["status"] == RUN_STATUS_INCONCLUSIVE:
+        print("real-corpus: INCONCLUSIVE (exit %d, neutral) - %s" % (run["exit_code"], run["note"]))
+    else:
+        print("FAILED: %s" % run["note"], file=sys.stderr)
+    return run["exit_code"]
 
 
 if __name__ == "__main__":

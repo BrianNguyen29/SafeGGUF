@@ -29,6 +29,14 @@
 # Promotion to a deterministic regression happens on the pinned 0.13.0
 # toolchain.
 #
+# History (advisory trends, never a gate): the previous run's
+# coverage_summary.json + coverage_history.json are restored/saved through a
+# second cache entry (coverage-fuzz-history-*). coverage_lane.py appends one
+# compact record per run (executions, unique runs, covered paths, corpus
+# inventory, crash counts) and reports the delta vs the previous record in the
+# step summary and the summary JSON; coverage is commit-relative, so deltas
+# are printed for humans only and never influence pass/fail.
+#
 # Triggers: nightly cron + manual workflow_dispatch.
 
 name: Coverage Fuzz (Zig 0.14.1 advisory)
@@ -84,6 +92,16 @@ jobs:
           restore-keys: |
             coverage-fuzz-corpus-
 
+      - name: Restore fuzz history (previous summary + trend records)
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: |
+            tests/fuzz-artifacts/coverage-fuzz/coverage_summary.json
+            tests/fuzz-artifacts/coverage-fuzz/coverage_history.json
+          key: coverage-fuzz-history-${{ github.run_id }}
+          restore-keys: |
+            coverage-fuzz-history-
+
       - name: Run bounded coverage fuzz lane
         env:
           BUDGET_SECONDS: ${{ github.event.inputs.budget_seconds || '1800' }}
@@ -101,6 +119,16 @@ jobs:
           else
             echo "coverage summary not produced" >> "$GITHUB_STEP_SUMMARY"
           fi
+          echo "trend history: tests/fuzz-artifacts/coverage-fuzz/coverage_history.json (uploaded artifact; kept across runs by the coverage-fuzz-history-* cache)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save fuzz history for next run's deltas
+        if: always()
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          key: coverage-fuzz-history-${{ github.run_id }}
+          path: |
+            tests/fuzz-artifacts/coverage-fuzz/coverage_summary.json
+            tests/fuzz-artifacts/coverage-fuzz/coverage_history.json
 
       - name: Save evolved corpus for next run
         if: always()

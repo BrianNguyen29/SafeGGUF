@@ -124,7 +124,8 @@ pub fn parseDocument(
         const key_end = std.math.add(u64, cur, key_len) catch return err.ParseError.ArithmeticOverflow;
         if (key_end > reader.size) return err.ParseError.UnexpectedEof;
 
-        const key_buf = allocator.alloc(u8, key_len) catch return err.ParseError.OutOfMemory;
+        const key_len_usize = std.math.cast(usize, key_len) orelse return err.ParseError.ResourceLimitExceeded;
+        const key_buf = allocator.alloc(u8, key_len_usize) catch return err.ParseError.OutOfMemory;
         var key_registered = false;
         defer {
             if (!key_registered) {
@@ -181,7 +182,8 @@ pub fn parseDocument(
     }
 
     // 5. Parse Tensor Descriptors
-    const tensors = allocator.alloc(TensorInfo, tensor_count) catch return err.ParseError.OutOfMemory;
+    const tensor_count_usize = std.math.cast(usize, tensor_count) orelse return err.ParseError.ResourceLimitExceeded;
+    const tensors = allocator.alloc(TensorInfo, tensor_count_usize) catch return err.ParseError.OutOfMemory;
 
     var t_idx: u64 = 0;
     errdefer {
@@ -214,7 +216,8 @@ pub fn parseDocument(
         const name_end = std.math.add(u64, cur, name_len) catch return err.ParseError.ArithmeticOverflow;
         if (name_end > reader.size) return err.ParseError.UnexpectedEof;
 
-        const name_buf = allocator.alloc(u8, name_len) catch return err.ParseError.OutOfMemory;
+        const name_len_usize = std.math.cast(usize, name_len) orelse return err.ParseError.ResourceLimitExceeded;
+        const name_buf = allocator.alloc(u8, name_len_usize) catch return err.ParseError.OutOfMemory;
         errdefer allocator.free(name_buf);
         try reader.readBytes(cur, name_buf);
         cur = name_end;

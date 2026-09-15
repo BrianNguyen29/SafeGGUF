@@ -56,7 +56,8 @@ pub const SliceReader = struct {
 
     fn readBytesImpl(ctx: *anyopaque, offset: u64, dest: []u8) err.ParseError!void {
         const self: *const SliceReader = @ptrCast(@alignCast(ctx));
-        const end = offset + dest.len;
+        const end = std.math.add(u64, offset, dest.len) catch return err.ParseError.UnexpectedEof;
+        if (end > self.data.len) return err.ParseError.UnexpectedEof;
         @memcpy(dest, self.data[offset..end]);
     }
 };
@@ -134,8 +135,9 @@ pub const BufferedReader = struct {
         // 1. Cache hit inside current sliding window
         if (self.window_len > 0 and offset >= self.window_start) {
             const rel_offset = offset - self.window_start;
-            if (rel_offset + dest.len <= self.window_len) {
-                @memcpy(dest, self.window_buf[rel_offset .. rel_offset + dest.len]);
+            const rel_end = std.math.add(u64, rel_offset, dest.len) catch return err.ParseError.UnexpectedEof;
+            if (rel_end <= self.window_len) {
+                @memcpy(dest, self.window_buf[rel_offset..rel_end]);
                 return;
             }
         }
@@ -149,8 +151,9 @@ pub const BufferedReader = struct {
         }
 
         // 3. Cache miss: slide window to offset and prefetch 64KB
+        const remaining = std.math.sub(u64, self.file_size, offset) catch return err.ParseError.UnexpectedEof;
         self.window_start = offset;
-        const to_read = @min(@as(u64, self.window_buf.len), self.file_size - offset);
+        const to_read = @min(@as(u64, self.window_buf.len), remaining);
         const n = self.file.preadAll(self.window_buf[0..to_read], offset) catch return err.ParseError.IoError;
         if (builtin.is_test) self.backend_reads += 1;
         self.window_len = n;

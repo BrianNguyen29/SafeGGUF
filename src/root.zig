@@ -9,3 +9,4 @@ pub const structural = @import("validate/structural.zig");
 pub const validator = @import("validate/validator.zig");
 pub const Validator = validator.Validator;
 pub const Result = validator.Result;
+pub const OwnedValidationState = validator.OwnedValidationState;

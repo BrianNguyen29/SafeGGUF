@@ -1,5 +1,5 @@
 {
-  "$comment": "Real-world corpus manifest (F-04 / B1). Populated with verified immutable entries: every URL pins an exact revision, and every sha256/size was measured from the downloaded bytes and cross-checked against the hosting server's own content digest (Hugging Face LFS sha256) for the same revision. While this list is empty the runner exits 0 vacuously; with entries populated it verifies downloads and compares safegguf verdicts. NEVER invent URLs, sha256 digests, sizes or license claims - every populated entry must come from a verifiable primary source and sha256 is the authoritative identity.",
+  "$comment": "Real-world corpus manifest (F-04 / B1). Populated with verified immutable entries: every URL pins an exact revision, and every sha256/size was measured from the downloaded bytes and cross-checked against the hosting server's own content digest (Hugging Face LFS sha256) for the same revision. The runner enforces coverage floors: exit 0 requires the floors to be met by successfully verified entries (size + sha256 verified and every expected_profile verdict matched), so a run with 0 verified entries can never PASS. NEVER invent URLs, sha256 digests, sizes or license claims - every populated entry must come from a verifiable primary source and sha256 is the authoritative identity.",
   "schema_version": 1,
   "entry_schema": {
     "name": "stable entry id used in reports (unique non-empty string)",
@@ -77,6 +77,160 @@
       "size": 14028352,
       "license": "mit",
       "license_source": "https://huggingface.co/tensorblock/tinyllama-15M-GGUF/blob/5e7c799b2e0bebb86ec42859322762a53e20e6a9/README.md (license: mit; general.license=mit in the file's own GGUF metadata; base model nickypro/tinyllama-15M)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "bartowski-qwen2.5-0.5b-instruct-iq2_m",
+      "url": "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/41ba88dbac95fed2528c92514c131d73eb5a174b/Qwen2.5-0.5B-Instruct-IQ2_M.gguf",
+      "revision": "41ba88dbac95fed2528c92514c131d73eb5a174b",
+      "sha256": "2fc237e65e1f963310e9c961d8e71e932734a72f90e3216a972d83edd1feb756",
+      "size": 328597408,
+      "license": "apache-2.0",
+      "license_source": "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/blob/41ba88dbac95fed2528c92514c131d73eb5a174b/README.md (license: apache-2.0; base model Qwen/Qwen2.5-0.5B-Instruct declares apache-2.0)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "ggml-org-stories15m-moe-shakespeare",
+      "url": "https://huggingface.co/ggml-org/stories15M_MOE/resolve/b6dd737497465570b5f5e962dbc9d9454ed1e0eb/moe_shakespeare15M.gguf",
+      "revision": "b6dd737497465570b5f5e962dbc9d9454ed1e0eb",
+      "sha256": "d1e0617d7e10de960639d18a4620ec8c6bb56343f45692830d3634a1a3e1fe1a",
+      "size": 16364896,
+      "license": "mit",
+      "license_source": "https://huggingface.co/ggml-org/stories15M_MOE/blob/main/README.md (license: mit; MoE (4 experts) repeat of ModelCloud/tinyllama-15M-stories)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "ggml-org-tinygemma3-mmproj-f16",
+      "url": "https://huggingface.co/ggml-org/tinygemma3-GGUF/resolve/c287502cd9e278dac8eed805c112cce5d0081e0b/mmproj-tinygemma3.gguf",
+      "revision": "c287502cd9e278dac8eed805c112cce5d0081e0b",
+      "sha256": "93c2ba8c34574dd8f2dfda64931fc20943de2f941bfe03e6e9eca68951b80604",
+      "size": 1039072,
+      "license": "wtfpl",
+      "license_source": "https://huggingface.co/ggml-org/tinygemma3-GGUF/blob/main/README.md (license: wtfpl; vision projector for ngxson/tinygemma3_cifar)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "ggml-org-bge-small-en-v1.5-q8_0",
+      "url": "https://huggingface.co/ggml-org/bge-small-en-v1.5-Q8_0-GGUF/resolve/f2068edd9b54f2a369549ccc71f70ed273a2a801/bge-small-en-v1.5-q8_0.gguf",
+      "revision": "f2068edd9b54f2a369549ccc71f70ed273a2a801",
+      "sha256": "f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804",
+      "size": 36685152,
+      "license": "mit",
+      "license_source": "https://huggingface.co/ggml-org/bge-small-en-v1.5-Q8_0-GGUF/blob/main/README.md (license: mit; base model BAAI/bge-small-en-v1.5 declares mit)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "mradermacher-jina-reranker-v1-tiny-en-q2_k",
+      "url": "https://huggingface.co/mradermacher/jina-reranker-v1-tiny-en-GGUF/resolve/a76777c8b117dd01f69f76af506578c67884ca0a/jina-reranker-v1-tiny-en.Q2_K.gguf",
+      "revision": "a76777c8b117dd01f69f76af506578c67884ca0a",
+      "sha256": "55f60f0b5ac52de4e2a6e291111a41733bc5bcd613bfa27b7acf948fe7558bcb",
+      "size": 31644736,
+      "license": "apache-2.0",
+      "license_source": "https://huggingface.co/mradermacher/jina-reranker-v1-tiny-en-GGUF/blob/main/README.md (license: apache-2.0; cross-encoder/reranker, base jinaai/jina-reranker-v1-tiny-en declares apache-2.0)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "reject",
+        "llama-cpp": "reject"
+      }
+    },
+    {
+      "name": "mradermacher-reranker-bert-tiny-gooaq-f16",
+      "url": "https://huggingface.co/mradermacher/reranker-bert-tiny-gooaq-bce-tanh-v4-GGUF/resolve/012660532b7a4f84912037828c54b15143e98fd6/reranker-bert-tiny-gooaq-bce-tanh-v4.f16.gguf",
+      "revision": "012660532b7a4f84912037828c54b15143e98fd6",
+      "sha256": "870d25c9391bb18cbc36829f0a5f4b70b49e48116fc3451fae2d8b48e0dcd36d",
+      "size": 9509024,
+      "license": "apache-2.0",
+      "license_source": "https://huggingface.co/mradermacher/reranker-bert-tiny-gooaq-bce-tanh-v4-GGUF/blob/main/README.md (license: apache-2.0; base cross-encoder-testing/reranker-bert-tiny-gooaq-bce-tanh-v4 declares apache-2.0)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "tensorblock-tinyllama-15M-stories-Q2_K",
+      "url": "https://huggingface.co/tensorblock/tinyllama-15M-stories-GGUF/resolve/51b755181aac158c3ee689c0bd86f49a8291d1da/tinyllama-15M-stories-Q2_K.gguf",
+      "revision": "51b755181aac158c3ee689c0bd86f49a8291d1da",
+      "sha256": "f7e39dc9f26f3d39bf59e885349c6eec65880f685322d591f53e6cdb46ceb2e9",
+      "size": 13717344,
+      "license": "mit",
+      "license_source": "https://huggingface.co/tensorblock/tinyllama-15M-stories-GGUF/blob/51b755181aac158c3ee689c0bd86f49a8291d1da/README.md (license: mit; base ModelCloud/tinyllama-15M-stories declares mit)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "ggml-org-models-moved-stories260K-infill",
+      "url": "https://huggingface.co/ggml-org/models-moved/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/stories260K-infill.gguf",
+      "revision": "499bc8821c6b12b4e53c5bffcb21ec206f212d81",
+      "sha256": "102f2a00a5bfc56d0706467830bda9e39fa5d7df1cd55e47291dd25b4b509140",
+      "size": 1185760,
+      "license": "mit",
+      "license_source": "https://huggingface.co/karpathy/tinyllamas (license: mit; llama.cpp infill test model derived from the tinyllamas weights; the ggml-org hosting repos declare no separate license)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "reject",
+        "llama-cpp": "reject"
+      }
+    },
+    {
+      "name": "ggml-org-models-moved-split-stories15M-q8_0-part3",
+      "url": "https://huggingface.co/ggml-org/models-moved/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/tinyllamas/split/stories15M-q8_0-00003-of-00003.gguf",
+      "revision": "499bc8821c6b12b4e53c5bffcb21ec206f212d81",
+      "sha256": "b2d72a3315df3e2834be32adbbc737ca02cc443125e26bbc2cfe8695ec3814bc",
+      "size": 5773312,
+      "license": "mit",
+      "license_source": "https://huggingface.co/karpathy/tinyllamas (license: mit; split/sharded Q8_0 gguf part used by llama.cpp tests; the ggml-org hosting repos declare no separate license)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "second-state-all-minilm-l6-v2-q4_k_m",
+      "url": "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/resolve/544f204f2eaa2d71361ffc74d6df7170285b286a/all-MiniLM-L6-v2-Q4_K_M.gguf",
+      "revision": "544f204f2eaa2d71361ffc74d6df7170285b286a",
+      "sha256": "2ec4cee28a27a9c973d5f5230930d6ef6e52694bd2bc71be26a9bef5b1d755e6",
+      "size": 20999104,
+      "license": "apache-2.0",
+      "license_source": "https://huggingface.co/second-state/All-MiniLM-L6-v2-Embedding-GGUF/blob/544f204f2eaa2d71361ffc74d6df7170285b286a/README.md (license: apache-2.0; base sentence-transformers/all-MiniLM-L6-v2 declares apache-2.0)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "mradermacher-tinystories-gpt-30m-q2_k",
+      "url": "https://huggingface.co/mradermacher/tinystories-gpt-30m-GGUF/resolve/b56207458bd52af2b545e32ae78b8ea6bf93fa4b/tinystories-gpt-30m.Q2_K.gguf",
+      "revision": "b56207458bd52af2b545e32ae78b8ea6bf93fa4b",
+      "sha256": "6891c53b9a7d9dd128358ed3a958a991c13a642e11ce97b0d61d555c1deaa6a8",
+      "size": 28688256,
+      "license": "mit",
+      "license_source": "https://huggingface.co/mradermacher/tinystories-gpt-30m-GGUF/blob/main/README.md (license: mit; GPT-2 style TinyStories model, distinct non-llama architecture)",
       "tier": 1,
       "expected_profile": {
         "gguf-spec": "pass",

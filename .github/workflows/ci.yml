@@ -48,15 +48,23 @@ jobs:
       - name: Run Negative Corpus & Advisory Provenance Checks (Exit 2 Reject Contract)
         run: python tests/negative_corpus.py
 
-  # Blocking tier-1 real-corpus gate (F-04/B1): evaluates manifest-selected
-  # entries against the ReleaseSafe binary. --tolerate-download-errors turns
-  # network/DNS failures into reported skips so an outage never reddens a PR,
-  # while real findings (size/hash mismatch, verdict mismatch, CLI error) still
-  # fail this job. PR-only lane; the nightly advisory run with cache + report
-  # artifact stays in .github/workflows/real-corpus.yml.
+  # Tier-1 real-corpus gate (F-04/B1): evaluates manifest-selected entries
+  # against the ReleaseSafe binary and enforces the runner's coverage floors (a
+  # run with 0 verified entries can never PASS).
+  #
+  # PR lane (network-neutral): --tolerate-download-errors plus the runner's
+  # NEUTRAL exit 3 (report status inconclusive) keep a network/DNS outage from
+  # reddening a PR, while real findings (size/hash mismatch, verdict mismatch,
+  # CLI error) and unmet coverage floors still fail the job.
+  #
+  # Release lane (fail-closed): on v* tags the same gate runs without
+  # --tolerate-download-errors and the release job depends on it, so an outage,
+  # a skipped entry or an unmet floor always blocks the release.
+  # The nightly advisory run with cache + report artifact stays in
+  # .github/workflows/real-corpus.yml.
   real-corpus:
     name: Real-corpus gate (tier 1) on ubuntu-24.04
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -76,9 +84,21 @@ jobs:
       - name: Build Binary (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe
 
-      - name: Run Real-Corpus Gate (Tier 1; Download Failures Skip, Mismatches Block)
-        run: python tests/real_corpus.py --tier 1 --tolerate-download-errors
-          --report .cache/real-corpus/real-corpus-report.json
+      - name: Run Real-Corpus Gate (PR network-neutral; v* tag fail-closed)
+        run: |
+          rc=0
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            python tests/real_corpus.py --tier 1 --tolerate-download-errors \
+              --report .cache/real-corpus/real-corpus-report.json || rc=$?
+            if [ "$rc" -eq 3 ]; then
+              echo "::notice::real-corpus gate inconclusive (network-only failure); neutral on PR"
+              rc=0
+            fi
+          else
+            python tests/real_corpus.py --tier 1 \
+              --report .cache/real-corpus/real-corpus-report.json || rc=$?
+          fi
+          exit "$rc"
 
   oracle:
     name: "Oracle & differential on ${{ matrix.os }}"
@@ -187,7 +207,10 @@ jobs:
 
   release:
     name: Build & Publish Release Artifacts
-    needs: [core, oracle, fuzz, bench]
+    # real-corpus runs fail-closed on v* tags (no --tolerate-download-errors):
+    # the gate must PASS with coverage floors met, so an outage, a skipped
+    # entry or an unmet floor blocks the release.
+    needs: [core, oracle, fuzz, bench, real-corpus]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:

@@ -24,6 +24,15 @@ Standalone negative-corpus check (no `generate_fixtures.py` dependency; verify p
 python tests/negative_corpus.py     # generates tests/fixtures/negative/ (fixtures + manifest.json) deterministically, then asserts every case rejects (exit 2) with its expected error_code
 ```
 
+Real-corpus gate (`real-corpus` job in ci.yml; needs network + ReleaseSafe binary; verifies each manifest entry by size + sha256 before comparing per-profile verdicts; coverage floors mean 0 verified entries can never PASS):
+
+```sh
+python tests/real_corpus.py --tier 1 --tolerate-download-errors   # PR mode (ci.yml accepts 0|3): exit 0 PASS / 1 FAIL / 3 INCONCLUSIVE (NEUTRAL, tolerated network-only failure); real findings and unmet floors still fail
+python tests/real_corpus.py --tier 1                              # fail-closed mode (v* tags/releases); an outage, skipped entry, or unmet floor blocks
+```
+
+Windows runtime lane (`.github/workflows/windows.yml`, additive — no required-check or release wiring) runs `generate_fixtures.py` → `zig build test` → ReleaseSafe build → `cli_test.py` → `negative_corpus.py` natively on windows-latest.
+
 Expensive suites — network clone + CMake; only run when touching parsing/types/upstream-compat behavior:
 
 ```sh

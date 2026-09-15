@@ -1520,6 +1520,150 @@ test "validator: high-level Validator API parses and validates valid GGUF" {
     try std.testing.expect(!val.isQuotaExceeded());
 }
 
+// ---------------------------------------------------------------------------
+// 7b. Owned Result lifetime / independence (F-06 / B2)
+// ---------------------------------------------------------------------------
+
+/// Writes a minimal structurally-valid GGUF v3 stream (one F32 scalar tensor,
+/// `n_dims == 0`) into `buffer` and returns the exact stream slice, including
+/// the 32-byte-aligned zero-padded tensor data area. Parsing it allocates a
+/// tensor descriptor array plus the tensor name, so a `Result` over this
+/// document owns real allocations in its owned state.
+fn buildScalarTensorGguf(buffer: []u8) ![]u8 {
+    var fbs = std.io.fixedBufferStream(buffer);
+    const w = fbs.writer();
+
+    try w.writeAll("GGUF");
+    try w.writeInt(u32, 3, .little);
+    try w.writeInt(u64, 1, .little); // tensor_count
+    try w.writeInt(u64, 0, .little); // metadata_kv_count
+
+    const name = "scalar";
+    try w.writeInt(u64, name.len, .little);
+    try w.writeAll(name);
+    try w.writeInt(u32, 0, .little); // n_dims == 0 (scalar)
+    try w.writeInt(u32, 0, .little); // F32
+    try w.writeInt(u64, 0, .little); // offset
+
+    const written_len = fbs.getWritten().len;
+    const tensor_data_base = (written_len + 31) & ~@as(usize, 31);
+    return buffer[0 .. tensor_data_base + 32];
+}
+
+/// Validates `bytes` through a by-value Validator copy that dies when this
+/// returns: the `Result` must carry its own allocator state.
+fn validateOwnedFromRelocatedValidator(val: safegguf.Validator, bytes: []u8) !safegguf.Result {
+    var local = val;
+    return local.validateOwned(reader_mod.SliceReader.init(bytes).reader());
+}
+
+test "validator: validateOwned Result survives Validator scope exit and relocation" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+
+    var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+    // The producing Validator is a relocated by-value copy that is already
+    // destroyed by the time this returns.
+    var res = try validateOwnedFromRelocatedValidator(val, gguf);
+
+    try std.testing.expectEqual(@as(usize, 1), res.doc.tensors.len);
+    try std.testing.expectEqualStrings("scalar", res.doc.tensors[0].name);
+    // The document's allocations are attributed to the Result's own heap state.
+    try std.testing.expect(res.state != null);
+    try std.testing.expect(res.state.?.quota_alloc.allocated_bytes > 0);
+
+    // The original Validator is independent: reuse it (borrowed path), then
+    // free the Result through its own state.
+    var doc = try val.validate(reader_mod.SliceReader.init(gguf).reader());
+    val.deinitDocument(&doc);
+
+    res.deinit();
+    try std.testing.expect(res.state == null);
+}
+
+test "validator: validateOwned Result survives explicit Validator destruction" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+
+    const heap_val = try std.testing.allocator.create(safegguf.Validator);
+    heap_val.* = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+
+    var res = try heap_val.validateOwned(reader_mod.SliceReader.init(gguf).reader());
+    // Destroy the Validator (its inline QuotaAllocator storage is freed)
+    // before inspecting or freeing the Result: freeing through borrowed
+    // Validator state would now dereference freed memory.
+    std.testing.allocator.destroy(heap_val);
+
+    try std.testing.expectEqual(@as(usize, 1), res.doc.tensors.len);
+    try std.testing.expectEqualStrings("scalar", res.doc.tensors[0].name);
+    res.deinit();
+}
+
+test "validator: validateOwned keeps resource state independent of the Validator" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+
+    var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+    var res = try val.validateOwned(reader_mod.SliceReader.init(gguf).reader());
+    defer res.deinit();
+
+    // Owned run: accounting lives in the Result's state, the Validator's
+    // borrowed counters stay at zero, so reusing or moving the Validator can
+    // never invalidate the Result.
+    try std.testing.expect(res.state.?.quota_alloc.allocated_bytes > 0);
+    try std.testing.expectEqual(@as(u64, 0), val.quota_alloc.allocated_bytes);
+    try std.testing.expectEqual(@as(u64, 0), val.quota_alloc.peak_bytes);
+    try std.testing.expectEqual(@as(u64, 0), val.work_budget.consumed_units);
+    try std.testing.expect(!val.isQuotaExceeded());
+
+    // Validator reuse (borrowed path) and relocation while the Result is alive.
+    var doc = try val.validate(reader_mod.SliceReader.init(gguf).reader());
+    defer val.deinitDocument(&doc);
+    try std.testing.expect(val.quota_alloc.allocated_bytes > 0);
+    const relocated = val;
+    try std.testing.expectEqualStrings("scalar", res.doc.tensors[0].name);
+    try std.testing.expect(relocated.quota_alloc.allocated_bytes > 0);
+}
+
+test "validator: failed validateOwned cleans up its owned state and mirrors the quota flag" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+
+    // Quota smaller than the single tensor descriptor allocation: the owned
+    // state's QuotaAllocator must fail the run, not the host allocator.
+    const tight = limits.Limits{ .max_total_alloc_bytes = 8 };
+    var val = safegguf.Validator.init(std.testing.allocator, tight, .gguf_spec);
+
+    var i: usize = 0;
+    while (i < 5) : (i += 1) {
+        try std.testing.expectError(error.OutOfMemory, val.validateOwned(reader_mod.SliceReader.init(gguf).reader()));
+        // Repeated failures must neither leak the owned state (the testing
+        // allocator checks for leaks at test end) nor lose quota
+        // classification (quota rejection vs host OOM).
+        try std.testing.expect(val.isQuotaExceeded());
+    }
+}
+
+test "validator: owned Result deinit is idempotent" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+
+    var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+    var res = try val.validateOwned(reader_mod.SliceReader.init(gguf).reader());
+    try std.testing.expect(res.state != null);
+
+    res.deinit();
+    try std.testing.expect(res.state == null);
+    res.deinit(); // no-op: must not read stale state or double free
+    try std.testing.expect(res.state == null);
+
+    // The Validator stays usable and uncharged by the owned run.
+    var doc = try val.validate(reader_mod.SliceReader.init(gguf).reader());
+    val.deinitDocument(&doc);
+    try std.testing.expectEqual(@as(u64, 0), val.quota_alloc.allocated_bytes);
+    try std.testing.expect(!val.isQuotaExceeded());
+}
+
 test "validator: high-level Validator API enforces memory quota" {
     var buffer: [256]u8 = [_]u8{0} ** 256;
     var fbs = std.io.fixedBufferStream(&buffer);
@@ -1816,31 +1960,39 @@ test "buffered_reader: sliding window across 64 KiB boundary" {
     }
 }
 
-test "validator: reuse Validator across multiple files resets per-run work budget and quota flag" {
+test "validator: reuse Validator across multiple files resets per-validation work budget and quota flag" {
     var buffer: [256]u8 = [_]u8{0} ** 256;
-    var fbs = std.io.fixedBufferStream(&buffer);
-    const writer = fbs.writer();
+    const gguf = try buildScalarTensorGguf(&buffer);
 
-    try writer.writeAll("GGUF");
-    try writer.writeInt(u32, 3, .little);
-    try writer.writeInt(u64, 0, .little); // 0 tensors
-    try writer.writeInt(u64, 0, .little); // 0 metadata
-
-    // Set a moderate work budget limit (e.g. 50 units)
-    const lim = limits.Limits{ .max_work_units = 50 };
+    // Moderate work budget limit (e.g. 10 units) per validation.
+    const lim = limits.Limits{ .max_work_units = 10 };
     var val = safegguf.Validator.init(std.testing.allocator, lim, .gguf_spec);
 
     // Perform 10 consecutive validations on the same Validator instance.
-    // If work budget was cumulative, 10 runs would accumulate units and exceed 50 units!
+    // If the work budget were cumulative, 10 runs would accumulate units and
+    // exceed the 10-unit budget on either path.
     var i: usize = 0;
     while (i < 10) : (i += 1) {
-        const r = reader_mod.SliceReader.init(buffer[0..32]).reader();
-        var res = try val.validateOwned(r);
+        const borrowed_units_before = val.work_budget.consumed_units;
+        const borrowed_bytes_before = val.quota_alloc.allocated_bytes;
+
+        // Owned path: each call gets a fresh heap state, so per-run budgets are
+        // re-initialized and the Validator's own counters are never charged.
+        var res = try val.validateOwned(reader_mod.SliceReader.init(gguf).reader());
         defer res.deinit();
 
-        try std.testing.expectEqual(@as(u64, 0), res.doc.header.tensor_count);
-        // Ensure per-run units were reset to 0 at the start of each validateOwned()
-        try std.testing.expect(val.work_budget.consumed_units < 50);
+        try std.testing.expectEqual(@as(usize, 1), res.doc.tensors.len);
+        try std.testing.expect(res.state.?.work_budget.consumed_units > 0);
+        try std.testing.expect(res.state.?.work_budget.consumed_units < lim.max_work_units);
+        try std.testing.expectEqual(borrowed_units_before, val.work_budget.consumed_units);
+        try std.testing.expectEqual(borrowed_bytes_before, val.quota_alloc.allocated_bytes);
+
+        // Borrowed path: validate() must still reset the Validator's own
+        // per-run counters, keeping 10 consecutive runs under the same cap.
+        var doc = try val.validate(reader_mod.SliceReader.init(gguf).reader());
+        val.deinitDocument(&doc);
+        try std.testing.expect(val.work_budget.consumed_units > 0);
+        try std.testing.expect(val.work_budget.consumed_units < lim.max_work_units);
         try std.testing.expect(!val.isQuotaExceeded());
     }
 }
@@ -2012,4 +2164,207 @@ test "limits: scanned-byte budget still bounds string payloads within the sanity
         error.ResourceLimitExceeded,
         parser.parseDocument(std.testing.allocator, r, .little, policy, .gguf_spec, &budget),
     );
+}
+
+// ---------------------------------------------------------------------------
+// 9. Audit hardening regressions (P1-1, P2-1, P2-2, P2-3)
+// ---------------------------------------------------------------------------
+
+test "structural: many-tensor duplicate-name map is charged before the ranges array (P1-1)" {
+    // 200,000 unique-named tensors, each a valid 32-byte aligned descriptor:
+    // under the per-insert hash charge the work budget must reject the
+    // duplicate-name phase before the N-element TensorRange array can exist.
+    const n: usize = 200_000;
+    const alloc = std.testing.allocator;
+
+    const names = try alloc.alloc(u8, n * 8);
+    defer alloc.free(names);
+    const tensors = try alloc.alloc(parser.TensorInfo, n);
+    defer alloc.free(tensors);
+    const dims = [_]u64{8};
+
+    for (0..n) |i| {
+        // 8 printable base-26 digits: unique for every i < 26^8.
+        var value = i;
+        for (names[i * 8 ..][0..8]) |*c| {
+            c.* = 'a' + @as(u8, @intCast(value % 26));
+            value /= 26;
+        }
+        tensors[i] = .{
+            .name = names[i * 8 ..][0..8],
+            .dimensions = &dims,
+            .tensor_type = 0, // F32: 8 * 4 = 32 bytes
+            .offset = @as(u64, i) * 32,
+        };
+    }
+
+    const doc = parser.Document{
+        .header = .{ .version = 3, .tensor_count = n, .metadata_kv_count = 0 },
+        .alignment = 32,
+        .tensor_data_base = 32,
+        .tensors = tensors,
+        .file_size = 32 + @as(u64, n) * 32,
+    };
+
+    var quota = limits.QuotaAllocator.init(alloc, 64 * 1024 * 1024);
+    // Permits the O(N) dimension pre-pass, but not the O(N log2 N) hash phase.
+    var budget = limits.WorkBudget.init(1_400_000);
+    try std.testing.expectError(
+        error.ResourceLimitExceeded,
+        structural.validateStructural(quota.allocator(), doc, .gguf_spec, &budget),
+    );
+
+    // Budget rejection lands inside the hash phase: peak stays below a single
+    // full ranges array, i.e. the map was never completed and the ranges
+    // array was never allocated.
+    try std.testing.expect(quota.peak_bytes < @as(u64, n) * @sizeOf(structural.TensorRange));
+}
+
+/// Reader advertising a huge logical `size` over a small backing buffer:
+/// declared-length fields at 2^32 scale pass the bounds arithmetic, so the
+/// allocation-site hardening (P2-1) is exercised.
+const HugeSizeReader = struct {
+    data: []const u8,
+    claimed_size: u64,
+
+    fn reader(self: *const HugeSizeReader) reader_mod.Reader {
+        return .{
+            .ptr = @constCast(@ptrCast(self)),
+            .vtable = &vtable,
+            .size = self.claimed_size,
+        };
+    }
+
+    const vtable = reader_mod.Reader.VTable{ .readBytes = readBytesImpl };
+
+    fn readBytesImpl(ctx: *anyopaque, offset: u64, dest: []u8) err.ParseError!void {
+        const self: *const HugeSizeReader = @ptrCast(@alignCast(ctx));
+        const end = std.math.add(u64, offset, dest.len) catch return err.ParseError.UnexpectedEof;
+        if (end > self.data.len) return err.ParseError.UnexpectedEof;
+        @memcpy(dest, self.data[offset..end]);
+    }
+};
+
+/// Parses `data` with caps raised past 2^32 and a 1 MiB quota, so a declared
+/// 2^32-scale length reaches its allocation site: the run must fail closed
+/// (quota OutOfMemory on 64-bit hosts, checked-cast ResourceLimitExceeded on
+/// narrower hosts), never panic or allocate the declared size.
+fn expectHugeDeclaredLengthReject(data: []const u8) !void {
+    // 256 GiB claimed size: large enough that the descriptor-count pre-check
+    // (tensor_count <= (size - cur) / 24) admits 2^32 declared descriptors.
+    var huge = HugeSizeReader{ .data = data, .claimed_size = 1 << 38 };
+    var quota = limits.QuotaAllocator.init(std.testing.allocator, 1024 * 1024);
+    const policy = limits.Limits{
+        .max_string_bytes = 1 << 33,
+        .max_tensor_name_bytes = 1 << 33,
+        .max_tensors = 1 << 33,
+        .max_metadata_entries = 1 << 33,
+    };
+    var budget = limits.WorkBudget.initWithLimits(10_000_000, 1 << 34);
+
+    const res = parser.parseDocument(quota.allocator(), huge.reader(), .little, policy, .gguf_spec, &budget);
+    if (res) |_| {
+        return error.TestExpectedError;
+    } else |e| {
+        // Fail-closed either way: a host whose usize cannot represent the
+        // declared length rejects at the checked cast, a 64-bit host at the
+        // quota ceiling.
+        try std.testing.expect(e == error.OutOfMemory or e == error.ResourceLimitExceeded);
+    }
+}
+
+test "parser: 2^32-scale declared lengths reject fail-closed (P2-1)" {
+    var fbs_buf: [40]u8 = [_]u8{0} ** 40;
+
+    // metadata key length = 2^32
+    {
+        var fbs = std.io.fixedBufferStream(&fbs_buf);
+        const w = fbs.writer();
+        try w.writeAll("GGUF");
+        try w.writeInt(u32, 3, .little);
+        try w.writeInt(u64, 0, .little); // tensor_count
+        try w.writeInt(u64, 1, .little); // metadata_kv_count
+        try w.writeInt(u64, 1 << 32, .little);
+    }
+    try expectHugeDeclaredLengthReject(&fbs_buf);
+
+    // tensor_count = 2^32
+    {
+        @memset(&fbs_buf, 0);
+        var fbs = std.io.fixedBufferStream(&fbs_buf);
+        const w = fbs.writer();
+        try w.writeAll("GGUF");
+        try w.writeInt(u32, 3, .little);
+        try w.writeInt(u64, 1 << 32, .little);
+        try w.writeInt(u64, 0, .little); // metadata_kv_count
+    }
+    try expectHugeDeclaredLengthReject(fbs_buf[0..32]);
+
+    // tensor name length = 2^32
+    {
+        @memset(&fbs_buf, 0);
+        var fbs = std.io.fixedBufferStream(&fbs_buf);
+        const w = fbs.writer();
+        try w.writeAll("GGUF");
+        try w.writeInt(u32, 3, .little);
+        try w.writeInt(u64, 1, .little); // tensor_count
+        try w.writeInt(u64, 0, .little); // metadata_kv_count
+        try w.writeInt(u64, 1 << 32, .little);
+    }
+    try expectHugeDeclaredLengthReject(&fbs_buf);
+}
+
+test "reader: direct readBytesImpl calls reject out-of-range offsets with UnexpectedEof (P2-2)" {
+    const data = "0123456789";
+    var slice = reader_mod.SliceReader.init(data);
+    const slice_reader = slice.reader();
+    var buf: [4]u8 = undefined;
+
+    // Offset past the backing slice: the direct vtable entry point bypasses
+    // the wrapper-level size guard, so the impl itself must reject.
+    try std.testing.expectError(
+        error.UnexpectedEof,
+        slice_reader.vtable.readBytes(slice_reader.ptr, data.len + 1, &buf),
+    );
+    // offset + dest.len overflowing u64.
+    try std.testing.expectError(
+        error.UnexpectedEof,
+        slice_reader.vtable.readBytes(slice_reader.ptr, std.math.maxInt(u64), &buf),
+    );
+    // In-range reads still succeed through the same direct entry point.
+    try slice_reader.vtable.readBytes(slice_reader.ptr, 4, &buf);
+    try std.testing.expectEqualStrings("4567", &buf);
+
+    // BufferedReader: an offset past the advertised file size must reject
+    // instead of underflowing file_size - offset while sliding the window.
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const file = try tmp_dir.dir.createFile("direct_impl.bin", .{ .read = true });
+    defer file.close();
+    try file.writeAll("abc");
+
+    var buffered = reader_mod.BufferedReader.init(file, 3);
+    const buffered_reader = buffered.reader();
+    try std.testing.expectError(
+        error.UnexpectedEof,
+        buffered_reader.vtable.readBytes(buffered_reader.ptr, 4, &buf),
+    );
+}
+
+test "quota_allocator: resize shrink saturates instead of underflowing (P2-3)" {
+    var quota = limits.QuotaAllocator.init(std.heap.page_allocator, 1024);
+    const alloc = quota.allocator();
+
+    const accounted = try alloc.alloc(u8, 32);
+    defer alloc.free(accounted);
+    try std.testing.expectEqual(@as(u64, 32), quota.allocated_bytes);
+
+    // A buffer the quota never accounted for: shrinking it by more than the
+    // accounted total must saturate to zero (mirroring free()), not underflow.
+    const unaccounted = try std.heap.page_allocator.alloc(u8, 64);
+    defer std.heap.page_allocator.free(unaccounted);
+
+    try std.testing.expect(alloc.resize(unaccounted, 8));
+    try std.testing.expectEqual(@as(u64, 0), quota.allocated_bytes);
+    try std.testing.expectEqual(@as(u64, 32), quota.peak_bytes);
 }
