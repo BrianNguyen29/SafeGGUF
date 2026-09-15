@@ -1,0 +1,14 @@
+{
+  "$comment": "Real-world corpus manifest (F-04 / B1). Ships EMPTY by design: tests/real_corpus.py exits 0 vacuously until a maintainer supplies approved immutable entries, so the advisory workflow stays green. NEVER invent URLs, sha256 digests, sizes or license claims - every populated entry must come from a verifiable primary source and sha256 is the authoritative identity.",
+  "schema_version": 1,
+  "entry_schema": {
+    "name": "stable entry id used in reports (unique non-empty string)",
+    "url": "immutable download URL pinned to a revision (http/https; no moving refs)",
+    "sha256": "lowercase hex sha256 of the exact file bytes (authoritative identity)",
+    "size": "declared file size in bytes (positive integer; verified against the streamed download)",
+    "license": "license identifier as verified from the source (never guessed)",
+    "tier": "1 = nightly-bounded (~0.5-1 GB total), 2 = weekly/manual (larger models)",
+    "expected_profile": "expected safegguf verdict per profile, e.g. {\"gguf-spec\": \"pass\", \"llama-cpp\": \"pass\"}; values: pass | reject"
+  },
+  "entries": []
+}

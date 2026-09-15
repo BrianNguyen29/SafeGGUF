@@ -1,4 +1,4 @@
-# SafeGGUF 🛡️
+# SafeGGUF
 
 [![CI](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/ci.yml/badge.svg)](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/ci.yml)
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
@@ -6,212 +6,94 @@
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
 [![Release](https://img.shields.io/badge/release-v0.3.5-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
 
-> [!NOTE]
-> **Release status:** the latest tagged release is **v0.3.5**; `main` is unreleased and carries post-v0.3.5 assurance work (v0.3.6). This README documents `main` unless a statement is explicitly marked as release-only.
+SafeGGUF is a memory-safe, overflow-checked structural and arithmetic validator for **GGUF** model files, written in Zig. It inspects model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes such as `llama.cpp` or other `ggml`-based loaders.
 
-A memory-safe, overflow-checked GGUF v3 structural and arithmetic pre-admission validator written in **Zig**, designed to inspect model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes.
+Validation reads only the header, metadata, descriptor table, and alignment padding through a 64 KiB sliding-window reader; tensor payload bytes are never read, so models larger than available memory can be inspected. The CLI is fail-closed: unknown arguments exit with standard `EX_*` codes, and every result carries structured diagnostics and the pinned upstream type-table provenance.
 
-SafeGGUF operates purely on file headers and descriptors without loading multi-gigabyte tensor payload data into host memory.
+> **Release status.** The latest tagged release is **v0.3.5**. `main` is unreleased and carries post-v0.3.5 work; this README documents `main` unless a statement is explicitly marked as release-only.
 
----
+## Overview
 
-## 🎯 Threat Model & Motivation
+GGUF fields are attacker-controlled: element counts, string lengths, dimensions, offsets, and alignment all drive allocations and pointer arithmetic in downstream loaders. SafeGGUF rejects the input classes that most commonly break those loaders:
 
-GGUF is the standard container format for local and edge LLM inference (`llama.cpp`, Ollama, vLLM). Because model files are typically loaded via `mmap` and parsed in C/C++, malformed or crafted files present direct security risks:
+* dimension products, block counts, and byte sizes whose arithmetic would wrap `u64` (checked arithmetic, no silent overflow);
+* descriptor tables and cumulative offsets that overflow or extend past the end of the file;
+* alignment padding that violates the GGUF zero-padding requirement;
+* resource exhaustion (huge counts, oversized strings, deep nesting) before any allocation is made;
+* semantic violations: invalid UTF-8, invalid booleans, unknown tensor type IDs, zero dimensions.
 
-* **Integer Overflows in Tensor Byte Math:** Crafting extreme tensor dimensions can overflow integer calculations in block quantization, bypassing bounds checks and triggering undersized allocations or heap buffer overflows (e.g., CVE-2026-33298, CVE-2026-27940).
-* **Contiguous Layout & Trailing Padding Exploits:** In runtime loaders requiring strictly sequential layouts, calculating expected offsets ($O_{next} = O_{cur} + S$) without checked arithmetic can trigger integer overflows and crash. Furthermore, files truncating trailing tensor padding cause runtime loaders to abort with truncated reads (`failed to read tensor data binary blob`).
-* **Memory & I/O Exhaustion (Anti-DoS):** Corrupted headers declaring massive tensor counts or nested string arrays can exhaust host memory or force gigabytes of stream byte validation without exceeding logical element counts.
-* **Semantic Format Exploits:** Malformed boolean values (bytes $\notin \{0, 1\}$), invalid UTF-8 sequences, or unconstrained nested arrays can trigger parser panics or memory corruption.
+`PASS` means the file satisfies the selected profile's structural, arithmetic, and resource-policy checks. It is not a trust or malware verdict — see [Security](#security).
 
-SafeGGUF acts as a hardened **pre-admission gateway** in model supply chain pipelines, running before weights are mapped or executed.
+## Features
 
----
+* **Pinned ggml type table.** Supports the 35 active GGML types across the 43 type slots of pinned ggml `0.23.0` (`e91ded11`): `F32`/`F16`/`BF16`/`F64`, `I8`–`I64`, `Q4_0`–`Q8_1`, k-quants (`Q2_K`–`Q8_K`), i-quants (`IQ1_S`–`IQ4_XS`), t-quants (`TQ1_0`, `TQ2_0`), and `MXFP4`/`NVFP4`/`Q1_0`/`Q2_0`. Deprecated slots (4, 5, 31–33, 36–38) and type IDs ≥ 43 are rejected. Row/block divisibility (`dims[0] % block_size == 0`) is enforced, and the table is verified against a compiled upstream C++ oracle (`tests/test_oracle_types.py`).
+* **Two validation profiles.** `gguf-spec` (default) validates a resource-bounded, format-level safe subset of GGUF v3. `llama-cpp` validates the stricter pre-admission subset derived from, and differential-tested against, pinned `ggml 0.23.0` (`e91ded11`). The two profiles are deliberately decoupled; see [Validation Profiles](#validation-profiles).
+* **Checked arithmetic everywhere.** Dimensions, block counts, byte sizes, alignment, and contiguous-layout traversal are computed with checked operations (`checkedAdd`, `checkedMul`, `checkedAlignUp`); overflow yields a `REJECT`, never a wrapped value.
+* **Validator-managed resource budgets.** A wrapping `QuotaAllocator` caps validator allocations, and a `WorkBudget` charges deterministic logical work units plus scanned bytes. Quota exhaustion fails closed with exit code `2`; see [Resource Limits](#resource-limits).
+* **Fail-closed CLI with a standard exit taxonomy.** `0` PASS, `2` REJECT, `64` usage error, `70` internal software/host-OOM error, `74` I/O error — deterministic values suitable for CI/CD gates.
+* **Structured diagnostics.** `--format json` emits machine-readable results with `error_code`, `category`, `stage`, and position context (tensor index/name, offset, expected offset, metadata key). Text mode mirrors the same fields and sanitizes untrusted strings.
+* **Pinned provenance in every JSON result.** PASS, REJECT, and ERROR objects all carry the ggml source the profile's layout rules derive from — `type_layout_source` under `gguf-spec`, `compatibility_target` under `llama-cpp`.
+* **Independent verification harness.** Upstream C++ type oracle, Python bigint arithmetic oracle, differential testing against the pinned upstream loader, a provenance-tiered negative corpus, and mutation fuzzing (details under [Testing](#testing)).
 
-## 🛡️ Architectural Guarantees & Features (unreleased `main`; latest release v0.3.5)
-
-### 1. Canonical Upstream Type Table Verified by C Oracle
-Supports all **35 active GGML types** matching `ggml 0.23.0` (`e91ded11`):
-* Verified against an independent compiled C++ upstream oracle (`tests/test_oracle_types.py`) inspecting exact `sizeof` and `blck_size` across all 43 upstream type slots.
-* Includes standard floating point (`F32`, `F16`, `BF16`, `F64`), integers (`I8`..`I64`), k-quants (`Q2_K`..`Q8_K`), i-quants (`IQ1_S`, `IQ1_M`, `IQ2_XXS`..`IQ4_XS`), t-quants (`TQ1_0`, `TQ2_0`), and modern micro-float types (`MXFP4`, `NVFP4`, `Q1_0`, `Q2_0`).
-* Deprecated/removed slots (4, 5, 31..33, 36..38) and IDs $\ge 43$ are strictly rejected (`InvalidTensorType`).
-* Row divisibility is strictly enforced: $\text{dimensions}[0] \pmod{\text{block\_size}} = 0$.
-* Checked arithmetic prevents integer overflow across every dimension product, block calculation, alignment, and contiguous layout traversal.
-
-### 2. Profile Separation: Specification vs Runtime Safe Subset
-Different runtimes enforce different constraints. SafeGGUF strictly decouples spec validation from runtime loader validation:
-
-| Constraint | `--profile gguf-spec` (Default) | `--profile llama-cpp` |
-| :--- | :--- | :--- |
-| **Profile Role** | Resource-bounded GGUF v3 structural safe subset | ggml 0.23.0 Safe Pre-Admission Subset |
-| **GGUF Version** | Exactly version 3 | Version 2 and Version 3 |
-| **Tensor Layout** | Arbitrary order & gaps permitted (non-overlapping) | Strictly contiguous in descriptor order + checked trailing padding |
-| **Nested Arrays** | Permitted (depth limited to 16) | Strictly rejected (`NestedArrayNotSupported`) |
-| **Scalar Tensors** | Supported ($\text{n\_dims} = 0$, 1 element = `type_size`) | Supported ($\text{n\_dims} = 0$, 1 element = `type_size`) |
-| **Zero Dimensions** | Strictly rejected (`dimensions[i] > 0`) | Strictly rejected (`dimensions[i] > 0`) |
-| **Tensor Name Length** | $1 \le \text{len} \le 64$ bytes | $1 \le \text{len} < 64$ bytes (`GGML_MAX_NAME` check) |
-| **Alignment** | Multiple of 8 (uint32) | Power-of-two (uint32) |
-
-> [!NOTE]
-> Both `--profile gguf-spec` and `--profile llama-cpp` are **safe pre-admission subsets** designed for defense-in-depth. `--profile llama-cpp` is derived from and differential-tested directly against pinned `ggml 0.23.0` (`e91ded11`). Furthermore, SafeGGUF explicitly enforces the GGUF specification's zero-padding requirement (required padding must be `0x00` bytes to the next alignment boundary) even where a particular upstream runtime may align past those bytes without validating their contents.
-
-### 3. Validator-Managed Resource Budgets (Anti-DoS)
-* **Allocation Quota (validator-managed):** Wraps the caller's allocator and tracks live and peak bytes allocated through it (`max_total_alloc_bytes = 128 MB`), bounding memory used by parser tables, hash maps, strings, and sorting buffers. This is a quota on allocations routed through `QuotaAllocator` — it is not an OS-level process/RSS limit.
-* **Quota Exhaustion vs Host OOM:** Quota exhaustion explicitly flags `isQuotaExceeded()` and exits with code `2` (`E_TotalAllocationLimitExceeded`), while unbudgeted host memory starvation exits with code `70` (`EX_SOFTWARE`).
-* **Logical Work Budget:** Monotonically charged in deterministic logical units across parsing, metadata traversal, descriptor decoding, sorting $O(N \log N)$, and interval scanning (`max_work_units = 10_000_000`) to bound algorithmic complexity in the validator. It is not a CPU-instruction or wall-clock cap.
-* **Scanned-Byte Budget:** Validator-managed accounting (`max_scanned_bytes = 256 MB`) charging every byte read during UTF-8 stream validation, boolean array scanning, key validation, and string parsing to bound validator CPU/I/O work; combine with an OS file-size limit for hostile uploads.
-* **Buffered I/O (64 KiB Sliding Window):** Caches reads to protect the host against syscall exhaustion attacks from fragmented metadata streams.
-
-> [!IMPORTANT]
-> **Deployment limits:** SafeGGUF's budgets are validator-managed quotas over its own allocations and logical work; they do not cap process RSS, page cache, stack, or CPU/wall-clock time. For hostile multi-tenant uploads, run validation under OS/container limits as well — cgroup/job-object memory limit, CPU quota plus wall-clock timeout, input file-size limit, read-only filesystem where possible, and a seccomp/sandbox profile.
-
-### 4. Fail-Closed CLI & Standard Exit Code Taxonomy
-SafeGGUF uses standard, deterministic exit codes suitable for automated CI/CD and deployment pipelines:
-
-| Exit Code | Constant | Meaning |
-| :---: | :--- | :--- |
-| **`0`** | `PASS` | File satisfies the selected profile's structural, arithmetic, and resource-policy checks. Not a trust or malware verdict (see scope note below). |
-| **`2`** | `REJECT` | File is malformed, out-of-bounds, corrupted, or violates profile/security invariants. |
-| **`64`** | `EX_USAGE` | Command-line syntax error, missing argument, or unknown option (fail-closed). |
-| **`70`** | `EX_SOFTWARE` | Internal system error or host out-of-memory. |
-| **`74`** | `EX_IOERR` | Target file could not be opened, `stat()` failed, or stream read I/O error. |
-
-> [!IMPORTANT]
-> **`PASS` scope:** `PASS` means the file satisfies the selected SafeGGUF structural, arithmetic, and resource-policy checks. It is not a trust or malware verdict: it does not prove model weights are benign, the chat template is semantically safe, downstream architecture-specific code or GPU kernels are vulnerability-free, the publisher is trusted, or that file contents cannot change after validation (see [Supply Chain & TOCTOU Considerations](#-supply-chain--toctou-considerations)).
-
----
-
-## 🔬 Independent Verification & Testing Infrastructure
-
-SafeGGUF incorporates an exhaustive, multi-tier verification harness:
-
-1. **Independent Type Oracle Verification (`tests/test_oracle_types.py`):**
-   Automatically builds a C++ helper against `ggml-org/ggml@e91ded11` and asserts that all 43 GGML type traits match with 100% precision.
-2. **True Upstream Differential Validation (`tests/differential.py`):**
-   Executes SafeGGUF alongside the compiled upstream `ggml` oracle running both metadata-only and normal tensor data loading paths (`gguf_init_from_file`). Enforces an explicit, audited allowlist for intentional security divergences. Any unexpected divergence immediately fails CI.
-3. **Seed Corpus Crash Regression & Fuzz Harness (`tests/fuzz_target.zig`):**
-   Provides an official `LLVMFuzzerTestOneInput` C ABI entry point for libFuzzer/OSS-Fuzz and a corpus runner (`zig build fuzz`) verifying parser memory safety across 26 adversarial seed fixtures.
-4. **Leak-Free Unit & Regression Suite (`zig build test`):**
-   47 exhaustive unit and regression tests verifying arithmetic overflows, trailing padding truncation, zero-tensor spec alignment, signed dimension bounds, Validator reuse lifecycle, quota tracking, and DoS limits with 0 memory leaks under `std.testing.allocator` (enforced on Ubuntu & macOS in CI).
-5. **Negative Corpus & Advisory Provenance (`tests/negative_corpus.py`):**
-   Reject-contract corpus split by provenance: `synthetic-class-exemplar` fixtures are hand-built malformed inputs for a specific bug class and never borrow a CVE/advisory identity, while `advisory-regression` cases are admitted only with a verifiable primary source and a documented rejection mechanism. Mechanism-equivalent cases are labeled as such and are not presented as byte-for-byte reproductions of downstream behavior.
-
----
-
-## 🔒 Supply Chain & TOCTOU Considerations
-
-SafeGGUF acts as a fast pre-admission barrier inspecting headers before runtime mapping. In environments where local file storage is shared or writable by untrusted processes:
-
-* **Time-Of-Check to Time-Of-Use (TOCTOU):** A file validated by SafeGGUF could theoretically be modified on disk before a downstream inference engine loads it.
-* **Recommended Mitigations:**
-  1. **Immutable Content-Addressed Storage (CAS):** Store models in read-only volumes (e.g., S3/OCI read-only layers, dm-verity) and validate before promoting to the admitted store.
-  2. **File Descriptor Chaining:** In programmatic / library integrations, open the file descriptor once with read-only permissions (`O_RDONLY`), validate the descriptor via SafeGGUF, and pass the same descriptor to the runtime loader.
-  3. **Digest Verification:** Verify SHA-256 or BLAKE3 digests of admitted artifacts before deployment.
-
-### Verifying Release Artifacts
-
-Tagged releases publish the cross-platform binaries, `SHA256SUMS.txt`, a keyless Sigstore signature bundle (`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`). GitHub artifact attestations cover the release binaries and the SBOM, and the release workflow verifies checksums, signature, and attestations **before** publishing — any failure aborts the release (no long-lived release signing key is used; signatures are issued to the release workflow's OIDC identity).
-
-```bash
-# 1. Verify the checksum manifest's keyless Sigstore signature
-cosign verify-blob \
-  --bundle SHA256SUMS.txt.sigstore.json \
-  --certificate-identity-regexp '^https://github.com/BrianNguyen29/SafeGGUF/\.github/workflows/ci\.yml@refs/tags/.*$' \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  SHA256SUMS.txt
-
-# 2. Verify the binaries against the signed manifest
-sha256sum -c SHA256SUMS.txt
-
-# 3. Verify the GitHub build provenance attestation for a binary
-gh attestation verify safegguf-x86_64-linux --repo BrianNguyen29/SafeGGUF
-```
-
-Do not rely on a manually compared checksum alone: the manifest is only meaningful when its signature and the binaries' provenance attestations verify.
-
----
-
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
-* **Zig 0.13.0** (pinned toolchain)
-* Python 3.10+
-* CMake & C++ compiler (for building the upstream verification oracle)
 
-### Building from Source
+* **Zig 0.13.0** (pinned toolchain; no Zig package dependencies)
+* **Python 3** for fixture generation and the test harnesses
+* **CMake and a C++ toolchain** — only needed to build the upstream verification oracle
+
+### Build
 
 ```bash
 git clone https://github.com/BrianNguyen29/SafeGGUF.git
 cd SafeGGUF
 
-# Build release binary (ReleaseSafe enables runtime safety checks with optimization)
+# ReleaseSafe enables runtime safety checks (overflow, bounds) with optimization,
+# and is the configuration the Python harnesses expect.
 zig build -Doptimize=ReleaseSafe
 
-# Binary is placed at zig-out/bin/safegguf
-./zig-out/bin/safegguf
+# Binary: zig-out/bin/safegguf
+./zig-out/bin/safegguf inspect /path/to/model.gguf
 ```
 
-### Running the Test Suite
+### Generate fixtures and run the tests
 
 ```bash
-# 1. Verify code formatting
-zig fmt --check src/ build.zig tests/*.zig
-
-# 2. Run all unit tests, regression tests, and fuzz corpus sweep with 0-leak verification
-zig build test --summary all
-
-# 3. Generate synthetic adversarial fixtures
+# Required once before `zig build test`: fixtures and seed corpus are generated,
+# not committed (they live under gitignored tests/fixtures/ and tests/corpus/).
 python tests/generate_fixtures.py
 
-# 4. Run end-to-end CLI integration tests (exact exit codes & timeouts)
+zig fmt --check src/ build.zig tests/*.zig
+zig build test --summary all
+
+zig build -Doptimize=ReleaseSafe
 python tests/cli_test.py
-
-# 5. Build upstream ggml oracle and verify type traits
-bash tests/build_oracle.sh
-python tests/test_oracle_types.py
-
-# 6. Run true upstream differential test suite (SafeGGUF vs Upstream ggml 0.23.0)
-python tests/differential.py
-
-# 7. Run high-throughput mutation fuzzing (2,000 permutations across both profiles = 4,000 executions)
-python tests/fuzz_mutation.py --iterations 2000
+python tests/negative_corpus.py
 ```
 
----
+See [Testing](#testing) for the oracle, differential, benchmark, and fuzz commands.
 
-## 📦 Library API Usage (Embedding SafeGGUF)
+## CLI Reference
 
-For embedding in inference engines, model gateways, or custom admission controllers, use the high-level `Validator` struct which automatically manages validator-scoped memory quotas (`QuotaAllocator`) and logical work budgets (`WorkBudget`):
-
-```zig
-const std = @import("std");
-const safegguf = @import("safegguf");
-
-pub fn validateGgufFile(allocator: std.mem.Allocator, file: std.fs.File) !void {
-    const stat = try file.stat();
-    var buf_reader = safegguf.reader.BufferedReader.init(file, stat.size);
-    const r = buf_reader.reader();
-
-    // Configure limits (defaults: 128 MB validator-managed allocation quota, 10M logical work units, 256 MB scanned-byte limit)
-    const limits = safegguf.limits.Limits{};
-    
-    // Choose validation profile: .gguf_spec or .llama_cpp
-    var validator = safegguf.Validator.init(allocator, limits, .llama_cpp);
-    
-    var doc = try validator.validate(r);
-    defer validator.deinitDocument(&doc);
-
-    std.debug.print("Model validated successfully: {d} tensors\n", .{doc.header.tensor_count});
-}
+```text
+safegguf inspect <path_to_model.gguf> [options]
+safegguf --version
+safegguf --help | -h | help
 ```
 
----
+`inspect` is the only subcommand. With no arguments, an unknown command, or an unknown option, SafeGGUF prints usage to stderr and exits `64` (fail-closed); a missing file path also exits `64`.
 
-## 💻 CLI Usage
+| Option | Values | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--endian` | `little` \| `big` | `little` | Byte order used to decode multi-byte header, metadata, and descriptor fields |
+| `--format` | `text` \| `json` | `text` | Output format |
+| `--profile` | `gguf-spec` \| `llama-cpp` | `gguf-spec` | Validation profile (see [Validation Profiles](#validation-profiles)) |
+| `--max-variable-array-elements` | integer `1`..`10,000,000` | `1,000,000` | Sanity cap for variable-length element arrays (`array[string]` and nested arrays). The accepted ceiling equals the generic array-element limit; a missing value, `0`, non-integers, or values above the ceiling exit `64` |
+| `--help`, `-h` | — | — | Print usage and exit `0` (also `safegguf help`, or `inspect --help`) |
+| `--version` | — | — | Print version and build provenance, then exit `0` |
 
-Optional flags: `--endian <little|big>`, `--format <text|json>`, `--profile <gguf-spec|llama-cpp>`, and `--max-variable-array-elements <N>` — the string/nested-array element sanity cap (default `1,000,000`, raised from 100,000 so real tokenizer vocabularies are admitted; accepted range `1..10,000,000`). The override flag and the raised default are **unreleased `main`** behavior: the v0.3.5 release has no override and caps at 100,000. `--version` prints build provenance and exits `0`; unknown flags fail closed with exit code `64`.
-
-### Build Provenance (`--version`)
+### Build provenance (`--version`)
 
 ```bash
 safegguf --version
@@ -219,7 +101,7 @@ safegguf --version
 
 ```text
 SafeGGUF 0.3.5
-source_commit: 1036a2766c397192af6d97a5fe9c9ba2ffa9b945
+source_commit: 33dc9bab5ab8f84697b93e85d969d251725f1152
 zig: 0.13.0
 build_mode: ReleaseSafe
 target: x86_64-linux
@@ -227,21 +109,43 @@ ggml_target: 0.23.0
 ggml_commit: e91ded11bdcd78c42f9c8d3978ff6686eb4c1226
 ```
 
-All values are injected at build time from the source tree, toolchain, and build options (`-Dversion=` overrides the version); no wall-clock timestamp is embedded.
+All values are injected at build time from the source tree, toolchain, and build options; no wall-clock timestamp is embedded. The version defaults to `0.3.5` for source builds and is set explicitly with `-Dversion=<value>` by the release workflow.
 
-### Inspect a Model (Human-Readable Output)
+## Exit Codes
 
-```bash
-safegguf inspect /path/to/model.gguf
+| Exit code | Constant | Meaning |
+| :---: | :--- | :--- |
+| `0` | `PASS` | The file satisfies the selected profile's structural, arithmetic, and resource-policy checks. |
+| `2` | `REJECT` | The file is malformed, out of bounds, corrupted, or violates a profile/security invariant — including validator allocation-quota exhaustion. |
+| `64` | `EX_USAGE` | Command-line usage error: unknown command/option, missing argument, or invalid option value (fail-closed). |
+| `70` | `EX_SOFTWARE` | Internal error or host out-of-memory. |
+| `74` | `EX_IOERR` | The target file could not be opened or stat'ed, or a stream read failed. |
+
+## Output
+
+`--format text` (the default) prints PASS details to stdout and routes REJECT/ERROR diagnostics to stderr, mirroring the JSON fields as labeled text lines; untrusted strings are sanitized to printable ASCII.
+
+```text
+GGUF version: 3
+Profile: gguf-spec
+File size: 448 bytes
+Metadata entries: 1
+Tensors: 2
+Alignment: 32
+Tensor data offset: 192
+
+Validation:
+  structural: PASS
+  arithmetic: PASS
+  bounds: PASS
+  overlap: PASS
+Result: PASS
 ```
 
-### Structured Output (JSON for Security Orchestration)
+`--format json` emits one JSON object per invocation to stdout, with the exit code carrying the verdict. Every JSON object — PASS, REJECT, and ERROR — carries the pinned provenance object (`type_layout_source` under `gguf-spec`, `compatibility_target` under `llama-cpp`) with `project`, `version`, and `commit` fields.
 
-```bash
-safegguf inspect /path/to/model.gguf --format json
-```
+PASS, `--profile gguf-spec`:
 
-Valid file output (`--profile gguf-spec`):
 ```json
 {
   "status": "PASS",
@@ -267,11 +171,185 @@ Valid file output (`--profile gguf-spec`):
 }
 ```
 
-Every JSON result (PASS, REJECT, and ERROR) carries this provenance object — `compatibility_target` under `--profile llama-cpp`, `type_layout_source` under `gguf-spec` — recording the pinned ggml 0.23.0 (`e91ded11…`) type-table source; the `llama-cpp` profile is a safe pre-admission subset derived from that pinned ggml, not a claim of compatibility with all of llama.cpp.
+REJECT, `--profile gguf-spec`, with position context (REJECT objects include `error`, `error_code`, `category`, `stage`, `message`, a `findings` array, and whichever context fields the rejection site recorded: `tensor_index`, `tensor`, `offset`, `expected_offset`, `key`, `key_truncated`):
 
-A `PASS` status reflects only those selected checks; it is not a trust or malware verdict for the model or its publisher (see the `PASS` scope note with the exit-code table).
+```json
+{
+  "status": "REJECT",
+  "profile": "gguf-spec",
+  "type_layout_source": {
+    "project": "ggml",
+    "version": "0.23.0",
+    "commit": "e91ded11bdcd78c42f9c8d3978ff6686eb4c1226"
+  },
+  "error": "TensorOutOfBounds",
+  "error_code": "E_TensorOutOfBounds",
+  "category": "format",
+  "stage": "structural",
+  "message": "Tensor data extends past end of file",
+  "tensor_index": 0,
+  "tensor": "test",
+  "offset": 1024,
+  "findings": [
+    {
+      "code": "E_TensorOutOfBounds",
+      "severity": "reject",
+      "message": "Tensor data extends past end of file",
+      "stage": "structural",
+      "category": "format",
+      "tensor_index": 0,
+      "tensor": "test",
+      "offset": 1024
+    }
+  ]
+}
+```
 
----
+ERROR objects (I/O and internal failures) carry `status`, `error`, `error_code`, `message`, and the provenance object; `profile` is present when the failure occurs after profile selection. Example — file not found (exit `74`):
 
-## 📄 License
-MIT License.
+```json
+{
+  "status": "ERROR",
+  "type_layout_source": {
+    "project": "ggml",
+    "version": "0.23.0",
+    "commit": "e91ded11bdcd78c42f9c8d3978ff6686eb4c1226"
+  },
+  "error": "FileNotFound",
+  "error_code": "E_FILE_OPEN_FAILED",
+  "message": "Failed to open file"
+}
+```
+
+`error_code` values are `E_` prefixed error names (for example `E_TensorOutOfBounds`, `E_InvalidAlignmentPadding`, `E_ArithmeticOverflow`). `category` is one of `format`, `compatibility`, `arithmetic`, `resource`, `io`, or `internal`. JSON strings derived from untrusted input are escaped byte-safely, so rejection output stays parseable even for malformed names and keys.
+
+## Validation Profiles
+
+| Constraint | `--profile gguf-spec` (default) | `--profile llama-cpp` |
+| :--- | :--- | :--- |
+| Role | Resource-bounded GGUF v3 structural safe subset | Pre-admission subset derived from pinned ggml `0.23.0` (`e91ded11`) |
+| GGUF version | Exactly `3` | `2` or `3` |
+| Tensor layout | Arbitrary order and gaps permitted; overlapping data ranges rejected | Strictly contiguous in descriptor order, with the aligned end of the final tensor required to exist within the file |
+| Nested arrays | Permitted up to the metadata depth limit (`16`) | Rejected (`NestedArrayNotSupported`) |
+| Tensor name length | 1–64 bytes | 1–63 bytes (`GGML_MAX_NAME` bound) |
+| Alignment | Multiple of 8 | Multiple of 8 and power of two |
+| Scalar tensors (`n_dims = 0`) | Supported (1 element = `type_size`) | Supported (1 element = `type_size`) |
+| Zero dimensions | Rejected | Rejected |
+| Dimension bounds | Checked `u64` arithmetic | Signed 64-bit bounds and a non-overflowing element product |
+
+Both profiles enforce the GGUF specification's zero-padding requirement: the alignment padding between the descriptor table and the tensor data region must be `0x00` bytes. This is stricter than runtimes that align past those bytes without validating their contents.
+
+Both profiles are deliberately safe pre-admission subsets, not full compatibility claims for every `llama.cpp` build: the `llama-cpp` profile is differential-tested against the pinned ggml revision, and divergences are enforced through an audited allowlist in CI.
+
+## Resource Limits
+
+All limits are validator-managed quotas over the validator's own allocations and logical work. Defaults are defined in `src/gguf/limits.zig`:
+
+| Limit | Default | Bounds |
+| :--- | :--- | :--- |
+| `max_tensors` | 1,000,000 | Maximum tensor count |
+| `max_metadata_entries` | 1,000,000 | Maximum metadata key/value entries |
+| `max_string_bytes` | 65,536 (64 KiB) | Maximum metadata string value length (including `array[string]` elements) |
+| `max_tensor_name_bytes` | 64 | Maximum tensor name length (`llama-cpp` requires less than 64) |
+| `max_dimensions` | 4 | Maximum `n_dims` per tensor |
+| `max_array_elements` | 10,000,000 | Maximum elements of any metadata array |
+| `max_variable_array_elements` | 1,000,000 | Sanity cap for `array[string]` / nested arrays; CLI-adjustable |
+| `max_metadata_depth` | 16 | Maximum nested-array depth |
+| `max_total_alloc_bytes` | 128 MiB | `QuotaAllocator` ceiling for validator allocations |
+| `max_work_units` | 10,000,000 | `WorkBudget` logical work units (parsing, traversal, sorting, interval scan) |
+| `max_scanned_bytes` | 256 MiB | `WorkBudget` byte budget for streaming string, UTF-8, and boolean scans |
+
+Two failure modes are kept distinct: exceeding the validator allocation quota is a policy `REJECT` (exit `2`, `E_TotalAllocationLimitExceeded`), while unbudgeted host memory starvation is an internal error (exit `70`, `EX_SOFTWARE`).
+
+> **Deployment limits.** These budgets do not cap process RSS, page cache, stack, CPU time, or wall-clock time. For hostile multi-tenant uploads, additionally run validation under OS/container limits: a cgroup/job-object memory limit, a CPU quota plus wall-clock timeout, an input file-size limit, a read-only filesystem where possible, and a seccomp/sandbox profile.
+
+## Verifying Releases
+
+Tagged releases publish cross-platform binaries, `SHA256SUMS.txt`, a keyless Sigstore signature bundle (`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`). GitHub artifact attestations cover the release binaries and the SBOM. The release workflow verifies checksums, signature, and attestations **before** publishing and aborts on any failure; signing is keyless (the release workflow's GitHub OIDC identity — no long-lived release signing key).
+
+```bash
+# 1. Verify the checksum manifest's keyless Sigstore signature
+cosign verify-blob \
+  --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github.com/BrianNguyen29/SafeGGUF/\.github/workflows/ci\.yml@refs/tags/.*$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS.txt
+
+# 2. Verify the binaries against the signed manifest
+sha256sum -c SHA256SUMS.txt
+
+# 3. Verify the GitHub build provenance attestation for a binary
+gh attestation verify safegguf-x86_64-linux --repo BrianNguyen29/SafeGGUF
+```
+
+Do not rely on a manually compared checksum alone: the manifest is only meaningful when its signature and the binaries' provenance attestations verify.
+
+## Embedding (Zig Library)
+
+The library exposes a `Validator` that manages its own `QuotaAllocator` and `WorkBudget` from a `Limits` value. `validateOwned()` returns a `Result` that owns the parsed document and frees it through the captured validator-managed allocator:
+
+```zig
+const std = @import("std");
+const safegguf = @import("safegguf");
+
+pub fn validateGgufFile(allocator: std.mem.Allocator, file: std.fs.File) !void {
+    const stat = try file.stat();
+    var buffered = safegguf.reader.BufferedReader.init(file, stat.size);
+
+    // Defaults: 128 MiB allocation quota, 10M work units, 256 MiB scanned bytes.
+    // The profile is .gguf_spec or .llama_cpp.
+    var validator = safegguf.Validator.init(allocator, .{}, .gguf_spec);
+
+    var result = try validator.validateOwned(buffered.reader());
+    defer result.deinit();
+
+    std.debug.print("Validated: {d} tensors\n", .{result.doc.header.tensor_count});
+}
+```
+
+The document's allocations live in the validator-managed allocator: call `Result.deinit()` while the producing `Validator` is still alive, and free each `Result` exactly once. A `Validator` is not thread-safe, but it can be reused sequentially; use one instance per thread or add external synchronization. The legacy `validate()` + `deinitDocument()` pair remains supported.
+
+## Testing
+
+Fixtures and the seed corpus are generated, not committed, so run `tests/generate_fixtures.py` before `zig build test` on a fresh clone.
+
+```bash
+# Core checks (as run by CI)
+zig fmt --check src/ build.zig tests/*.zig
+python tests/generate_fixtures.py
+zig build test --summary all          # unit, regression, and fuzz-corpus sweep
+zig build -Doptimize=ReleaseSafe
+python tests/cli_test.py              # end-to-end CLI exit-code contract
+python tests/negative_corpus.py       # provenance-tiered reject corpus (exit 2 per case)
+
+# Upstream oracles and differential testing (network clone + CMake)
+bash tests/build_oracle.sh            # pinned ggml 0.23.0 oracle; skips if built
+python tests/arithmetic_oracle.py     # Python bigint arithmetic oracle + CLI cross-checks
+python tests/test_oracle_types.py     # all 43 GGML type traits vs the C++ oracle
+python tests/differential_matrix.py   # generate matrix fixtures (run before differential.py)
+python tests/differential.py          # SafeGGUF vs the upstream oracle
+
+# Benchmarks and fuzzing
+zig build bench                       # resource-budget benchmark suite
+python tests/fuzz_mutation.py --iterations 2000
+python tests/real_corpus.py           # advisory real-model corpus; the manifest ships
+                                      # empty until approved immutable entries are added
+```
+
+CI (`.github/workflows/ci.yml`) runs `core`, `oracle`, `fuzz`, and `bench` jobs on Ubuntu 24.04 and macOS 14; a tag-triggered `release` job builds five targets, generates the SBOM, signs the checksum manifest, and publishes after verifying its own artifacts. Additional scheduled workflows cover nightly fuzzing and an advisory real-world corpus lane.
+
+## Project Status
+
+* **Latest tagged release:** v0.3.5. `main` is unreleased; post-v0.3.5 work is not yet in a tagged release.
+* **Upstream type table pinned to:** ggml `0.23.0` (`e91ded11bdcd78c42f9c8d3978ff6686eb4c1226`); the Zig table must stay in sync with the pinned revision, enforced by the type-oracle and differential checks.
+* **Toolchain pinned to:** Zig `0.13.0`; the project has zero Zig package dependencies and builds with the standard library only.
+
+## Security
+
+`PASS` means the file satisfies the selected SafeGGUF structural, arithmetic, and resource-policy checks. It is not a trust or malware verdict: it does not prove model weights are benign, chat templates are semantically safe, downstream runtime or GPU kernel code is vulnerability-free, the publisher is trusted, or that file contents cannot change between validation and use (TOCTOU). Validate in immutable content-addressed storage or verify digests immediately before admission to the runtime.
+
+For the full threat model, invariants, deployment guidance, and reporting process, see [SECURITY.md](SECURITY.md). To report a vulnerability, use [GitHub Security Advisories](https://github.com/BrianNguyen29/SafeGGUF/security/advisories/new) rather than a public issue.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
