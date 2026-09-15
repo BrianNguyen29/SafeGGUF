@@ -156,7 +156,13 @@ pub const QuotaAllocator = struct {
         } else {
             const diff = buf.len - new_len;
             if (self.parent_allocator.rawResize(buf, buf_align, new_len, ret_addr)) {
-                self.allocated_bytes -= diff;
+                // Mirror free(): saturate if accounting ever lags the shrink
+                // instead of underflowing the subtraction.
+                if (self.allocated_bytes >= diff) {
+                    self.allocated_bytes -= diff;
+                } else {
+                    self.allocated_bytes = 0;
+                }
                 return true;
             }
             return false;

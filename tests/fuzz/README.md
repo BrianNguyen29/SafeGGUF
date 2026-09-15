@@ -102,8 +102,17 @@ Artifacts under `tests/fuzz-artifacts/coverage-fuzz/`:
   compiler, commit, platform, coverage stats, sanitizer story, log excerpt and
   an exact repro command,
 - `<target>.log` - full lane log for the target,
+- `coverage_history.json` - advisory trend state (schema
+  `safegguf-coverage-fuzz-history/1`): up to 90 per-run records, restored and
+  saved through the `coverage-fuzz-history-*` actions/cache entry; the source of
+  the delta lines below and never a gate,
 - `coverage_summary.json` / `.txt` - per-target runs, unique runs, covered
-  PCs, coverage %, promoted entries and corpus inventory.
+  PCs, coverage %, promoted entries and corpus inventory, plus the advisory
+  history block (`delta` / `targets_delta` against the previous record and the
+  recent `coverage_pct` trend). The `.txt` (and the workflow step summary)
+  print the human-readable `delta coverage:` / `delta corpus/crashes:` lines
+  and per-target `d_runs=` / `d_edges=` / `d_pct=` deltas; deltas are
+  commit-relative and informational only, never enforced.
 
 Repro command for a preserved artifact:
 

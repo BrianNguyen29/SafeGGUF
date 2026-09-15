@@ -332,11 +332,15 @@ python tests/differential.py          # SafeGGUF vs the upstream oracle
 # Benchmarks and fuzzing
 zig build bench                       # resource-budget benchmark suite
 python tests/fuzz_mutation.py --iterations 2000
-python tests/real_corpus.py           # advisory real-model corpus; the manifest ships
-                                      # empty until approved immutable entries are added
+python tests/real_corpus.py           # tier-1 real-world corpus gate (default --tier 1):
+                                      # manifest-pinned downloads are size+sha256 verified
+                                      # before the per-profile verdict compare; needs the
+                                      # ReleaseSafe binary + network
 ```
 
-CI (`.github/workflows/ci.yml`) runs `core`, `oracle`, `fuzz`, and `bench` jobs on Ubuntu 24.04 and macOS 14; a tag-triggered `release` job builds five targets, generates the SBOM, signs the checksum manifest, and publishes after verifying its own artifacts. Additional scheduled workflows cover nightly fuzzing and an advisory real-world corpus lane.
+CI (`.github/workflows/ci.yml`) runs `core`, `oracle`, `fuzz`, and `bench` jobs on Ubuntu 24.04 and macOS 14, plus a tier-1 `real-corpus` gate on pull requests and `v*` tags; a tag-triggered `release` job builds five targets, generates the SBOM, signs the checksum manifest, and publishes after verifying its own artifacts.
+
+The `real-corpus` gate evaluates the manifest's tier-1 entries and enforces the runner's coverage floors, so a run with 0 verified entries can never `PASS` (`0` PASS / `1` FAIL / `3` INCONCLUSIVE, the last one NEUTRAL for a tolerated network-only failure on pull requests; `v*` tags run the gate fail-closed, where an outage, a skipped entry, or an unmet floor blocks the release). Additional scheduled workflows cover nightly fuzzing and the nightly advisory real-world corpus lane (report-only).
 
 ## Project Status
 

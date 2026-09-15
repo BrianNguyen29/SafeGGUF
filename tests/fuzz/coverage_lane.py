@@ -21,6 +21,12 @@ Policy (mirrors the nightly mutation lane; see tests/fuzz/README.md):
     are lib/fuzzer.zig) whose recovered input does not reproduce is preserved
     as an advisory `engine_crash` artifact and does not fail the lane.
 
+History (advisory trend, never a gate): every run appends one compact record
+(executions, unique runs, covered paths, corpus inventory, crash counts) to
+`coverage_history.json`, reports the delta against the previous record in the
+summary (JSON + text) and keeps the last `MAX_HISTORY_RUNS` records. Coverage
+is commit-relative, so deltas are reported, never enforced.
+
 The lane is advisory (nightly): it is complementary to `zig build fuzz` (0.13
 corpus sweep) and the deterministic mutation campaigns, never a replacement.
 """
@@ -80,6 +86,28 @@ MAX_CORPUS_ENTRIES = 10_000
 MAX_CORPUS_BYTES = 256 * 1024 * 1024
 MAX_REPRO_CALLS = 24
 REPRO_TIMEOUT = 300
+
+SUMMARY_FILE = "coverage_summary.json"
+HISTORY_FILE = "coverage_history.json"
+HISTORY_SCHEMA_VERSION = "safegguf-coverage-fuzz-history/1"
+MAX_HISTORY_RUNS = 90
+HISTORY_NOTE = ("advisory trend state; restored/saved through the "
+                "coverage-fuzz-history-* actions/cache entry, never a gate")
+
+# Aggregate fields diffed against the previous run's record; coverage is
+# commit-relative, so these deltas are informational only.
+DELTA_FIELDS = (
+    "n_runs",
+    "unique_runs",
+    "covered_pcs",
+    "coverage_pct",
+    "corpus_entries",
+    "corpus_bytes",
+    "crash_artifacts",
+    "failing_crashes",
+    "engine_crashes",
+    "failed_targets",
+)
 
 
 def log(msg):
@@ -583,7 +611,228 @@ def git_commit():
         return "unknown"
 
 
+def as_int(value):
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def read_json_object(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def write_json(path, doc):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2, sort_keys=True)
+        f.write("\n")
+
+
+def summary_totals(summary):
+    """Aggregate one run: executions, unique coverage, covered paths, crashes."""
+    totals = {
+        "targets": 0,
+        "n_runs": 0,
+        "unique_runs": 0,
+        "covered_pcs": 0,
+        "pcs_len": 0,
+        "coverage_pct": 0.0,
+        "promoted": 0,
+        "corpus_entries": 0,
+        "corpus_bytes": 0,
+        "crash_artifacts": 0,
+        "failing_crashes": 0,
+        "engine_crashes": 0,
+        "failed_targets": 0,
+    }
+    for r in summary.get("targets") or []:
+        if not isinstance(r, dict):
+            continue
+        cov = r.get("coverage") or {}
+        totals["targets"] += 1
+        for key in ("n_runs", "unique_runs", "covered_pcs", "pcs_len"):
+            totals[key] += as_int(cov.get(key))
+        totals["promoted"] += as_int(r.get("promoted"))
+        if r.get("crash_artifact"):
+            totals["crash_artifacts"] += 1
+        status = r.get("status")
+        if status == "crash":
+            totals["failing_crashes"] += 1
+        elif status == "engine_crash":
+            totals["engine_crashes"] += 1
+        elif status == "failed":
+            totals["failed_targets"] += 1
+    if totals["pcs_len"]:
+        totals["coverage_pct"] = round(100.0 * totals["covered_pcs"] / totals["pcs_len"], 3)
+    corpus = summary.get("corpus") or {}
+    totals["corpus_entries"] = as_int(corpus.get("entries"))
+    totals["corpus_bytes"] = as_int(corpus.get("bytes"))
+    return totals
+
+
+def build_run_record(summary):
+    """Compact per-run trend record appended to coverage_history.json."""
+    targets = {}
+    for r in summary.get("targets") or []:
+        if not isinstance(r, dict) or not r.get("step"):
+            continue
+        cov = r.get("coverage") or {}
+        targets[r["step"]] = {
+            "profile": r.get("profile"),
+            "endian": r.get("endian"),
+            "status": r.get("status"),
+            "n_runs": cov.get("n_runs"),
+            "unique_runs": cov.get("unique_runs"),
+            "covered_pcs": cov.get("covered_pcs"),
+            "pcs_len": cov.get("pcs_len"),
+            "coverage_pct": cov.get("coverage_pct"),
+            "corpus_files": r.get("corpus_files"),
+            "promoted": r.get("promoted"),
+            "crash_site": r.get("crash_site"),
+            "crash_reproduced": r.get("crash_reproduced"),
+        }
+    return {
+        "generated_at": summary.get("generated_at"),
+        "git_commit": summary.get("git_commit"),
+        "zig_version": summary.get("zig_version"),
+        "budget_seconds": summary.get("budget_seconds"),
+        "wall_seconds": summary.get("wall_seconds"),
+        "advisory": True,
+        "totals": summary_totals(summary),
+        "targets": targets,
+    }
+
+
+def previous_record_from_summary(args):
+    """Bootstrap the trend baseline from the previous coverage_summary.json.
+
+    Used only until a history file exists locally/cached (first run after the
+    history feature landed, lost cache); the history file is then authoritative.
+    """
+    summary = read_json_object(os.path.join(args.artifacts_dir, SUMMARY_FILE))
+    if summary is None:
+        return None
+    record = build_run_record(summary)
+    return record if record["generated_at"] else None
+
+
+def record_history(args, summary):
+    """Append this run to coverage_history.json, return (doc, previous, current)."""
+    path = os.path.join(args.artifacts_dir, HISTORY_FILE)
+    doc = read_json_object(path) or {}
+    runs = [r for r in doc.get("runs") or []
+            if isinstance(r, dict) and isinstance(r.get("totals"), dict)]
+    previous = runs[-1] if runs else previous_record_from_summary(args)
+    current = build_run_record(summary)
+    runs.append(current)
+    del runs[:-MAX_HISTORY_RUNS]
+    doc = {
+        "schema_version": HISTORY_SCHEMA_VERSION,
+        "generated_at": summary["generated_at"],
+        "note": HISTORY_NOTE,
+        "runs_recorded": len(runs),
+        "runs": runs,
+    }
+    write_json(path, doc)
+    log("history: %s holds %d run(s), %s" % (
+        path, len(runs), "no previous record" if previous is None else "delta vs previous"))
+    return doc, previous, current
+
+
+def field_delta(field, previous, current):
+    prev, cur = previous.get(field), current.get(field)
+    if isinstance(prev, bool) or not isinstance(prev, (int, float)):
+        return None
+    if isinstance(cur, bool) or not isinstance(cur, (int, float)):
+        return None
+    diff = cur - prev
+    return round(diff, 3) if isinstance(diff, float) else diff
+
+
+def history_block(doc, previous, current, commit, prev_targets, cur_targets):
+    """Advisory delta block embedded in coverage_summary.json."""
+    delta = None
+    targets_delta = {}
+    previous_info = None
+    if previous is not None:
+        prev_totals = previous.get("totals") or {}
+        delta = {field: field_delta(field, prev_totals, current["totals"]) for field in DELTA_FIELDS}
+        for step, cur in current["targets"].items():
+            prev = (previous.get("targets") or {}).get(step) or {}
+            targets_delta[step] = {
+                field: field_delta(field, prev, cur)
+                for field in ("n_runs", "covered_pcs", "coverage_pct")
+            }
+        previous_info = {
+            "generated_at": previous.get("generated_at"),
+            "git_commit": previous.get("git_commit"),
+            "same_commit": previous.get("git_commit") == commit,
+            "target_set_changed": prev_targets != cur_targets,
+        }
+    return {
+        "schema_version": HISTORY_SCHEMA_VERSION,
+        "file": HISTORY_FILE,
+        "runs_recorded": doc["runs_recorded"],
+        "note": "advisory only: computed from the cached history file, never a gate",
+        "previous": previous_info,
+        "delta": delta,
+        "targets_delta": targets_delta,
+        "recent_coverage_pct": [r["totals"].get("coverage_pct") for r in doc["runs"][-5:]],
+    }
+
+
+def delta_text(field, delta):
+    value = delta.get(field)
+    if value is None:
+        return "%s=n/a" % field
+    return "%s=%+g" % (field, value)
+
+
+def history_lines(hist):
+    """Human-readable delta/trend lines (shared by .txt and the step summary)."""
+    head = "history: record #%d of %d (%s)" % (
+        hist["runs_recorded"], MAX_HISTORY_RUNS, hist["file"])
+    if hist.get("previous") is None:
+        return [head + "; recorded as baseline - no previous record to diff"]
+    previous = hist["previous"]
+    notes = []
+    if not previous.get("same_commit"):
+        notes.append("commit changed - deltas are commit-relative")
+    if previous.get("target_set_changed"):
+        notes.append("target set changed")
+    suffix = (" (" + "; ".join(notes) + ")") if notes else ""
+    delta = hist.get("delta") or {}
+    lines = [
+        head + "; previous %s @ %s%s" % (
+            previous.get("generated_at"),
+            (previous.get("git_commit") or "unknown")[:7], suffix),
+        "delta coverage: " + " ".join(
+            delta_text(f, delta) for f in ("covered_pcs", "coverage_pct", "n_runs", "unique_runs")),
+        "delta corpus/crashes: " + " ".join(
+            delta_text(f, delta) for f in ("corpus_entries", "corpus_bytes", "crash_artifacts",
+                                           "failing_crashes", "engine_crashes", "failed_targets")),
+    ]
+    recent = [v for v in (hist.get("recent_coverage_pct") or []) if v is not None]
+    if len(recent) > 1:
+        lines.append("trend: coverage_pct over the last %d run(s), oldest first: %s"
+                     % (len(recent), " ".join("%.3f" % v for v in recent)))
+    return lines
+
+
+def target_delta_text(targets_delta, step):
+    delta = (targets_delta or {}).get(step) or {}
+    parts = []
+    for field, label in (("n_runs", "d_runs"), ("covered_pcs", "d_edges"), ("coverage_pct", "d_pct")):
+        value = delta.get(field)
+        if value is not None:
+            parts.append("%s=%+g" % (label, value))
+    return (" " + " ".join(parts)) if parts else ""
+
+
 def write_summary(args, results, started):
+    """Write coverage_summary.json/.txt and append this run to the history file."""
     inventory = corpus_inventory(args.corpus_dir)
     engine_crashes = [r["step"] for r in results if r["status"] == "engine_crash"]
     summary = {
@@ -607,11 +856,16 @@ def write_summary(args, results, started):
         "corpus": inventory,
         "targets": results,
     }
+    # The previous record is read (history file, else the previous summary) before
+    # this run's files are overwritten; deltas are trend-only and never a gate.
     os.makedirs(args.artifacts_dir, exist_ok=True)
-    json_path = os.path.join(args.artifacts_dir, "coverage_summary.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2, sort_keys=True)
-        f.write("\n")
+    doc, previous, current = record_history(args, summary)
+    summary["history"] = history_block(
+        doc, previous, current, summary["git_commit"],
+        sorted((previous or {}).get("targets") or {}), sorted(current["targets"]),
+    )
+    json_path = os.path.join(args.artifacts_dir, SUMMARY_FILE)
+    write_json(json_path, summary)
 
     lines = [
         "SafeGGUF coverage fuzz summary (advisory, Zig %s)" % summary["zig_version"],
@@ -619,8 +873,9 @@ def write_summary(args, results, started):
         "generated: %s" % summary["generated_at"],
         "budget: %ss (wall %ss)" % (summary["budget_seconds"], summary["wall_seconds"]),
         "corpus: %d entries / %d bytes" % (inventory["entries"], inventory["bytes"]),
-        "",
     ]
+    lines.extend(history_lines(summary["history"]))
+    lines.append("")
     for r in results:
         cov = r["coverage"] or {}
         crash_info = ""
@@ -629,10 +884,11 @@ def write_summary(args, results, started):
             crash_info = " crash=%s site=%s repro=%s" % (
                 r["crash_artifact"], r.get("crash_site") or "?", repro)
         lines.append(
-            "%-28s %-12s runs=%-9s unique=%-9s edges=%s/%s (%.2f%%) corpus=%d promoted=%d%s" % (
+            "%-28s %-12s runs=%-9s unique=%-9s edges=%s/%s (%.2f%%) corpus=%d promoted=%d%s%s" % (
                 r["step"], r["status"], cov.get("n_runs", "?"), cov.get("unique_runs", "?"),
                 cov.get("covered_pcs", "?"), cov.get("pcs_len", "?"), cov.get("coverage_pct", 0.0),
                 r["corpus_files"], r["promoted"], crash_info,
+                target_delta_text(summary["history"].get("targets_delta"), r["step"]),
             )
         )
         if r["detail"]:

@@ -7,14 +7,17 @@
 # expected profile and a verdict compare. The JSON report is uploaded as an
 # artifact; the persisted cache makes repeat runs hash-verified cache hits.
 #
-# Manifest: tests/real-corpus-manifest.json ships EMPTY by design (approved
-# immutable URLs/licenses/sha256 must be supplied by a maintainer); with no
-# entries the runner exits 0 vacuously, so this lane is green until real data
-# lands.
+# Manifest: tests/real-corpus-manifest.json holds maintainer-approved immutable
+# entries only (tier 1 nightly-bounded, tier 2 weekly/manual); never invent
+# URLs, licenses, sizes or digests - sha256 is the authoritative identity. The
+# runner enforces coverage floors (default: >= 1 successfully verified entry),
+# so a run with 0 verified entries can never PASS: exit 0 PASS / 1 FAIL /
+# 3 INCONCLUSIVE (a tolerated network-only failure, NEUTRAL).
 #
 # Advisory/report-only: no pull_request trigger, not a required check; the
-# runner step is continue-on-error so compatibility findings never block
-# anything (they stay visible in the step summary + uploaded report).
+# runner step is continue-on-error so this lane never blocks anything (findings
+# stay visible in the step summary + uploaded report). The blocking tier-1 gate
+# lives in ci.yml (network-neutral on PRs via exit 3; fail-closed on v* tags).
 #
 # Triggers: nightly cron + manual workflow_dispatch (tier selectable).
 

@@ -2,14 +2,16 @@
 
 SafeGGUF is designed as a memory-safe, overflow-checked pre-admission validation layer for AI model weights stored in the GGUF format.
 
-> **Release status:** **v0.3.5** is the latest tagged release; `main` is unreleased and carries post-v0.3.5 assurance work (v0.3.6). Unless marked otherwise, the guarantees below describe `main`.
+> **Release status:** **v0.3.5** is the latest tagged release; `main` is unreleased and carries post-v0.3.5 assurance work (the unreleased v0.3.6 development line). Unless marked otherwise, the guarantees below describe `main`.
 
 ## Supported Versions
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.3.x   | :white_check_mark: |
+| 0.3.x (latest tagged release: v0.3.5) | :white_check_mark: |
 | < 0.3.0 | :x:                |
+
+Only released artifacts are supported; unreleased `main` builds (v0.3.6 development line) are development snapshots, not release artifacts.
 
 ## Release Verification
 

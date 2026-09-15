@@ -1,0 +1,92 @@
+# Windows runtime lane: executes the Windows *binary* on a Windows host, not
+# just the x86_64-windows cross-build performed by the release job in ci.yml.
+#
+# Scope (mirrors the `core` job of ci.yml, native windows-latest):
+#   1. tests/generate_fixtures.py  - fixtures + seeded tests/corpus (required
+#      before `zig build test`: the fuzz target opens tests/corpus relative to
+#      CWD, and the working directory here is the repository root).
+#   2. zig build test --summary all - unit + regression + fuzz corpus sweep.
+#   3. zig build -Doptimize=ReleaseSafe  -> zig-out/bin/safegguf.exe.
+#   4. tests/cli_test.py  - end-to-end CLI contract on native Windows paths:
+#      PASS/REJECT/ERROR JSON, provenance, and exit codes 0/2/64/74.
+#   5. tests/negative_corpus.py - standalone generate + verify, exit 2 contract.
+#
+# Deliberately excluded - all still enforced by ci.yml on ubuntu-24.04/macos-14:
+#   - oracle/differential lanes: bash + CMake + cloned pinned upstream ggml;
+#   - arithmetic/type oracle sweeps, differential matrix: portable, but the
+#     platform-independent pinned-ggml signal is already asserted there;
+#   - mutation fuzzing: heavier lane that classifies crashes from POSIX signal
+#     return codes;
+#   - coverage fuzzing: requires Zig 0.14.1, this lane pins the production
+#     toolchain 0.13.0;
+#   - bench suite: reads /proc/self/* (Linux-only).
+#
+# No `zig fmt --check` here: the repository ships no .gitattributes, so a CRLF
+# checkout would false-red that gate; formatting stays enforced by ci.yml.
+#
+# Non-goals: no required-check or release wiring, no ci.yml/oracle/differential
+# changes - this lane is additive runtime coverage for the Windows binary only.
+
+name: Windows
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows runtime tests on windows-latest
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.13.0
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Generate Fixtures and Seed Corpus
+        run: python tests/generate_fixtures.py
+
+      - name: Run Exhaustive Unit, Fuzz, & Regression Tests
+        run: zig build test --summary all
+
+      - name: Build Binary (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+
+      # Zig installs zig-out/bin/safegguf.exe on Windows, while cli_test.py and
+      # negative_corpus.py probe the extensionless zig-out/bin/safegguf path and
+      # abort when os.path.exists() is false. Copying the ReleaseSafe image to
+      # that exact name satisfies the probe and lets Windows resolve either name
+      # to the same byte-identical binary; the harnesses themselves are unchanged
+      # (test-script path handling is outside this lane's scope).
+      - name: Bridge Extensionless Binary Path for the Python Harnesses
+        shell: pwsh
+        run: |
+          $exe = "zig-out\bin\safegguf.exe"
+          if (-not (Test-Path $exe)) { throw "$exe missing: run the ReleaseSafe build first" }
+          Copy-Item $exe "zig-out\bin\safegguf" -Force
+          Get-ChildItem "zig-out\bin" | Select-Object Name, Length | Format-Table
+
+      - name: Run End-to-End CLI Integration Tests (Exact Exit Codes & Invariants)
+        run: python tests/cli_test.py
+
+      - name: Run Negative Corpus & Advisory Provenance Checks (Exit 2 Reject Contract)
+        run: python tests/negative_corpus.py

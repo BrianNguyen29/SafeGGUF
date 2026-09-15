@@ -55,11 +55,22 @@ pub fn validateStructural(
         try arithmetic.validateDimensions(tensor.dimensions, profile);
     }
 
+    // Per-element work factor shared by the O(N log2(N + 1)) phases below:
+    // the duplicate-name hash inserts and the descriptor-range sort.
+    const n_tensors = doc.tensors.len;
+    var log_factor: u64 = 1;
+    if (n_tensors > 1) {
+        log_factor = std.math.log2_int(usize, n_tensors) + 1;
+    }
+
     var seen_names = std.StringHashMap(void).init(allocator);
     defer seen_names.deinit();
 
     for (doc.tensors, 0..) |tensor, t_i| {
-        try work_budget.consume(1);
+        // Charge each hash-table insert before it happens: without this, a
+        // many-tensor document builds the whole duplicate-name map before the
+        // later (and larger) sort charge can reject it.
+        try work_budget.consume(log_factor);
         if (work_budget.ctx) |c| {
             c.tensor_index = t_i;
             c.setTensorName(tensor.name);
@@ -124,12 +135,8 @@ pub fn validateStructural(
         };
     }
 
-    // Charge sorting cost: O(N log2(N + 1))
-    const n_tensors = doc.tensors.len;
-    var log_factor: u64 = 1;
-    if (n_tensors > 1) {
-        log_factor = std.math.log2_int(usize, n_tensors) + 1;
-    }
+    // Charge sorting cost: O(N log2(N + 1)); same per-element factor as the
+    // duplicate-name hash phase above.
     const sort_units = std.math.mul(u64, n_tensors, log_factor) catch std.math.maxInt(u64);
     try work_budget.consume(sort_units);
 
