@@ -1,0 +1,112 @@
+# Real-world corpus advisory lane (F-04 / B1) — nightly + manual.
+#
+# Runs tests/real_corpus.py against the manifest-selected tier: bounded
+# streaming download with sha256 computed as bytes arrive (Content-Length is
+# never trusted), size + hash verification, atomic promote to
+# .cache/real-corpus/<sha256>.gguf, then `safegguf inspect --format json` per
+# expected profile and a verdict compare. The JSON report is uploaded as an
+# artifact; the persisted cache makes repeat runs hash-verified cache hits.
+#
+# Manifest: tests/real-corpus-manifest.json ships EMPTY by design (approved
+# immutable URLs/licenses/sha256 must be supplied by a maintainer); with no
+# entries the runner exits 0 vacuously, so this lane is green until real data
+# lands.
+#
+# Advisory/report-only: no pull_request trigger, not a required check; the
+# runner step is continue-on-error so compatibility findings never block
+# anything (they stay visible in the step summary + uploaded report).
+#
+# Triggers: nightly cron + manual workflow_dispatch (tier selectable).
+
+name: Real Corpus (advisory)
+
+on:
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Manifest tier to run (1 = nightly-bounded, 2 = weekly/large)'
+        required: false
+        default: '1'
+        type: choice
+        options:
+          - '1'
+          - '2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: real-corpus
+  cancel-in-progress: false
+
+jobs:
+  real-corpus:
+    name: Real-world corpus (tier ${{ github.event.inputs.tier || '1' }}) on ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.13.0
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Build SafeGGUF (ReleaseSafe)
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Restore real-corpus cache (sha256-verified downloads)
+        uses: actions/cache/restore@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: .cache/real-corpus
+          key: real-corpus-${{ github.run_id }}
+          restore-keys: |
+            real-corpus-
+
+      - name: Run real-corpus runner (advisory, report-only)
+        id: corpus
+        continue-on-error: true
+        run: |
+          python tests/real_corpus.py --tier "${{ github.event.inputs.tier || '1' }}" \
+            --report .cache/real-corpus/real-corpus-report.json
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo "### Real corpus (tier ${{ github.event.inputs.tier || '1' }})"
+            echo
+            echo "- runner outcome: ${{ steps.corpus.outcome }}"
+            if [ -f .cache/real-corpus/real-corpus-report.json ]; then
+              echo "- report: \`.cache/real-corpus/real-corpus-report.json\` (uploaded artifact)"
+            else
+              echo "- report: not produced (see runner log)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Ensure report/cache directory exists
+        if: always()
+        run: mkdir -p .cache/real-corpus
+
+      - name: Save real-corpus cache
+        if: always()
+        uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          key: real-corpus-${{ github.run_id }}
+          path: .cache/real-corpus
+
+      - name: Upload real-corpus report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: real-corpus-report
+          path: .cache/real-corpus/real-corpus-report.json
+          if-no-files-found: ignore

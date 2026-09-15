@@ -110,6 +110,16 @@ pub const Validator = struct {
 ///     per-validation reset as `validate()`, and a `Result` is not thread-safe
 ///     nor independent of the producing Validator's quota/work state; one
 ///     Validator per thread or external synchronization.
+///
+/// B2 (F-06) API decision, recorded here as the code-level source of truth:
+/// additive `validateOwned()` / `Result` is the recommended API going forward
+/// (the caller frees through `Result.deinit()` and never re-pairs the document
+/// with the producing allocator); the legacy `validate()` +
+/// `deinitDocument()` pair remains fully supported. Ownership independence
+/// (heap-stable state surviving the producing Validator via a heap
+/// `QuotaAllocator`, per docs/remediation-f0209-exec-plan.md B2) is a
+/// breaking rework deliberately deferred to v0.5.0: no deprecation warning and
+/// no removal before that release.
 pub const Result = struct {
     /// The validated document; inspect freely, but free only via `deinit()`.
     doc: parser.Document,
