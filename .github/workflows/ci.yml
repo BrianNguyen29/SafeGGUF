@@ -48,6 +48,28 @@ jobs:
       - name: Run Negative Corpus & Advisory Provenance Checks (Exit 2 Reject Contract)
         run: python tests/negative_corpus.py
 
+  # Version metadata guard: `build.zig` embeds the default version that source
+  # builds report (`safegguf --version`). It must track the latest release tag,
+  # or a plain `zig build` from `main` claims an older release than the one
+  # published. Needs a full-history checkout so `git tag` sees every release.
+  version-consistency:
+    name: Embedded Version vs Latest Tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout repository (full history, all tags)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Verify Embedded Default Version Tracks the Latest Release Tag
+        run: python scripts/version_consistency.py
+
   # Tier-1 real-corpus gate (F-04/B1): evaluates manifest-selected entries
   # against the ReleaseSafe binary and enforces the runner's coverage floors (a
   # run with 0 verified entries can never PASS).
@@ -205,12 +227,28 @@ jobs:
       - name: Run Resource-Budget Benchmark Suite (Scales + Instrumented Backend-Read Gate)
         run: zig build bench --summary all
 
+  # Fail-closed Windows release gate: calls the Windows runtime lane
+  # (windows.yml) as a reusable workflow, so the release job can depend on the
+  # exact native-Windows validation that PRs and main pushes run without
+  # duplicating a single step. windows.yml intentionally drops its own tag
+  # trigger, so a v* tag runs that lane exactly once - here, against the tagged
+  # commit. The gate is tag-only, matching release's trigger.
+  windows-gate:
+    name: Windows runtime gate (reusable windows.yml)
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/windows.yml
+
   release:
     name: Build & Publish Release Artifacts
     # real-corpus runs fail-closed on v* tags (no --tolerate-download-errors):
     # the gate must PASS with coverage floors met, so an outage, a skipped
     # entry or an unmet floor blocks the release.
-    needs: [core, oracle, fuzz, bench, real-corpus]
+    # windows-gate is equally fail-closed: a failed or skipped Windows runtime
+    # gate skips this job, so safegguf-x86_64-windows.exe is never published
+    # without native validation of the tagged commit.
+    needs: [core, version-consistency, oracle, fuzz, bench, real-corpus, windows-gate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
@@ -234,6 +272,9 @@ jobs:
       - name: Build Cross-Platform Release Binaries & SHA256 Manifest
         run: |
           mkdir -p dist
+          # Tag-derived: release artifacts must report the tag they were built
+          # from, not the build.zig embedded default that `version-consistency`
+          # guards for source builds.
           version="${GITHUB_REF_NAME#v}"
           targets=("x86_64-linux" "aarch64-linux" "x86_64-macos" "aarch64-macos" "x86_64-windows")
           for target in "${targets[@]}"; do

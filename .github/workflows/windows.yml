@@ -1,6 +1,14 @@
 # Windows runtime lane: executes the Windows *binary* on a Windows host, not
 # just the x86_64-windows cross-build performed by the release job in ci.yml.
 #
+# This file is the single source of Windows native validation. It runs directly
+# for main pushes and pull requests, and ci.yml reuses it via `workflow_call`
+# in its `windows-gate` job on v* tags. The release job needs that gate, and a
+# failed OR skipped gate skips the release, so safegguf-x86_64-windows.exe is
+# never published without native validation of the tagged commit. The push
+# trigger intentionally omits tags, so a v* tag runs this workflow exactly once
+# (through the ci.yml call) instead of twice.
+#
 # Scope (mirrors the `core` job of ci.yml, native windows-latest):
 #   1. tests/generate_fixtures.py  - fixtures + seeded tests/corpus (required
 #      before `zig build test`: the fuzz target opens tests/corpus relative to
@@ -24,17 +32,17 @@
 # No `zig fmt --check` here: the repository ships no .gitattributes, so a CRLF
 # checkout would false-red that gate; formatting stays enforced by ci.yml.
 #
-# Non-goals: no required-check or release wiring, no ci.yml/oracle/differential
-# changes - this lane is additive runtime coverage for the Windows binary only.
+# Non-goals: no src/test-harness changes - this lane is additive runtime
+# coverage for the Windows binary and the reused release gate for its artifact.
 
 name: Windows
 
 on:
   push:
     branches: [ main ]
-    tags: [ 'v*' ]
   pull_request:
     branches: [ main ]
+  workflow_call:
 
 permissions:
   contents: read
