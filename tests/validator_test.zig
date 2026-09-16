@@ -1664,6 +1664,72 @@ test "validator: owned Result deinit is idempotent" {
     try std.testing.expect(!val.isQuotaExceeded());
 }
 
+test "validator: owned Result copy aliases the same state (copy hazard, no second free)" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+
+    var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+    var res = try val.validateOwned(reader_mod.SliceReader.init(gguf).reader());
+    const state_ptr = res.state.?;
+    const tensors_ptr = res.doc.tensors.ptr;
+    try std.testing.expect(res.peakBytes().? > 0);
+
+    // Characterization: a struct copy duplicates the raw state pointer and
+    // the document slice headers, so both values alias one live owned state.
+    var alias = res;
+    try std.testing.expect(alias.state == res.state);
+    try std.testing.expect(alias.state.? == state_ptr);
+    try std.testing.expectEqual(tensors_ptr, alias.doc.tensors.ptr);
+
+    // Freeing through one value clears only that value's pointer. The alias
+    // survives the free with a stale, still non-null state pointer: deinit()
+    // or an accessor through it would be a second free / use-after-free. This
+    // test documents the hazard with pointer-value checks only and never
+    // executes that second free.
+    res.deinit();
+    try std.testing.expect(res.state == null);
+    try std.testing.expect(alias.state != null);
+    try std.testing.expect(alias.state.? == state_ptr);
+
+    // The safe disarm for an existing alias is pointer-level nulling; new code
+    // should avoid aliases entirely by moving ownership out with take().
+    alias.state = null;
+    try std.testing.expect(alias.state == null);
+}
+
+test "validator: Result.take transfers single ownership and disarms the source" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+
+    var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+    var res = try val.validateOwned(reader_mod.SliceReader.init(gguf).reader());
+    const state_ptr = res.state.?;
+
+    // take() moves the payload: the returned value is the single live owner
+    // and the source is inert, so the state can never be deinit()ed twice.
+    var moved = res.take().?;
+    try std.testing.expect(moved.state.? == state_ptr);
+    try std.testing.expect(res.state == null);
+    try std.testing.expect(res.take() == null); // second take: still one owner
+    res.deinit(); // no-op on the disarmed source
+
+    // The moved value is fully usable: document intact, accounting readable
+    // through the read-only accessors.
+    try std.testing.expectEqual(@as(usize, 1), moved.doc.tensors.len);
+    try std.testing.expectEqualStrings("scalar", moved.doc.tensors[0].name);
+    try std.testing.expect(moved.peakBytes().? > 0);
+    try std.testing.expect(moved.consumedUnits().? > 0);
+    try std.testing.expect(res.peakBytes() == null);
+    try std.testing.expect(res.consumedUnits() == null);
+
+    // Exactly one free, through the sole owner; the source stays inert.
+    moved.deinit();
+    try std.testing.expect(moved.state == null);
+    try std.testing.expect(moved.peakBytes() == null);
+    moved.deinit();
+    res.deinit();
+}
+
 test "validator: high-level Validator API enforces memory quota" {
     var buffer: [256]u8 = [_]u8{0} ** 256;
     var fbs = std.io.fixedBufferStream(&buffer);

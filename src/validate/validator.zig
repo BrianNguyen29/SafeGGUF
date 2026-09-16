@@ -216,8 +216,15 @@ pub const OwnedValidationState = struct {
 ///     `Validator.deinitDocument()` would free through the wrong accounting
 ///     path and leave the owned state behind.
 ///   * `deinit()` is idempotent: it clears the owned state, so a repeated call
-///     is a no-op instead of a double free. Do not copy the struct and
-///     deinit() both copies (each copy would still see a live state pointer).
+///     on the same value is a no-op instead of a double free.
+///   * Copy hazard: `Result` is single-owner through the raw `state` pointer
+///     and must not be duplicated (`var alias = res;`). A copy duplicates that
+///     pointer while the state stays live, so both values alias one owned
+///     state and the document allocations. `deinit()` on one copy clears only
+///     that copy and leaves the other reporting a non-null, dangling `state`;
+///     `deinit()` through the alias is then a use-after-free / second free.
+///     To hand ownership to another binding, move it with `take()`, which
+///     disarms this `Result` and returns the sole remaining owner.
 ///   * Threading: the owned state is private to this `Result` and never shared
 ///     with the Validator, so a live `Result` adds no shared mutable state; a
 ///     single `Result` must still be deinit()ed from one thread only.
@@ -238,7 +245,8 @@ pub const Result = struct {
     /// Heap-stable state owning `doc`'s allocations. Implementation detail of
     /// `deinit()`, which clears it to null; never destroy it directly. Public
     /// only so callers can inspect the run's accounting, e.g.
-    /// `state.?.quota_alloc.peak_bytes` or `state.?.work_budget.consumed_units`.
+    /// `state.?.quota_alloc.peak_bytes` or `state.?.work_budget.consumed_units`
+    /// (or via the read-only `peakBytes()`/`consumedUnits()` accessors).
     state: ?*OwnedValidationState,
 
     /// Releases all allocations owned by the validated document through the
@@ -249,5 +257,36 @@ pub const Result = struct {
         self.doc.deinit(state.allocator());
         state.destroy();
         self.state = null;
+    }
+
+    /// Moves ownership out of this `Result` into the returned value, leaving
+    /// this one in the same inert state as after `deinit()` (`state == null`,
+    /// so a later `deinit()`/`take()` here is a no-op returning null). Callers
+    /// that need to rebind a `Result` (e.g. return it from a function that only
+    /// had a pointer) must use this instead of a struct copy, which would
+    /// alias the `state` pointer (see copy hazard above): exactly one live
+    /// owner exists before and after the transfer, so the document is freed
+    /// exactly once through `deinit()` on the returned value.
+    pub fn take(self: *Result) ?Result {
+        const state = self.state orelse return null;
+        const taken = Result{ .doc = self.doc, .state = state };
+        self.state = null;
+        return taken;
+    }
+
+    /// Peak bytes allocated by the owned run, or null when this `Result` holds
+    /// no owned state (already taken or deinit()ed). Read-only companion to
+    /// `state.?.quota_alloc.peak_bytes`.
+    pub fn peakBytes(self: *const Result) ?u64 {
+        const state = self.state orelse return null;
+        return state.quota_alloc.peak_bytes;
+    }
+
+    /// Work units consumed by the owned run, or null when this `Result` holds
+    /// no owned state (already taken or deinit()ed). Read-only companion to
+    /// `state.?.work_budget.consumed_units`.
+    pub fn consumedUnits(self: *const Result) ?u64 {
+        const state = self.state orelse return null;
+        return state.work_budget.consumed_units;
     }
 };
