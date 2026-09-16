@@ -119,7 +119,7 @@ def main():
             print("  X " + e)
         sys.exit(1)
 
-    print("\n✓ Independent Type Oracle Verification PASSED (43/43 type slots matched perfectly)!")
+    print("\n[ok] Independent Type Oracle Verification PASSED (43/43 type slots matched perfectly)!")
 
 if __name__ == "__main__":
     main()

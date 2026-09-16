@@ -11,7 +11,7 @@ before the pinned fixture matrix is swept.
 Pinned Oracle A (tests/oracle/ggml_oracle, ggml v0.23.0 e91ded11...) is never
 touched or silently replaced.
 
-Policy (§57/§58):
+Policy (sec. 57/58):
   - Divergences are report-only: they never fail this driver; the JSON report
     and readable summary carry the signal, and the workflow publishes both.
   - The rolling baseline is never auto-updated: a human reviews the report and
@@ -202,7 +202,7 @@ def format_summary(sha, identity, report, differential_rc, note):
 
     lines.append("## Baseline policy")
     lines.append("No automatic baseline update: review this report and make any pinned-contract/")
-    lines.append("baseline change as an explicit commit (§58). Oracle A stays blocking and unchanged.")
+    lines.append("baseline change as an explicit commit (sec. 58). Oracle A stays blocking and unchanged.")
     return "\n".join(lines) + "\n"
 
 

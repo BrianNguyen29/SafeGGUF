@@ -138,7 +138,7 @@ def main():
             with open(bp, "rb") as bf:
                 read_payload = bf.read()
             assert read_payload == dummy_payload
-        print("✓ Synthetic crash persistence self-test PASSED successfully!")
+        print("[ok] Synthetic crash persistence self-test PASSED successfully!")
         sys.exit(0)
 
     random.seed(args.seed)
@@ -228,7 +228,7 @@ def main():
             print("  X " + fail)
         sys.exit(1)
 
-    print("✓ Mutation Fuzzing PASSED! Zero crashes, zero unhandled errors, strict exit codes.")
+    print("[ok] Mutation Fuzzing PASSED! Zero crashes, zero unhandled errors, strict exit codes.")
 
 if __name__ == "__main__":
     main()

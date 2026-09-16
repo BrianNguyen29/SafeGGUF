@@ -13,8 +13,8 @@ the systematically generated differential matrix from tests/differential_matrix.
 (tests/fixtures/matrix/, roadmap issue #7) when it has been generated.
 
 --report-json <path> emits the machine-readable drift report (schema_version 1,
-F-09 §56): type drift is compared first (§55), then verdict divergences are
-classified against the pinned EXPECTED_MATRIX baseline (§57).
+F-09 sec. 56): type drift is compared first (sec. 55), then verdict divergences
+are classified against the pinned EXPECTED_MATRIX baseline (sec. 57).
 """
 
 import argparse
@@ -520,7 +520,7 @@ def main():
             print("  X " + fail)
         sys.exit(1)
 
-    print(f"\n✓ True Differential Test Suite PASSED! All {len(fixtures)} fixtures verified with full 3-column "
+    print(f"\n[ok] True Differential Test Suite PASSED! All {len(fixtures)} fixtures verified with full 3-column "
           f"assertions against upstream ggml {identity.get('ggml_version', '0.23.0')} "
           f"({len(fixtures) - generated_count} hand-written + {generated_count} generated matrix).")
 
