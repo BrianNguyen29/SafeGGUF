@@ -2,20 +2,20 @@
 
 SafeGGUF is designed as a memory-safe, overflow-checked pre-admission validation layer for AI model weights stored in the GGUF format.
 
-> **Release status:** **v0.3.5** is the latest tagged release; `main` is unreleased and carries post-v0.3.5 assurance work (the unreleased v0.3.6 development line). Unless marked otherwise, the guarantees below describe `main`.
+> **Release status:** **v0.3.6** is the latest tagged release (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` currently matches the v0.3.6 release commit. Unless marked otherwise, the guarantees below describe `main`.
 
 ## Supported Versions
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.3.x (latest tagged release: v0.3.5) | :white_check_mark: |
+| 0.3.x (latest tagged release: v0.3.6) | :white_check_mark: |
 | < 0.3.0 | :x:                |
 
-Only released artifacts are supported; unreleased `main` builds (v0.3.6 development line) are development snapshots, not release artifacts.
+Only released artifacts are supported; source builds from `main` are development snapshots, not release artifacts.
 
 ## Release Verification
 
-Tagged releases publish the cross-platform binaries, `SHA256SUMS.txt`, a keyless Sigstore signature bundle (`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`). GitHub artifact attestations cover the release binaries and the SBOM. The release workflow verifies checksums, signature, and attestations **before** publishing and aborts on any failure.
+Tagged releases publish the cross-platform binaries, `SHA256SUMS.txt`, a keyless Sigstore signature bundle (`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`). GitHub artifact attestations cover the release binaries: a build-provenance attestation, and an SBOM attestation whose `spdx.dev/Document` predicate is the SBOM content and whose subjects are those same binaries. The `safegguf.spdx.json` release asset itself is not an attestation subject; verify the attested SBOM content through a binary subject, as in step 4. The release workflow verifies checksums, signature, and attestations **before** publishing and aborts on any failure.
 
 Signing is keyless (the release workflow's GitHub OIDC identity; no long-lived release private key). Verify a downloaded release before use:
 
@@ -30,9 +30,27 @@ cosign verify-blob \
 # 2. Verify the binaries against the signed manifest
 sha256sum -c SHA256SUMS.txt
 
-# 3. Verify the GitHub build provenance attestation for a binary
-gh attestation verify safegguf-x86_64-linux --repo BrianNguyen29/SafeGGUF
+# 3. Verify the build provenance attestation for a binary, pinning the signer
+#    workflow and the expected source tag and commit
+gh attestation verify safegguf-x86_64-linux \
+  --repo BrianNguyen29/SafeGGUF \
+  --signer-workflow BrianNguyen29/SafeGGUF/.github/workflows/ci.yml \
+  --predicate-type https://slsa.dev/provenance/v1 \
+  --source-ref refs/tags/v0.3.6 \
+  --source-digest ddbf045591cd7a2c7c69252012092440025723eb
+
+# 4. Verify the attested SBOM content (spdx.dev/Document predicate) for the
+#    same binary; --format json prints the verified statement, whose
+#    verificationResult.statement.predicate is the signed SBOM
+gh attestation verify safegguf-x86_64-linux \
+  --repo BrianNguyen29/SafeGGUF \
+  --signer-workflow BrianNguyen29/SafeGGUF/.github/workflows/ci.yml \
+  --predicate-type https://spdx.dev/Document/v2.3 \
+  --source-ref refs/tags/v0.3.6 \
+  --source-digest ddbf045591cd7a2c7c69252012092440025723eb
 ```
+
+The `--source-ref`/`--source-digest` values above are those of the latest tagged release (v0.3.6); substitute the tag and commit of the release being verified.
 
 `safegguf --version` reports the embedded version, source commit, Zig version, build mode, target, and pinned ggml target/commit.
 
