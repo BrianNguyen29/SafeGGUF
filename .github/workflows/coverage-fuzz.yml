@@ -18,10 +18,14 @@
 # corpus <= 10,000 entries / 256 MiB, sha256-deduped, oldest pruned first,
 # restored/saved through actions/cache under coverage-fuzz-corpus-*.
 #
-# Crash policy: a harness panic/signal (trace tops out in src/ or tests/),
-# unexpected early exit, startup or stall timeout fails the lane and uploads
-# original + repro-validated minimized input + metadata (target, profile,
-# endian, crash site, repro result, engine + Zig version, compiler, commit,
+# Incident policy: every incident carries a taxonomy class - validator_crash
+# (trace tops out in src/ or tests/), engine_crash (Zig built-in fuzzer
+# frames), timeout (startup/stall) or oom (OOM markers / SIGKILLed worker) -
+# plus a repro status (repro_confirmed | repro_not_confirmed | repro_timeout |
+# repro_not_attempted). Validator crashes, timeouts and oom incidents fail the
+# lane and upload original + repro-validated minimized input + metadata
+# (target, profile, endian, host endian, seed, crash site, stack frames, repro
+# status/calls, input sha256 + sizes, engine + Zig version, compiler, commit,
 # coverage stats, sanitizer story, repro command) under
 # tests/fuzz-artifacts/coverage-fuzz/. A crash inside Zig 0.14.1's built-in
 # fuzzer (lib/fuzzer.zig) whose recovered input does not replay is preserved
@@ -31,11 +35,15 @@
 #
 # History (advisory trends, never a gate): the previous run's
 # coverage_summary.json + coverage_history.json are restored/saved through a
-# second cache entry (coverage-fuzz-history-*). coverage_lane.py appends one
-# compact record per run (executions, unique runs, covered paths, corpus
-# inventory, crash counts) and reports the delta vs the previous record in the
-# step summary and the summary JSON; coverage is commit-relative, so deltas
-# are printed for humans only and never influence pass/fail.
+# second cache entry (coverage-fuzz-history-*); on a cache miss they are
+# recovered from the latest completed run's uploaded artifact (gh), and
+# coverage_lane.py can additionally rebuild the trend from the compact records
+# embedded in the previous summary, so multi-run history survives cache
+# eviction. coverage_lane.py appends one compact record per run (executions,
+# unique inputs, covered paths, corpus growth, incident taxonomy, repro
+# outcomes) and reports the delta vs the previous record in the step summary
+# and the summary JSON; coverage is commit-relative, so deltas are printed for
+# humans only and never influence pass/fail.
 #
 # Triggers: nightly cron + manual workflow_dispatch.
 
@@ -57,6 +65,7 @@ on:
 
 permissions:
   contents: read
+  actions: read  # gh run list/download for the cache-miss history fallback
 
 concurrency:
   group: coverage-fuzz-${{ github.ref }}
@@ -102,6 +111,38 @@ jobs:
           restore-keys: |
             coverage-fuzz-history-
 
+      - name: Recover fuzz history from the previous run's artifact (cache-miss fallback)
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -f tests/fuzz-artifacts/coverage-fuzz/coverage_history.json ]; then
+            echo "history restored by the coverage-fuzz-history-* cache; artifact fallback not needed"
+            exit 0
+          fi
+          RUN_ID=$(gh run list --workflow coverage-fuzz.yml --status completed --limit 1 \
+            --json databaseId --jq '.[0].databaseId // empty' || true)
+          if [ -z "$RUN_ID" ]; then
+            echo "no completed previous run with an artifact; starting a fresh trend record"
+            exit 0
+          fi
+          DEST=$(mktemp -d)
+          if ! gh run download "$RUN_ID" -n coverage-fuzz-artifacts-ubuntu-24.04 -D "$DEST"; then
+            echo "artifact of run $RUN_ID missing/expired; starting a fresh trend record"
+            exit 0
+          fi
+          if [ -f "$DEST/coverage_history.json" ]; then
+            mkdir -p tests/fuzz-artifacts/coverage-fuzz
+            cp "$DEST/coverage_history.json" tests/fuzz-artifacts/coverage-fuzz/
+            if [ -f "$DEST/coverage_summary.json" ]; then
+              cp "$DEST/coverage_summary.json" tests/fuzz-artifacts/coverage-fuzz/
+            fi
+            echo "history restored from the run $RUN_ID artifact (cache miss fallback)"
+          else
+            echo "artifact of run $RUN_ID has no coverage_history.json; starting a fresh trend record"
+          fi
+
       - name: Run bounded coverage fuzz lane
         env:
           BUDGET_SECONDS: ${{ github.event.inputs.budget_seconds || '1800' }}
@@ -119,7 +160,7 @@ jobs:
           else
             echo "coverage summary not produced" >> "$GITHUB_STEP_SUMMARY"
           fi
-          echo "trend history: tests/fuzz-artifacts/coverage-fuzz/coverage_history.json (uploaded artifact; kept across runs by the coverage-fuzz-history-* cache)" >> "$GITHUB_STEP_SUMMARY"
+          echo "trend history: tests/fuzz-artifacts/coverage-fuzz/coverage_history.json (uploaded artifact; kept across runs by the coverage-fuzz-history-* cache, with gh artifact recovery on a cache miss)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Save fuzz history for next run's deltas
         if: always()
@@ -144,3 +185,4 @@ jobs:
           name: coverage-fuzz-artifacts-ubuntu-24.04
           path: tests/fuzz-artifacts/coverage-fuzz/
           if-no-files-found: ignore
+          retention-days: 90  # also the recovery source for a lost history cache entry

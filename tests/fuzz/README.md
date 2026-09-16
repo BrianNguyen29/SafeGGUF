@@ -23,7 +23,7 @@ on both toolchains; no validation behavior differs.
 - `../fuzz_cov_repro.zig` - single-input replay used by artifact minimization.
 - `coverage_lane.py` - bounded wrapper around `zig build --fuzz`: time budget,
   process-group termination, `v/`/`f/` artifact parsing, corpus persistence,
-  crash artifacts.
+  incident taxonomy + repro status, crash artifacts, advisory trend history.
 - `build.zig` steps (only defined on Zig >= 0.14): `fuzz-cov-gguf-spec-little`,
   `fuzz-cov-gguf-spec-big`, `fuzz-cov-llama-cpp-little`,
   `fuzz-cov-llama-cpp-big`, `fuzz-cov-repro`.
@@ -71,24 +71,37 @@ group (SIGINT, then SIGKILL) and treats "still fuzzing at the budget" as OK.
   capacity and may carry trailing NUL padding. Persisted entries are the
   engine's bytes exactly as stored; the lane does not invent an input size.
 
-## Crash policy
+## Incident taxonomy and crash policy
 
-A target fails (lane exits non-zero, workflow red) on:
+Every non-ok target run is classified into exactly one taxonomy class, with a
+repro status for the recovered input:
 
-- a **harness** crash - a worker crash (`panic:`, `Segmentation fault`,
-  `all fuzz workers crashed`, `failed with error`) whose trace tops out in
-  `src/` or `tests/` - whether or not the recovered input replays, or
-- a worker crash that is not trace-classified (conservative default), or
-- a build that exits early with a non-zero status, or
-- startup/stall timeout.
+| taxonomy | detected by | lane |
+| --- | --- | --- |
+| `validator_crash` | crash trace tops out in `src/` or `tests/`; also the conservative default when no frame is classified | fails |
+| `engine_crash` | crash trace tops out in Zig's `lib/fuzzer.zig` built-in fuzzer | fails if the recovered input reproduces; advisory (exit 0) if it does not |
+| `timeout` | startup timeout, or no execution (run counter) progress for `--stall-seconds` | fails |
+| `oom` | OOM markers in the lane log (`OutOfMemory`, `out of memory`, ...), or an early exit with no trace and a SIGKILL status | fails |
 
-An **engine-internal** crash - trace top frames in Zig's `lib/fuzzer.zig`
-built-in fuzzer (for example a spontaneous SIGSEGV in
-`appendSliceAssumeCapacity`) - whose recovered input does **not** reproduce
-under `fuzz-cov-repro` is classified `engine_crash` (advisory): artifacts and
-metadata are preserved and reported in the summary, but the lane exits 0.
-Reproduced crashes always fail the lane. This keeps the lane actionable while
-Zig 0.14.1's built-in fuzzer stability is imperfect.
+Crash markers are `panic:`, `Segmentation fault`, `all fuzz workers crashed`
+and `failed with error`; a build that exits 0 before the budget is `failed`.
+
+Repro status comes from replaying the recovered input (highest `f/` index)
+through `zig build fuzz-cov-repro`:
+
+- `repro_confirmed` - the replay crashed or hung; minimization runs,
+- `repro_not_confirmed` - the replay exited cleanly,
+- `repro_timeout` - the replay exceeded 300 s (original preserved, minimization
+  skipped - every minimization probe would time out too),
+- `repro_not_attempted` - no recoverable input, or a timeout/om incident where
+  replaying a possibly-hanging input is not attempted.
+
+An **engine-internal** crash whose recovered input does **not** reproduce is
+the only advisory outcome: artifacts and metadata are preserved and reported
+in the summary, but the lane exits 0. Everything else - validator crashes
+(whether or not they replay), reproduced engine crashes, timeouts, OOM
+incidents and unexpected exits - fails the lane (workflow red). This keeps the
+lane actionable while Zig 0.14.1's built-in fuzzer stability is imperfect.
 
 Artifacts under `tests/fuzz-artifacts/coverage-fuzz/`:
 
@@ -97,21 +110,28 @@ Artifacts under `tests/fuzz-artifacts/coverage-fuzz/`:
   crash by `zig build fuzz-cov-repro` (trailing-NUL trim + bounded prefix
   truncation, <= 24 repro calls); if the repro does not confirm, the original
   is preserved unmodified and `minimization` records that,
-- `crash-<target>-<utc>.json` - target/profile/endian, crash site
-  (`harness` | `engine` | `unknown`) and repro result, engine + Zig version,
-  compiler, commit, platform, coverage stats, sanitizer story, log excerpt and
-  an exact repro command,
+- `crash-<target>-<utc>.json` - `taxonomy` (`validator_crash` |
+  `engine_crash` | `timeout` | `oom`), crash site (`validator` | `engine` |
+  `unknown`), `stack_top_frames`, `repro_status` + `repro_calls`,
+  target/profile/endian/`host_endian`/`seed`, engine + Zig version, compiler,
+  commit, platform, coverage stats, sanitizer story, input `sha256` + `sizes`
+  (original, minimized), log excerpt and an exact repro command,
 - `<target>.log` - full lane log for the target,
 - `coverage_history.json` - advisory trend state (schema
-  `safegguf-coverage-fuzz-history/1`): up to 90 per-run records, restored and
-  saved through the `coverage-fuzz-history-*` actions/cache entry; the source of
-  the delta lines below and never a gate,
-- `coverage_summary.json` / `.txt` - per-target runs, unique runs, covered
-  PCs, coverage %, promoted entries and corpus inventory, plus the advisory
-  history block (`delta` / `targets_delta` against the previous record and the
-  recent `coverage_pct` trend). The `.txt` (and the workflow step summary)
-  print the human-readable `delta coverage:` / `delta corpus/crashes:` lines
-  and per-target `d_runs=` / `d_edges=` / `d_pct=` deltas; deltas are
+  `safegguf-coverage-fuzz-history/2`): up to 90 per-run records, restored and
+  saved through the `coverage-fuzz-history-*` actions/cache entry. On a cache
+  miss the lane rebuilds it from the compact `recent_runs` embedded in the
+  previous `coverage_summary.json` (or from that summary's totals alone), and
+  the workflow additionally recovers both files from the latest completed
+  run's uploaded artifact via `gh run download`. Never a gate,
+- `coverage_summary.json` / `.txt` - per-target executions (`runs`), unique
+  inputs (`unique`), covered PCs / coverage %, corpus growth (`promoted`,
+  inventory), incident status + taxonomy + repro status, plus the advisory
+  history block (`delta` / `targets_delta` against the previous record,
+  `recent_runs`, and the recent `coverage_pct` trend). The `.txt` (and the
+  workflow step summary) print the human-readable `delta coverage:` /
+  `delta search:` / `delta corpus:` / `delta incidents:` / `delta repro:`
+  lines and per-target `d_runs=` / `d_edges=` / `d_pct=` deltas; deltas are
   commit-relative and informational only, never enforced.
 
 Repro command for a preserved artifact:
@@ -131,6 +151,7 @@ regression on the pinned 0.13.0 toolchain before closure.
 - Debug safety checks (bounds/overflow/UB) plus `GeneralPurposeAllocator`
   leak detection (the harness panics on leak).
 - Zig's built-in fuzzer in 0.14.1 has no ASan/UBSan runtime; panic, signal,
-  OOM exit and stall are the detectable taxonomy. Engine exit codes are not
-  part of the contract here - any unexpected exit fails the lane, except the
-  non-reproducing engine-internal crash classified advisory above.
+  timeout (startup/stall), OOM markers and SIGKILL are the detectable
+  taxonomy above. Engine exit codes are not part of the contract here - any
+  unexpected exit fails the lane, except the non-reproducing engine-internal
+  crash classified advisory above.
