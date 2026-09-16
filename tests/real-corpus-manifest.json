@@ -1,5 +1,5 @@
 {
-  "$comment": "Real-world corpus manifest (F-04 / B1). Populated with verified immutable entries: every URL pins an exact revision, and every sha256/size was measured from the downloaded bytes and cross-checked against the hosting server's own content digest (Hugging Face LFS sha256) for the same revision. The runner enforces coverage floors: exit 0 requires the floors to be met by successfully verified entries (size + sha256 verified and every expected_profile verdict matched), so a run with 0 verified entries can never PASS. NEVER invent URLs, sha256 digests, sizes or license claims - every populated entry must come from a verifiable primary source and sha256 is the authoritative identity.",
+  "$comment": "Real-world corpus manifest (F-04 / B1). Populated with verified immutable entries: every URL pins an exact revision, and every sha256/size was measured from the downloaded bytes and cross-checked against the hosting server's own content digest (Hugging Face LFS sha256) for the same revision. The runner enforces coverage floors: the per-tier coverage_floors declared below are the documented effective minimums (an explicit --min-successful-* flag still wins), with a built-in fallback of >= 2 entries for manifests without coverage_floors. Only successfully verified entries count (size + sha256 verified and every expected_profile verdict matched), so a run with 0 verified entries can never PASS and a corpus shrunk to a single entry can never PASS. Floors above a tier's entry count or declared bytes are a manifest schema error, so shrinking the corpus is always an explicit floor edit. expected_profile verdicts are recorded for little-endian CI hosts: the big-endian entry passes gguf-spec but the llama-cpp profile rejects non-host-native byte order by design (upstream ggml 0.23.0 only accepts native endianness). NEVER invent URLs, sha256 digests, sizes or license claims - every populated entry must come from a verifiable primary source and sha256 is the authoritative identity.",
   "schema_version": 1,
   "entry_schema": {
     "name": "stable entry id used in reports (unique non-empty string)",
@@ -9,8 +9,19 @@
     "size": "declared file size in bytes (positive integer; verified against the streamed download)",
     "license": "license identifier as verified from the source (never guessed)",
     "license_source": "optional primary source documenting the license identifier (used where the hosting repository does not declare the license itself)",
-    "tier": "1 = nightly-bounded (~0.5-1 GB total), 2 = weekly/manual (larger models)",
+    "tier": "1 = nightly-bounded (~0.5-1.1 GiB total), 2 = weekly/manual (larger models)",
+    "endian": "optional file byte order when not little-endian (little | big; default little) - the runner passes --endian big to the validator for such entries",
     "expected_profile": "expected safegguf verdict per profile, e.g. {\"gguf-spec\": \"pass\", \"llama-cpp\": \"pass\"}; values: pass | reject"
+  },
+  "coverage_floors": {
+    "1": {
+      "min_successful_entries": 19,
+      "min_successful_bytes": 1000000000
+    },
+    "2": {
+      "min_successful_entries": 1,
+      "min_successful_bytes": 2147483648
+    }
   },
   "entries": [
     {
@@ -232,6 +243,63 @@
       "license": "mit",
       "license_source": "https://huggingface.co/mradermacher/tinystories-gpt-30m-GGUF/blob/main/README.md (license: mit; GPT-2 style TinyStories model, distinct non-llama architecture)",
       "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "thebloke-tinyllama-1.1b-chat-v0.3-q2_k-gguf-v2",
+      "url": "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v0.3-GGUF/resolve/b32046744d93031a26c8e925de2c8932c305f7b9/tinyllama-1.1b-chat-v0.3.Q2_K.gguf",
+      "revision": "b32046744d93031a26c8e925de2c8932c305f7b9",
+      "sha256": "de477e919674a4bd2db9f8142d6cf997994ae4a673364e70d2f75ca4fe52feed",
+      "size": 482149856,
+      "license": "apache-2.0",
+      "license_source": "https://huggingface.co/TheBloke/TinyLlama-1.1B-Chat-v0.3-GGUF/blob/b32046744d93031a26c8e925de2c8932c305f7b9/README.md (license: apache-2.0; base model PY007/TinyLlama-1.1B-Chat-v0.3 declares apache-2.0; GGUF v2 file exercising the llama-cpp-only v2 path)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "reject",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "mradermacher-tinystories-gpt-30m-iq4_xs",
+      "url": "https://huggingface.co/mradermacher/tinystories-gpt-30m-GGUF/resolve/b56207458bd52af2b545e32ae78b8ea6bf93fa4b/tinystories-gpt-30m.IQ4_XS.gguf",
+      "revision": "b56207458bd52af2b545e32ae78b8ea6bf93fa4b",
+      "sha256": "e61bcc800cbb42ffac8a5cdbcf24c10a4c2dc68b766d08eee106cf4ce632a038",
+      "size": 29047680,
+      "license": "mit",
+      "license_source": "https://huggingface.co/mradermacher/tinystories-gpt-30m-GGUF/blob/b56207458bd52af2b545e32ae78b8ea6bf93fa4b/README.md (license: mit; general.license=mit in the file's own GGUF metadata; IQ4_XS + IQ4_NL tensor mix)",
+      "tier": 1,
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "pass"
+      }
+    },
+    {
+      "name": "ggml-org-models-moved-bge-small-f16-big-endian",
+      "url": "https://huggingface.co/ggml-org/models-moved/resolve/499bc8821c6b12b4e53c5bffcb21ec206f212d81/bert-bge-small/ggml-model-f16-big-endian.gguf",
+      "revision": "499bc8821c6b12b4e53c5bffcb21ec206f212d81",
+      "sha256": "0e68255af91c707227f4840603bcbd0555054b921f757d79efdb2652ae8bb952",
+      "size": 67308128,
+      "license": "mit",
+      "license_source": "https://huggingface.co/BAAI/bge-small-en-v1.5 (license: mit; upstream BERT weights converted to GGUF by ggml-org; the ggml-org hosting repos declare no separate license)",
+      "tier": 1,
+      "endian": "big",
+      "expected_profile": {
+        "gguf-spec": "pass",
+        "llama-cpp": "reject"
+      }
+    },
+    {
+      "name": "bartowski-phi-3.5-mini-instruct-q5_k_m",
+      "url": "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/6d70da17e749a471ccb62ade694486011a75cda3/Phi-3.5-mini-instruct-Q5_K_M.gguf",
+      "revision": "6d70da17e749a471ccb62ade694486011a75cda3",
+      "sha256": "3fb19cc624c455ed4b513ce5d698585e4ccdbaeb151138bdac25eec82b2c20dc",
+      "size": 2815276320,
+      "license": "mit",
+      "license_source": "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/blob/6d70da17e749a471ccb62ade694486011a75cda3/README.md (license: mit; base model microsoft/Phi-3.5-mini-instruct declares mit; 2.8 GB Q5_K_M file, first tier-2 seed >2 GiB)",
+      "tier": 2,
       "expected_profile": {
         "gguf-spec": "pass",
         "llama-cpp": "pass"

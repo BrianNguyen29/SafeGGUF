@@ -5,10 +5,12 @@ The manifest (tests/real-corpus-manifest.json) holds maintainer-approved
 immutable entries only: URLs, sha256 digests, sizes and licenses must never be
 invented. Entries carry a tier, selected with --tier:
 
-  tier 1  nightly-bounded corpus of small models (~0.5-1 GB total); runs in the
-          blocking PR/release gate (.github/workflows/ci.yml) and in the
-          nightly advisory lane (.github/workflows/real-corpus.yml)
-  tier 2  weekly/manual corpus of larger models; run explicitly with --tier 2
+  tier 1  nightly-bounded corpus of small models (~0.5-1.1 GiB total); runs in
+          the blocking PR/release gate (.github/workflows/ci.yml) and in the
+          nightly advisory lane (.github/workflows/real-corpus.yml);
+          per-entry download default 1 GiB
+  tier 2  weekly/manual corpus of larger models; run explicitly with --tier 2;
+          per-entry download default 6 GiB
   all     every tier; the floors then apply to the union of verified entries
 
 A run can never PASS vacuously: exit 0 requires the coverage floors to be met
@@ -16,11 +18,12 @@ by successfully verified entries (size + sha256 verified and every
 expected_profile verdict matched).
 
 Pipeline per entry (plan sections 12/14/15):
-  schema validate -> tier select -> bounded streaming download to a temp file
-  (sha256 computed as bytes arrive; the declared Content-Length is never
-  trusted) -> size + hash verify -> atomic promote to
-  .cache/real-corpus/<sha256>.gguf -> `safegguf inspect --format json` for
-  every expected_profile key -> verdict compare -> JSON report.
+  schema validate -> tier select -> per-tier bounded streaming download to a
+  temp file (sha256 computed as bytes arrive; the declared Content-Length is
+  never trusted) -> size + hash verify -> atomic promote to
+  .cache/real-corpus/<sha256>.gguf -> `safegguf inspect --format json`
+  (with `--endian big` when the entry declares that byte order) for every
+  expected_profile key -> verdict compare -> JSON report.
 
 Failure taxonomy (a network outage is never a compatibility regression):
 
@@ -34,9 +37,23 @@ Failure taxonomy (a network outage is never a compatibility regression):
 
 Coverage floors (0 files tested can never PASS):
   --min-successful-entries N  at least N entries must have verified and matched
-                              (default 1; values < 1 are rejected)
+                              (default: the manifest coverage_floors value for the
+                              selected tier, else the built-in fallback 2; explicit
+                              values < 1 are rejected)
   --min-successful-bytes N    at least N verified bytes must come from
-                              successful entries (default 0 = disabled)
+                              successful entries (default: the manifest
+                              coverage_floors value for the selected tier, else the
+                              built-in fallback 0 = disabled)
+
+  The manifest declares documented per-tier minimums in its top-level
+  coverage_floors object ({"1": {"min_successful_entries": N,
+  "min_successful_bytes": B}, ...}); they take precedence over the built-in
+  fallbacks and make shrinking the corpus an explicit, auditable manifest edit:
+  a tier-1 floor of N entries means a run in which only a single entry remains
+  can never PASS. Explicit --min-successful-* flags still win. For --tier all
+  the floors of the tiers holding selected entries are summed. A floor above
+  that tier's entry count or declared bytes is a manifest schema error: a floor
+  that can never be met fails closed before any download.
 
 Exit status (the JSON report mirrors status/exit_code/coverage):
   0  PASS          every selected entry matched and both floors are met
@@ -53,6 +70,7 @@ and Safegguf CLI errors fail in every mode. A JSON report is written for every
 outcome, including an empty manifest.
 
 Run:  python tests/real_corpus.py [--tier 1] [--report PATH]
+      python tests/real_corpus.py --tier 2           # larger weekly/manual corpus
       python tests/real_corpus.py --tier all
       python tests/real_corpus.py --tolerate-download-errors   # PR gate mode
       python tests/real_corpus.py --min-successful-entries 5 --min-successful-bytes 10000000
@@ -81,6 +99,7 @@ DEFAULT_REPORT = os.path.join(CACHE_DIR, "real-corpus-report.json")
 
 PROFILES = ("gguf-spec", "llama-cpp")
 VERDICTS = ("pass", "reject")
+ENDIANNESS = ("little", "big")
 TIERS = (1, 2)
 
 REQUIRED_ENTRY_FIELDS = ("name", "url", "sha256", "size", "license", "tier", "expected_profile")
@@ -107,9 +126,19 @@ CHUNK_BYTES = 1024 * 1024
 USER_AGENT = "safegguf-real-corpus/1"
 DEFAULT_TIMEOUT = 60  # seconds per download and per CLI invocation
 # Bounded download (plan section 14): at most this many bytes are streamed per
-# entry regardless of any declared Content-Length. Tier 1 entries must fit this
-# budget; larger tier 2 runs should raise it explicitly.
-DEFAULT_MAX_DOWNLOAD_BYTES = 1024 * 1024 * 1024  # 1 GiB
+# entry regardless of any declared Content-Length. The bound is per tier: tier 1
+# (blocking gate, nightly-bounded) stays at 1 GiB, tier 2 (weekly/manual lane
+# for larger models, e.g. >2 GiB files) gets 6 GiB - still a hard bound, and
+# explicit --max-download-bytes overrides both.
+DEFAULT_MAX_DOWNLOAD_BYTES_BY_TIER = {
+    1: 1024 * 1024 * 1024,      # 1 GiB
+    2: 6 * 1024 * 1024 * 1024,  # 6 GiB
+}
+# Built-in coverage-floor fallback. It applies only when the manifest declares
+# no coverage_floors for the selected tier and no explicit --min-successful-*
+# flag is given; the fallback entry floor is 2 so a single entry can never PASS.
+DEFAULT_MIN_SUCCESSFUL_ENTRIES = 2
+DEFAULT_MIN_SUCCESSFUL_BYTES = 0
 
 
 class DownloadError(Exception):
@@ -136,17 +165,22 @@ def parse_args():
                         help="JSON report path (default: %(default)s)")
     parser.add_argument("--binary", default=SAFEGGUF_BIN,
                         help="safegguf binary to evaluate with (default: %(default)s)")
-    parser.add_argument("--max-download-bytes", type=int, default=DEFAULT_MAX_DOWNLOAD_BYTES,
-                        help="per-entry streaming download cap in bytes (default: %(default)s)")
+    parser.add_argument("--max-download-bytes", type=int, default=None,
+                        help="per-entry streaming download cap in bytes, overriding the "
+                             "per-tier defaults (tier 1: %d, tier 2: %d)"
+                             % (DEFAULT_MAX_DOWNLOAD_BYTES_BY_TIER[1],
+                                DEFAULT_MAX_DOWNLOAD_BYTES_BY_TIER[2]))
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
                         help="seconds per download and per CLI invocation (default: %(default)s)")
-    parser.add_argument("--min-successful-entries", type=int, default=1,
+    parser.add_argument("--min-successful-entries", type=int, default=None,
                         help="coverage floor: minimum successfully verified entries required "
-                             "for PASS (default: %(default)s; values < 1 are rejected so that "
-                             "0 files tested can never PASS)")
-    parser.add_argument("--min-successful-bytes", type=int, default=0,
+                             "for PASS (default: the manifest coverage_floors value for the "
+                             "selected tier, else built-in %d; values < 1 are rejected so that "
+                             "0 files tested can never PASS)" % DEFAULT_MIN_SUCCESSFUL_ENTRIES)
+    parser.add_argument("--min-successful-bytes", type=int, default=None,
                         help="coverage floor: minimum successfully verified bytes required for "
-                             "PASS (default: %(default)s = disabled)")
+                             "PASS (default: the manifest coverage_floors value for the selected "
+                             "tier, else built-in %d = disabled)" % DEFAULT_MIN_SUCCESSFUL_BYTES)
     parser.add_argument("--tolerate-download-errors", action="store_true",
                         help="PR gate mode: a network-only failure makes the run INCONCLUSIVE "
                              "(exit 3, report status 'inconclusive') instead of failing; a "
@@ -207,6 +241,11 @@ def validate_entries(entries):
         if isinstance(tier, bool) or not isinstance(tier, int) or tier not in TIERS:
             errors.append(label + ": 'tier' must be 1 or 2")
 
+        if "endian" in entry:
+            endian = entry["endian"]
+            if endian not in ENDIANNESS:
+                errors.append(label + ": 'endian' must be little|big when present")
+
         expected = entry["expected_profile"]
         if not isinstance(expected, dict) or not expected:
             errors.append(label + ": 'expected_profile' must be a non-empty object {profile: pass|reject}")
@@ -218,6 +257,119 @@ def validate_entries(entries):
             if bad:
                 errors.append(label + ": expected verdict for " + ", ".join(bad) + " must be pass|reject")
     return errors
+
+
+FLOOR_FIELDS = ("min_successful_entries", "min_successful_bytes")
+
+
+def validate_coverage_floors(floors, entries):
+    """Return schema/consistency errors for the optional coverage_floors block.
+
+    A non-empty list fails the run closed before any download. Consistency is
+    checked against the manifest population so a floor that can never be met
+    (more entries or bytes than the tier declares) is caught as a manifest bug
+    instead of silently failing every run.
+    """
+    errors = []
+    if floors is None:
+        return errors
+    if not isinstance(floors, dict):
+        return ["coverage_floors: must be a JSON object keyed by tier ('1', '2')"]
+
+    population = {}
+    declared_bytes = {}
+    for entry in entries:
+        tier = entry["tier"]
+        population[tier] = population.get(tier, 0) + 1
+        declared_bytes[tier] = declared_bytes.get(tier, 0) + entry["size"]
+
+    for key, spec in sorted(floors.items()):
+        label = "coverage_floors[%s]" % key
+        if key not in ("1", "2"):
+            errors.append(label + ": unknown tier key (expected '1' or '2')")
+            continue
+        tier = int(key)
+        if not isinstance(spec, dict):
+            errors.append(label + ": floor must be an object with " + ", ".join(FLOOR_FIELDS))
+            continue
+        missing = [field for field in FLOOR_FIELDS if field not in spec]
+        extra = sorted(set(spec) - set(FLOOR_FIELDS))
+        if missing:
+            errors.append(label + ": missing field(s) " + ", ".join(missing))
+        if extra:
+            errors.append(label + ": unknown field(s) " + ", ".join(extra))
+        if missing:
+            continue
+        entries_floor = spec["min_successful_entries"]
+        if isinstance(entries_floor, bool) or not isinstance(entries_floor, int) or entries_floor < 1:
+            errors.append(label + ": 'min_successful_entries' must be an integer >= 1")
+        elif entries_floor > population.get(tier, 0):
+            errors.append(label + ": 'min_successful_entries' %d exceeds the %d tier-%d entr%s in the manifest"
+                          % (entries_floor, population.get(tier, 0), tier,
+                             "y" if population.get(tier, 0) == 1 else "ies"))
+        bytes_floor = spec["min_successful_bytes"]
+        if isinstance(bytes_floor, bool) or not isinstance(bytes_floor, int) or bytes_floor < 0:
+            errors.append(label + ": 'min_successful_bytes' must be an integer >= 0")
+        elif bytes_floor > declared_bytes.get(tier, 0):
+            errors.append(label + ": 'min_successful_bytes' %d exceeds the %d declared tier-%d bytes"
+                          % (bytes_floor, declared_bytes.get(tier, 0), tier))
+    return errors
+
+
+def resolve_floors(manifest, args, entries):
+    """Effective floors + provenance for the selected tier.
+
+    Precedence per floor value: explicit CLI flag > manifest coverage_floors for
+    the selected tier(s) > built-in fallback. For --tier all the floors of every
+    tier holding selected entries are summed, so the union run has to meet the
+    combined minimum.
+    """
+    floors = manifest.get("coverage_floors") or {}
+    if args.tier == "all":
+        tiers = sorted({entry["tier"] for entry in entries}) or sorted(TIERS)
+    else:
+        tiers = [int(args.tier)]
+
+    base_entries = 0
+    base_bytes = 0
+    tier_sources = []
+    for tier in tiers:
+        spec = floors.get(str(tier))
+        if spec is None:
+            base_entries += DEFAULT_MIN_SUCCESSFUL_ENTRIES
+            base_bytes += DEFAULT_MIN_SUCCESSFUL_BYTES
+            tier_sources.append("tier %d built-in fallback" % tier)
+        else:
+            base_entries += spec["min_successful_entries"]
+            base_bytes += spec["min_successful_bytes"]
+            tier_sources.append("tier %d manifest coverage_floors" % tier)
+    manifest_source = " + ".join(tier_sources)
+
+    if args.min_successful_entries is not None:
+        entries_floor = args.min_successful_entries
+        entries_source = "cli --min-successful-entries"
+    else:
+        entries_floor = base_entries
+        entries_source = manifest_source
+    if args.min_successful_bytes is not None:
+        bytes_floor = args.min_successful_bytes
+        bytes_source = "cli --min-successful-bytes"
+    else:
+        bytes_floor = base_bytes
+        bytes_source = manifest_source
+
+    return {
+        "min_successful_entries": entries_floor,
+        "min_successful_bytes": bytes_floor,
+        "floors_source": "entries: %s; bytes: %s" % (entries_source, bytes_source),
+    }
+
+
+def download_cap_for(entry, args):
+    """Per-entry streaming cap: explicit CLI override, else the entry's tier default."""
+    if args.max_download_bytes is not None:
+        return args.max_download_bytes
+    return DEFAULT_MAX_DOWNLOAD_BYTES_BY_TIER[entry["tier"]]
 
 
 def cache_path_for(digest):
@@ -324,8 +476,10 @@ def cli_diagnostics(stdout, stderr):
     return {"message": combined[:300]} if combined else {}
 
 
-def run_validator(binary, path, profile, timeout):
+def run_validator(binary, path, profile, endian, timeout):
     cmd = [binary, "inspect", path, "--format", "json", "--profile", profile]
+    if endian is not None:
+        cmd += ["--endian", endian]
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               text=True, timeout=timeout)
@@ -353,11 +507,13 @@ def evaluate_entry(entry, args):
         "license": entry["license"],
         "tier": entry["tier"],
         "expected_profile": dict(entry["expected_profile"]),
+        "endian": entry.get("endian", "little"),
+        "download_cap": download_cap_for(entry, args),
         "cache": None,
         "profiles": {},
     }
     try:
-        path, cache_state = download_to_cache(entry, args.max_download_bytes, args.timeout)
+        path, cache_state = download_to_cache(entry, result["download_cap"], args.timeout)
     except DownloadError as exc:
         result.update(status=STATUS_DOWNLOAD_ERROR, detail=str(exc))
         return result
@@ -371,9 +527,10 @@ def evaluate_entry(entry, args):
 
     saw_error = False
     saw_mismatch = False
+    declared_endian = entry["endian"] if "endian" in entry else None
     for profile in sorted(entry["expected_profile"]):
         expected = entry["expected_profile"][profile]
-        run = run_validator(args.binary, path, profile, args.timeout)
+        run = run_validator(args.binary, path, profile, declared_endian, args.timeout)
         compared = {
             "expected": expected,
             "verdict": run["verdict"],
@@ -408,7 +565,9 @@ def write_report(path, payload):
 def base_report(args, entries, selected, results, counts, run, schema_errors=None):
     payload = {
         "description": ("Real-world corpus runner report (F-04/B1); status pass|fail|inconclusive, "
-                        "exit_code 0|1|3; a run with 0 verified entries never passes."),
+                        "exit_code 0|1|3; a run with 0 verified entries never passes. coverage holds "
+                        "the effective floors (floors_source: cli | manifest coverage_floors | built-in "
+                        "fallback); each result records its per-tier download_cap."),
         "status": run["status"],
         "exit_code": run["exit_code"],
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -416,6 +575,8 @@ def base_report(args, entries, selected, results, counts, run, schema_errors=Non
         "tier": args.tier,
         "binary": args.binary,
         "max_download_bytes": args.max_download_bytes,
+        "max_download_bytes_by_tier": {str(tier): cap
+                                       for tier, cap in sorted(DEFAULT_MAX_DOWNLOAD_BYTES_BY_TIER.items())},
         "entries_total": len(entries),
         "entries_selected": len(selected),
         "entries_skipped": len(entries) - len(selected),
@@ -435,7 +596,8 @@ def print_results(results):
     counts = {}
     for result in results:
         counts[result["status"]] = counts.get(result["status"], 0) + 1
-        print("  [%s] %s" % (result["status"], result["name"]))
+        suffix = "" if result.get("endian", "little") == "little" else " (endian=%s)" % result["endian"]
+        print("  [%s] %s%s" % (result["status"], result["name"], suffix))
         for profile in sorted(result["profiles"]):
             compared = result["profiles"][profile]
             print("      %-10s expected %-6s got %-6s (exit %s) match=%s" % (
@@ -446,11 +608,12 @@ def print_results(results):
     return counts
 
 
-def coverage_summary(args, results):
-    """Verified coverage against the configured floors.
+def coverage_summary(floors, results):
+    """Verified coverage against the resolved floors.
 
     Only PASS entries count as successful: an entry reaches PASS only after its
     bytes were size + sha256 verified and every expected_profile verdict matched.
+    `floors` is the resolve_floors() result (effective values + provenance).
     """
     successful = [result for result in results if result["status"] == STATUS_PASS]
     successful_entries = len(successful)
@@ -458,10 +621,11 @@ def coverage_summary(args, results):
     return {
         "successful_entries": successful_entries,
         "successful_bytes": successful_bytes,
-        "min_successful_entries": args.min_successful_entries,
-        "min_successful_bytes": args.min_successful_bytes,
-        "floors_met": (successful_entries >= args.min_successful_entries
-                       and successful_bytes >= args.min_successful_bytes),
+        "min_successful_entries": floors["min_successful_entries"],
+        "min_successful_bytes": floors["min_successful_bytes"],
+        "floors_source": floors["floors_source"],
+        "floors_met": (successful_entries >= floors["min_successful_entries"]
+                       and successful_bytes >= floors["min_successful_bytes"]),
     }
 
 
@@ -510,9 +674,23 @@ def classify_run(args, results, counts, coverage):
     return run_outcome(RUN_STATUS_PASS, EXIT_PASS, coverage)
 
 
+def fallback_floors(args):
+    """Effective floors usable when the manifest cannot supply them (schema errors)."""
+    entries_floor = (args.min_successful_entries if args.min_successful_entries is not None
+                     else DEFAULT_MIN_SUCCESSFUL_ENTRIES)
+    bytes_floor = (args.min_successful_bytes if args.min_successful_bytes is not None
+                   else DEFAULT_MIN_SUCCESSFUL_BYTES)
+    return {
+        "min_successful_entries": entries_floor,
+        "min_successful_bytes": bytes_floor,
+        "floors_source": "fallback (manifest floors unusable)",
+    }
+
+
 def main():
     args = parse_args()
-    if args.min_successful_entries < 1 or args.min_successful_bytes < 0:
+    if ((args.min_successful_entries is not None and args.min_successful_entries < 1)
+            or (args.min_successful_bytes is not None and args.min_successful_bytes < 0)):
         print("Error: coverage floors must satisfy --min-successful-entries >= 1 and "
               "--min-successful-bytes >= 0 (0 files tested can never PASS)", file=sys.stderr)
         return EXIT_FAIL
@@ -530,27 +708,31 @@ def main():
         return EXIT_FAIL
 
     schema_errors = validate_entries(entries)
+    if not schema_errors:
+        schema_errors = validate_coverage_floors(manifest.get("coverage_floors"), entries)
     if schema_errors:
         print("Error: manifest schema invalid (%d problem(s)); failing closed:" % len(schema_errors),
               file=sys.stderr)
         for error in schema_errors:
             print("  - " + error, file=sys.stderr)
-        run = run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage_summary(args, []),
+        run = run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage_summary(fallback_floors(args), []),
                           note="manifest schema invalid; no entries evaluated")
         write_report(args.report, base_report(args, entries, [], [], {}, run,
                                               schema_errors=schema_errors))
         return EXIT_FAIL
 
+    floors = resolve_floors(manifest, args, entries)
     selected = [entry for entry in entries if args.tier == "all" or entry["tier"] == int(args.tier)]
     if not selected:
         if not entries:
             note = ("manifest has no entries; nothing to run - 0 files tested can never PASS "
-                    "(floor: %d successful entries, %d bytes); supply approved immutable entries"
-                    % (args.min_successful_entries, args.min_successful_bytes))
+                    "(floor: %d successful entries, %d bytes, source: %s); supply approved "
+                    "immutable entries" % (floors["min_successful_entries"], floors["min_successful_bytes"],
+                                           floors["floors_source"]))
         else:
             note = ("no manifest entries match tier %s; nothing to run - "
                     "0 files tested can never PASS" % args.tier)
-        run = run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage_summary(args, []), note=note)
+        run = run_outcome(RUN_STATUS_FAIL, EXIT_FAIL, coverage_summary(floors, []), note=note)
         write_report(args.report, base_report(args, entries, selected, [], {}, run))
         print("real-corpus: " + note)
         print("real-corpus: report written to " + args.report)
@@ -568,15 +750,16 @@ def main():
     results = [evaluate_entry(entry, args) for entry in selected]
     counts = print_results(results)
 
-    coverage = coverage_summary(args, results)
+    coverage = coverage_summary(floors, results)
     run = classify_run(args, results, counts, coverage)
     write_report(args.report, base_report(args, entries, selected, results, counts, run))
     print("real-corpus: report written to " + args.report)
 
     if run["status"] == RUN_STATUS_PASS:
         print("real-corpus: PASS - all %d selected entries matched their expected verdicts; "
-              "coverage floors met (%d entries / %d bytes)"
-              % (len(results), coverage["successful_entries"], coverage["successful_bytes"]))
+              "coverage floors met (%d entries / %d bytes; source: %s)"
+              % (len(results), coverage["successful_entries"], coverage["successful_bytes"],
+                 coverage["floors_source"]))
     elif run["status"] == RUN_STATUS_INCONCLUSIVE:
         print("real-corpus: INCONCLUSIVE (exit %d, neutral) - %s" % (run["exit_code"], run["note"]))
     else:
