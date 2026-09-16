@@ -15,17 +15,27 @@ Policy (mirrors the nightly mutation lane; see tests/fuzz/README.md):
     PASS; malformed inputs are high-value;
   * persisted corpus <= 10,000 entries / 256 MiB, sha256-deduped, oldest
     entries pruned first;
-  * a harness crash preserves original + repro-validated minimized input +
-    metadata under tests/fuzz-artifacts/coverage-fuzz/ and fails the lane;
+  * every incident carries a taxonomy class - `validator_crash` (src/tests
+    frames), `engine_crash` (Zig built-in fuzzer frames), `timeout`
+    (startup/stall) or `oom` (OOM markers, or a SIGKILLed worker) - plus a
+    repro status (`repro_confirmed`, `repro_not_confirmed`, `repro_timeout`,
+    `repro_not_attempted`);
+  * validator crashes, timeouts and OOM incidents preserve the original input
+    (and a repro-validated minimized prefix when the replay confirms a crash)
+    + metadata under tests/fuzz-artifacts/coverage-fuzz/ and fail the lane;
   * an engine-internal crash inside Zig 0.14.1's built-in fuzzer (top frames
     are lib/fuzzer.zig) whose recovered input does not reproduce is preserved
     as an advisory `engine_crash` artifact and does not fail the lane.
 
 History (advisory trend, never a gate): every run appends one compact record
-(executions, unique runs, covered paths, corpus inventory, crash counts) to
-`coverage_history.json`, reports the delta against the previous record in the
-summary (JSON + text) and keeps the last `MAX_HISTORY_RUNS` records. Coverage
-is commit-relative, so deltas are reported, never enforced.
+(executions, unique inputs, covered paths, corpus growth, incident taxonomy
+and repro outcomes) to `coverage_history.json`, reports the delta against the
+previous record in the summary (JSON + text) and keeps the last
+`MAX_HISTORY_RUNS` records. Coverage is commit-relative, so deltas are
+reported, never enforced. When the trend file is lost (cache miss) it is
+rebuilt from the compact records embedded in the previous
+`coverage_summary.json`, or from the previous summary's totals alone; the
+workflow additionally recovers both files from the latest uploaded artifact.
 
 The lane is advisory (nightly): it is complementary to `zig build fuzz` (0.13
 corpus sweep) and the deterministic mutation campaigns, never a replacement.
@@ -64,35 +74,79 @@ CRASH_MARKERS = (
     b"panic:",
     b"failed with error",
 )
+# Lowercase substrings that identify an out-of-memory incident in the lane log
+# (Zig panic/OOM messages and allocator failures).
+OOM_MARKERS = (
+    b"outofmemory",
+    b"out of memory",
+    b"cannot allocate memory",
+    b"memory allocation failed",
+)
 
 
-def crash_site(blob):
-    """Classify a crash trace: 'engine' when the top frame is Zig's built-in
-    fuzzer runtime, 'harness' when safegguf src/tests frames are on top,
-    'unknown' otherwise."""
+def stack_top_frames(blob, limit=12):
+    """Top-of-trace frames: up to `limit` non-blank lines after the first
+    crash marker. Shared by crash classification and artifact metadata."""
     lines = blob.decode("utf-8", "replace").splitlines()
     for i, line in enumerate(lines):
         if "Segmentation fault" not in line and "panic:" not in line:
             continue
-        for frame in lines[i + 1:i + 12]:
-            if "lib/fuzzer.zig" in frame or "lib/Build/Fuzz" in frame:
-                return "engine"
-            if "/src/" in frame or "/tests/" in frame:
-                return "harness"
-        break
+        frames = []
+        for frame in lines[i + 1:i + 1 + limit]:
+            frame = frame.strip()
+            if not frame:
+                break
+            frames.append(frame[:200])
+        return frames
+    return []
+
+
+def crash_site(blob):
+    """Classify a crash trace: 'engine' when the top frame is Zig's built-in
+    fuzzer runtime, 'validator' when safegguf src/tests frames are on top,
+    'unknown' otherwise (conservatively treated as validator_crash)."""
+    for frame in stack_top_frames(blob):
+        if "lib/fuzzer.zig" in frame or "lib/Build/Fuzz" in frame:
+            return "engine"
+        if "/src/" in frame or "/tests/" in frame:
+            return "validator"
     return "unknown"
+
+
+def has_oom_marker(blob):
+    lower = blob.lower()
+    return any(marker in lower for marker in OOM_MARKERS)
+
+
+def crash_taxonomy(blob):
+    """(taxonomy, crash_site) for one crash log; OOM evidence takes precedence
+    over frame classification."""
+    site = crash_site(blob)
+    if has_oom_marker(blob):
+        return "oom", site
+    return ("engine_crash" if site == "engine" else "validator_crash"), site
 
 MAX_CORPUS_ENTRIES = 10_000
 MAX_CORPUS_BYTES = 256 * 1024 * 1024
 MAX_REPRO_CALLS = 24
 REPRO_TIMEOUT = 300
+FUZZ_SEED = 0  # std.testing.fuzz RNG seed, kept deterministic by the harness
+
+# Incident taxonomy (one class per non-ok target run) and repro statuses; the
+# taxonomy constants are the status values used across results, summaries and
+# history records.
+REPRO_STATUSES = ("repro_confirmed", "repro_not_confirmed",
+                  "repro_timeout", "repro_not_attempted")
 
 SUMMARY_FILE = "coverage_summary.json"
 HISTORY_FILE = "coverage_history.json"
-HISTORY_SCHEMA_VERSION = "safegguf-coverage-fuzz-history/1"
+HISTORY_SCHEMA_VERSION = "safegguf-coverage-fuzz-history/2"
 MAX_HISTORY_RUNS = 90
+RECENT_RUNS_IN_SUMMARY = 10  # compact records embedded for cache-miss rebuilds
 HISTORY_NOTE = ("advisory trend state; restored/saved through the "
-                "coverage-fuzz-history-* actions/cache entry, never a gate")
+                "coverage-fuzz-history-* actions/cache entry, rebuilt from the "
+                "previous coverage_summary.json or the latest uploaded artifact "
+                "when the cache misses, never a gate")
 
 # Aggregate fields diffed against the previous run's record; coverage is
 # commit-relative, so these deltas are informational only.
@@ -101,11 +155,19 @@ DELTA_FIELDS = (
     "unique_runs",
     "covered_pcs",
     "coverage_pct",
+    "promoted",
     "corpus_entries",
     "corpus_bytes",
     "crash_artifacts",
-    "failing_crashes",
+    "validator_crashes",
     "engine_crashes",
+    "advisory_crashes",
+    "timeouts",
+    "ooms",
+    "repro_confirmed",
+    "repro_not_confirmed",
+    "repro_timeout",
+    "repro_not_attempted",
     "failed_targets",
 )
 
@@ -274,8 +336,12 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
         "step": target["step"],
         "profile": target["profile"],
         "endian": target["endian"],
+        "host_endian": sys.byteorder,
+        "seed": FUZZ_SEED,
         "budget_seconds": budget,
         "status": "ok",
+        "taxonomy": None,
+        "advisory": False,
         "detail": "",
         "rc": None,
         "coverage": None,
@@ -283,7 +349,9 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
         "promoted": 0,
         "crash_artifact": None,
         "crash_site": None,
-        "crash_reproduced": None,
+        "stack_top_frames": [],
+        "repro_status": None,
+        "repro_calls": 0,
         "log": os.path.basename(log_path),
     }
 
@@ -309,8 +377,9 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
             early_exit = True
         elif not started:
             stop_group(proc)
-            result["status"] = "failed"
-            result["detail"] = "fuzz mode did not start within %ds" % args.startup_timeout
+            result["status"] = "timeout"
+            result["taxonomy"] = "timeout"
+            result["detail"] = "fuzz mode did not start within %ds (taxonomy=timeout)" % args.startup_timeout
         else:
             fuzz_deadline = time.monotonic() + budget
             last_progress = time.monotonic()
@@ -337,26 +406,46 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
                 time.sleep(0.25)
             if stalled:
                 stop_group(proc)
-                result["status"] = "failed"
-                result["detail"] = "no fuzz progress for %ds (possible hang/OOM)" % args.stall_seconds
+                blob = read_log(log_path)
+                result["taxonomy"] = "oom" if has_oom_marker(blob) else "timeout"
+                result["status"] = result["taxonomy"]
+                result["crash_site"] = crash_site(blob)
+                result["stack_top_frames"] = stack_top_frames(blob)
+                result["detail"] = "no fuzz progress for %ds%s" % (
+                    args.stall_seconds,
+                    "; OOM markers in lane log (taxonomy=oom)"
+                    if result["taxonomy"] == "oom"
+                    else " (hang suspected; taxonomy=timeout)")
             elif proc.poll() is None:
                 stop_group(proc)
 
         result["rc"] = proc.returncode
         blob = read_log(log_path)
         if crash_marked or has_marker(blob):
-            result["status"] = "crash"
-            result["crash_site"] = crash_site(blob)
-            result["detail"] = "fuzz worker crash marker in lane log (site=%s)" % result["crash_site"]
+            result["taxonomy"], result["crash_site"] = crash_taxonomy(blob)
+            result["status"] = result["taxonomy"]
+            result["stack_top_frames"] = stack_top_frames(blob)
+            result["detail"] = "fuzz worker crash marker in lane log (taxonomy=%s site=%s)" % (
+                result["taxonomy"], result["crash_site"])
         elif result["status"] == "ok" and early_exit:
             if proc.returncode == 0:
                 result["status"] = "failed"
                 result["detail"] = "fuzz build exited 0 before the time budget"
-            else:
-                result["status"] = "crash"
+            elif has_oom_marker(blob) or proc.returncode in (-signal.SIGKILL, 137):
+                # No crash marker and no frame: an externally SIGKILLed worker on
+                # CI is most likely the kernel OOM killer, so classify as oom.
+                result["status"] = "oom"
+                result["taxonomy"] = "oom"
                 result["crash_site"] = crash_site(blob)
-                result["detail"] = "fuzz build exited early with rc=%s (site=%s)" % (
-                    proc.returncode, result["crash_site"])
+                result["stack_top_frames"] = stack_top_frames(blob)
+                result["detail"] = ("fuzz build exited early with rc=%s; no crash trace, "
+                                    "SIGKILL/OOM marker (taxonomy=oom)" % proc.returncode)
+            else:
+                result["taxonomy"], result["crash_site"] = crash_taxonomy(blob)
+                result["status"] = result["taxonomy"]
+                result["stack_top_frames"] = stack_top_frames(blob)
+                result["detail"] = "fuzz build exited early with rc=%s (taxonomy=%s site=%s)" % (
+                    proc.returncode, result["taxonomy"], result["crash_site"])
 
     result["coverage"] = parse_coverage(cache_dir)
     corpus_dir = find_corpus_dir(cache_dir)
@@ -364,49 +453,72 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
     if corpus_dir is not None:
         entries = list_corpus_entries(corpus_dir)
         result["corpus_files"] = len(entries)
-    if result["status"] == "crash":
+    if result["status"] in ("validator_crash", "engine_crash"):
         site = result["crash_site"] or "unknown"
         if entries:
-            artifact, reproduced = save_crash_artifact(
-                args, target, entries, cache_dir, log_path, site
+            artifact, repro_status, repro_calls = save_crash_artifact(
+                args, target, entries, cache_dir, log_path, result["taxonomy"], site
             )
             result["crash_artifact"] = artifact
-            result["crash_reproduced"] = reproduced
-            if site == "engine" and not reproduced:
+            result["repro_status"] = repro_status
+            result["repro_calls"] = repro_calls
+            if site == "engine" and repro_status == "repro_not_confirmed":
                 # Spontaneous Zig 0.14.1 built-in fuzzer instability: the crash
                 # is in lib/fuzzer.zig and the recovered input does not replay,
                 # so it is not a SafeGGUF defect. Keep the artifact but do not
                 # fail the advisory lane.
-                result["status"] = "engine_crash"
+                result["advisory"] = True
                 result["detail"] = (
                     "advisory: Zig 0.14.1 built-in fuzzer engine crash "
-                    "(top frames in lib/fuzzer.zig); recovered input did not reproduce"
-                )
-            elif not reproduced:
-                result["detail"] += "; recovered input did not reproduce"
+                    "(top frames in lib/fuzzer.zig); repro_status=%s" % repro_status)
+            else:
+                result["detail"] += "; repro_status=%s" % repro_status
         else:
-            result["crash_artifact"] = save_crash_without_input(args, target, log_path, site)
+            result["crash_artifact"] = save_crash_without_input(
+                args, target, log_path, result["taxonomy"], site)
+            result["repro_status"] = "repro_not_attempted"
+    elif result["status"] in ("timeout", "oom"):
+        # Replaying a possibly-hanging or OOM-triggering input is not attempted;
+        # the original input (when one exists) is preserved unminimized.
+        result["repro_status"] = "repro_not_attempted"
+        if entries:
+            artifact, repro_status, repro_calls = save_crash_artifact(
+                args, target, entries, cache_dir, log_path, result["taxonomy"],
+                result["crash_site"] or "unknown", attempt_repro=False
+            )
+            result["crash_artifact"] = artifact
+            result["repro_status"] = repro_status
+            result["repro_calls"] = repro_calls
     if corpus_dir is not None:
         result["promoted"] = promote_corpus(corpus_dir, entries, args.corpus_dir, target["step"])
     return result
 
 
-def save_crash_without_input(args, target, log_path, site):
-    """Crash during the seed smoke pass: no f/ entry exists, keep the log."""
+def save_crash_without_input(args, target, log_path, taxonomy, site):
+    """Incident during the seed smoke pass: no f/ entry exists, keep the log."""
     base = "crash-%s-%s" % (target["step"], utcstamp())
+    blob = read_log(log_path)
     meta = {
         "kind": "coverage_fuzz_crash_no_input",
+        "taxonomy": taxonomy,
         "target": target["step"],
         "profile": target["profile"],
         "endian": target["endian"],
+        "host_endian": sys.byteorder,
+        "seed": FUZZ_SEED,
         "crash_site": site,
+        "stack_top_frames": stack_top_frames(blob),
+        "repro_status": "repro_not_attempted",
+        "repro_calls": 0,
+        "sha": None,
+        "sizes": None,
         "engine": "zig built-in fuzzer (std.testing.fuzz, Zig 0.14.1)",
         "zig_version": zig_version(args.zig),
         "git_commit": git_commit(),
         "platform": platform.platform(),
         "detail": "crash before/without a recoverable corpus entry (seed smoke pass); see log",
         "log": os.path.basename(log_path),
-        "log_excerpt": read_log(log_path)[-4000:].decode("utf-8", "replace"),
+        "log_excerpt": blob[-4000:].decode("utf-8", "replace"),
         "repro_command": ("rerun the lane target; a persisted seed is the likely input "
                           "(tests/fuzz/coverage_lane.py --targets %s)" % target["step"]),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -414,7 +526,7 @@ def save_crash_without_input(args, target, log_path, site):
     name = base + ".json"
     with open(os.path.join(args.artifacts_dir, name), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-    log("target %s: CRASH (no recoverable input) metadata %s" % (target["step"], name))
+    log("target %s: %s (no recoverable input) metadata %s" % (target["step"], taxonomy, name))
     return name
 
 
@@ -470,7 +582,12 @@ def corpus_inventory(persist_root):
     return {"dir": persist_root, "entries": count, "bytes": size}
 
 
-def repro_is_bad(args, path, target, global_cache_dir, repro_cache_dir):
+def repro_verdict(args, path, target, global_cache_dir, repro_cache_dir):
+    """Replay one input through `zig build fuzz-cov-repro`.
+
+    Returns ``(verdict, blob)`` with verdict ``repro_confirmed`` (the replay
+    crashed or hung), ``repro_not_confirmed`` (clean exit) or
+    ``repro_timeout`` (replay exceeded REPRO_TIMEOUT)."""
     env = os.environ.copy()
     env["SAFEGGUF_COV_FUZZ_REPRO"] = path
     env["SAFEGGUF_COV_FUZZ_PROFILE"] = target["profile"]
@@ -484,17 +601,21 @@ def repro_is_bad(args, path, target, global_cache_dir, repro_cache_dir):
             timeout=REPRO_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
-        return True, b"repro timed out"
+        return "repro_timeout", b"repro timed out"
     blob = proc.stdout or b""
-    crashed = proc.returncode < 0 or b"panic:" in blob or b"Segmentation fault" in blob
-    return crashed, blob
+    if proc.returncode < 0 or b"panic:" in blob or b"Segmentation fault" in blob:
+        return "repro_confirmed", blob
+    return "repro_not_confirmed", blob
 
 
-def save_crash_artifact(args, target, entries, cache_dir, log_path, site):
-    """original + repro-validated minimized input + metadata for one crash.
+def save_crash_artifact(args, target, entries, cache_dir, log_path, taxonomy, site,
+                        attempt_repro=True):
+    """original + repro-validated minimized input + metadata for one incident.
 
-    Returns ``(artifact_name, reproduced)`` where ``reproduced`` says whether
-    ``zig build fuzz-cov-repro`` re-crashed on the recovered input."""
+    Returns ``(artifact_name, repro_status, repro_calls)`` where
+    ``repro_status`` is one of REPRO_STATUSES. ``attempt_repro`` is False for
+    timeout/oom incidents, where replaying a possibly-hanging input is not
+    attempted and the original is preserved unminimized."""
     stamp = utcstamp()
     base = "crash-%s-%s" % (target["step"], stamp)
     global_cache_dir = os.path.join(args.cache_root, "zig-global")
@@ -506,68 +627,88 @@ def save_crash_artifact(args, target, entries, cache_dir, log_path, site):
     original_path = os.path.join(args.artifacts_dir, base + ".gguf")
     with open(original_path, "wb") as f:
         f.write(original)
+    original_sha = sha256_file(original_path)
 
     def probe_is_bad(data):
         probe = os.path.join(args.artifacts_dir, base + ".probe")
         try:
             with open(probe, "wb") as f:
                 f.write(data)
-            bad, _ = repro_is_bad(args, probe, target, global_cache_dir, repro_cache_dir)
+            verdict, _ = repro_verdict(args, probe, target, global_cache_dir, repro_cache_dir)
         finally:
             try:
                 os.remove(probe)
             except OSError:
                 pass
-        return bad
+        return verdict != "repro_not_confirmed"
 
     minimized_path = None
-    minimization = "repro did not confirm the recovered candidate; original preserved"
-    reproduced, _ = repro_is_bad(args, original_path, target, global_cache_dir, repro_cache_dir)
-    if reproduced:
-        calls = 1
-        # The engine pads corpus/current-input files to mmap capacity (input
-        # length is not persisted in Zig 0.14.1), so trim NUL padding first but
-        # only keep the trim if the repro still crashes on it.
-        candidate = original.rstrip(b"\x00") or original
-        if candidate != original:
-            calls += 1
-            if not probe_is_bad(candidate):
-                candidate = original
-        lo, hi = 1, len(candidate)
-        # Bounded prefix-truncation search: find the smallest crashing prefix.
-        # Invariant: `hi` is a known-crashing length; when the call budget is
-        # exhausted the search state may be unconfirmed, so re-check `lo` once
-        # and fall back to the full recovered candidate if needed.
-        while lo < hi and calls < MAX_REPRO_CALLS:
-            mid = (lo + hi) // 2
-            calls += 1
-            if probe_is_bad(candidate[:mid]):
-                hi = mid
+    minimized_sha = None
+    minimized_size = None
+    repro_calls = 0
+    repro_status = "repro_not_attempted"
+    if attempt_repro:
+        minimization = "repro did not confirm the recovered candidate; original preserved"
+        repro_status, _ = repro_verdict(args, original_path, target, global_cache_dir, repro_cache_dir)
+        repro_calls = 1
+        if repro_status == "repro_confirmed":
+            # The engine pads corpus/current-input files to mmap capacity (input
+            # length is not persisted in Zig 0.14.1), so trim NUL padding first but
+            # only keep the trim if the repro still crashes on it.
+            candidate = original.rstrip(b"\x00") or original
+            if candidate != original:
+                repro_calls += 1
+                if not probe_is_bad(candidate):
+                    candidate = original
+            lo, hi = 1, len(candidate)
+            # Bounded prefix-truncation search: find the smallest crashing prefix.
+            # Invariant: `hi` is a known-crashing length; when the call budget is
+            # exhausted the search state may be unconfirmed, so re-check `lo` once
+            # and fall back to the full recovered candidate if needed.
+            while lo < hi and repro_calls < MAX_REPRO_CALLS:
+                mid = (lo + hi) // 2
+                repro_calls += 1
+                if probe_is_bad(candidate[:mid]):
+                    hi = mid
+                else:
+                    lo = mid + 1
+            minimized = candidate
+            if lo < len(candidate) and repro_calls < MAX_REPRO_CALLS:
+                repro_calls += 1
+                if probe_is_bad(candidate[:lo]):
+                    minimized = candidate[:lo]
+            if len(minimized) < len(original):
+                minimized_path = os.path.join(args.artifacts_dir, base + "-minimized.gguf")
+                with open(minimized_path, "wb") as f:
+                    f.write(minimized)
+                minimized_sha = sha256_file(minimized_path)
+                minimized_size = len(minimized)
+                minimization = ("repro-validated trailing-NUL trim + prefix truncation "
+                                "(%d -> %d bytes, %d repro calls)" % (len(original), len(minimized), repro_calls))
             else:
-                lo = mid + 1
-        minimized = candidate
-        if lo < len(candidate) and calls < MAX_REPRO_CALLS:
-            calls += 1
-            if probe_is_bad(candidate[:lo]):
-                minimized = candidate[:lo]
-        if len(minimized) < len(original):
-            minimized_path = os.path.join(args.artifacts_dir, base + "-minimized.gguf")
-            with open(minimized_path, "wb") as f:
-                f.write(minimized)
-            minimization = ("repro-validated trailing-NUL trim + prefix truncation "
-                            "(%d -> %d bytes, %d repro calls)" % (len(original), len(minimized), calls))
-        else:
-            minimization = ("repro confirmed the recovered input but minimization did not shrink "
-                            "it (%d bytes, %d repro calls)" % (len(original), calls))
-    log("target %s: CRASH artifact %s (%s)" % (target["step"], base, minimization))
+                minimization = ("repro confirmed the recovered input but minimization did not shrink "
+                                "it (%d bytes, %d repro calls)" % (len(original), repro_calls))
+        elif repro_status == "repro_timeout":
+            # A hanging replay would make every minimization probe time out, so
+            # keep the original and leave rendering the verdict to the humans.
+            minimization = ("repro exceeded %ds; minimization skipped, original preserved"
+                            % REPRO_TIMEOUT)
+    else:
+        minimization = "repro not attempted for taxonomy=%s; original preserved" % taxonomy
+    log("target %s: %s artifact %s (%s)" % (target["step"], taxonomy, base, minimization))
 
     meta = {
         "kind": "coverage_fuzz_crash",
+        "taxonomy": taxonomy,
         "target": target["step"],
         "profile": target["profile"],
         "endian": target["endian"],
+        "host_endian": sys.byteorder,
+        "seed": FUZZ_SEED,
         "crash_site": site,
-        "reproduced": reproduced,
+        "stack_top_frames": stack_top_frames(read_log(log_path)),
+        "repro_status": repro_status,
+        "repro_calls": repro_calls,
         "engine": "zig built-in fuzzer (std.testing.fuzz, Zig 0.14.1)",
         "zig_version": zig_version(args.zig),
         "compiler": "zig " + str(zig_version(args.zig)),
@@ -576,10 +717,10 @@ def save_crash_artifact(args, target, entries, cache_dir, log_path, site):
         "sanitizers": "Debug safety checks + GeneralPurposeAllocator leak panic (no ASan/UBSan runtime)",
         "coverage": parse_coverage(cache_dir),
         "file": os.path.basename(original_path),
+        "sha": {"original": original_sha, "minimized": minimized_sha},
+        "sizes": {"original": len(original), "minimized": minimized_size},
         "minimized_file": os.path.basename(minimized_path) if minimized_path else None,
         "minimization": minimization,
-        "original_size": len(original),
-        "minimized_size": os.path.getsize(minimized_path) if minimized_path else None,
         "log": os.path.basename(log_path),
         "log_excerpt": read_log(log_path)[-4000:].decode("utf-8", "replace"),
         "repro_command": (
@@ -591,7 +732,7 @@ def save_crash_artifact(args, target, entries, cache_dir, log_path, site):
     }
     with open(os.path.join(args.artifacts_dir, base + ".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-    return os.path.basename(original_path), reproduced
+    return os.path.basename(original_path), repro_status, repro_calls
 
 
 def zig_version(zig):
@@ -631,7 +772,8 @@ def write_json(path, doc):
 
 
 def summary_totals(summary):
-    """Aggregate one run: executions, unique coverage, covered paths, crashes."""
+    """Aggregate one run: executions, unique coverage inputs, covered paths,
+    corpus growth, incident taxonomy and repro outcomes."""
     totals = {
         "targets": 0,
         "n_runs": 0,
@@ -643,8 +785,15 @@ def summary_totals(summary):
         "corpus_entries": 0,
         "corpus_bytes": 0,
         "crash_artifacts": 0,
-        "failing_crashes": 0,
+        "validator_crashes": 0,
         "engine_crashes": 0,
+        "advisory_crashes": 0,
+        "timeouts": 0,
+        "ooms": 0,
+        "repro_confirmed": 0,
+        "repro_not_confirmed": 0,
+        "repro_timeout": 0,
+        "repro_not_attempted": 0,
         "failed_targets": 0,
     }
     for r in summary.get("targets") or []:
@@ -658,12 +807,21 @@ def summary_totals(summary):
         if r.get("crash_artifact"):
             totals["crash_artifacts"] += 1
         status = r.get("status")
-        if status == "crash":
-            totals["failing_crashes"] += 1
+        if status == "validator_crash":
+            totals["validator_crashes"] += 1
         elif status == "engine_crash":
             totals["engine_crashes"] += 1
+        elif status == "timeout":
+            totals["timeouts"] += 1
+        elif status == "oom":
+            totals["ooms"] += 1
         elif status == "failed":
             totals["failed_targets"] += 1
+        if r.get("advisory"):
+            totals["advisory_crashes"] += 1
+        repro = r.get("repro_status")
+        if repro in REPRO_STATUSES:
+            totals[repro] += 1
     if totals["pcs_len"]:
         totals["coverage_pct"] = round(100.0 * totals["covered_pcs"] / totals["pcs_len"], 3)
     corpus = summary.get("corpus") or {}
@@ -683,6 +841,12 @@ def build_run_record(summary):
             "profile": r.get("profile"),
             "endian": r.get("endian"),
             "status": r.get("status"),
+            "taxonomy": r.get("taxonomy"),
+            "crash_site": r.get("crash_site"),
+            "repro_status": r.get("repro_status"),
+            "repro_calls": r.get("repro_calls"),
+            "advisory": bool(r.get("advisory")),
+            "stack_top_frames": (r.get("stack_top_frames") or [])[:5],
             "n_runs": cov.get("n_runs"),
             "unique_runs": cov.get("unique_runs"),
             "covered_pcs": cov.get("covered_pcs"),
@@ -690,8 +854,6 @@ def build_run_record(summary):
             "coverage_pct": cov.get("coverage_pct"),
             "corpus_files": r.get("corpus_files"),
             "promoted": r.get("promoted"),
-            "crash_site": r.get("crash_site"),
-            "crash_reproduced": r.get("crash_reproduced"),
         }
     return {
         "generated_at": summary.get("generated_at"),
@@ -705,26 +867,47 @@ def build_run_record(summary):
     }
 
 
-def previous_record_from_summary(args):
-    """Bootstrap the trend baseline from the previous coverage_summary.json.
+def embedded_history_runs(summary):
+    """Compact records embedded in a previous coverage_summary.json, used to
+    rebuild the trend file after a lost cache entry."""
+    if not isinstance(summary, dict):
+        return []
+    hist = summary.get("history")
+    if not isinstance(hist, dict):
+        return []
+    runs = hist.get("recent_runs")
+    if not isinstance(runs, list):
+        return []
+    return [r for r in runs if isinstance(r, dict) and isinstance(r.get("totals"), dict)]
 
-    Used only until a history file exists locally/cached (first run after the
-    history feature landed, lost cache); the history file is then authoritative.
-    """
+
+def seed_history_runs(args):
+    """Existing trend records for this run: history file first, then the
+    previous summary's embedded records, then the previous summary's totals as
+    a single baseline record. Returns ``(runs, source)``; ``runs`` may be
+    empty. Both fallbacks keep multi-run history alive across a cache miss."""
+    doc = read_json_object(os.path.join(args.artifacts_dir, HISTORY_FILE))
+    if doc is not None:
+        runs = [r for r in doc.get("runs") or []
+                if isinstance(r, dict) and isinstance(r.get("totals"), dict)]
+        if runs:
+            return runs, "history file"
     summary = read_json_object(os.path.join(args.artifacts_dir, SUMMARY_FILE))
-    if summary is None:
-        return None
-    record = build_run_record(summary)
-    return record if record["generated_at"] else None
+    runs = embedded_history_runs(summary)
+    if runs:
+        return runs, "previous summary (history file missing)"
+    if summary is not None:
+        record = build_run_record(summary)
+        if record["generated_at"]:
+            return [record], "previous summary baseline (history file missing)"
+    return [], "no previous record"
 
 
 def record_history(args, summary):
     """Append this run to coverage_history.json, return (doc, previous, current)."""
     path = os.path.join(args.artifacts_dir, HISTORY_FILE)
-    doc = read_json_object(path) or {}
-    runs = [r for r in doc.get("runs") or []
-            if isinstance(r, dict) and isinstance(r.get("totals"), dict)]
-    previous = runs[-1] if runs else previous_record_from_summary(args)
+    runs, source = seed_history_runs(args)
+    previous = runs[-1] if runs else None
     current = build_run_record(summary)
     runs.append(current)
     del runs[:-MAX_HISTORY_RUNS]
@@ -736,8 +919,9 @@ def record_history(args, summary):
         "runs": runs,
     }
     write_json(path, doc)
-    log("history: %s holds %d run(s), %s" % (
-        path, len(runs), "no previous record" if previous is None else "delta vs previous"))
+    log("history: %s holds %d run(s) from %s%s" % (
+        path, len(runs), source,
+        "" if previous is not None else " - no previous record to diff"))
     return doc, previous, current
 
 
@@ -775,19 +959,22 @@ def history_block(doc, previous, current, commit, prev_targets, cur_targets):
         "schema_version": HISTORY_SCHEMA_VERSION,
         "file": HISTORY_FILE,
         "runs_recorded": doc["runs_recorded"],
-        "note": "advisory only: computed from the cached history file, never a gate",
+        "note": ("advisory only: computed from the cached history file, rebuilt from the "
+                 "previous summary when the cache misses, never a gate"),
         "previous": previous_info,
         "delta": delta,
         "targets_delta": targets_delta,
         "recent_coverage_pct": [r["totals"].get("coverage_pct") for r in doc["runs"][-5:]],
+        "recent_runs": doc["runs"][-RECENT_RUNS_IN_SUMMARY:],
     }
 
 
-def delta_text(field, delta):
+def delta_text(field, delta, label=None):
     value = delta.get(field)
+    name = label or field
     if value is None:
-        return "%s=n/a" % field
-    return "%s=%+g" % (field, value)
+        return "%s=n/a" % name
+    return "%s=%+g" % (name, value)
 
 
 def history_lines(hist):
@@ -809,10 +996,20 @@ def history_lines(hist):
             previous.get("generated_at"),
             (previous.get("git_commit") or "unknown")[:7], suffix),
         "delta coverage: " + " ".join(
-            delta_text(f, delta) for f in ("covered_pcs", "coverage_pct", "n_runs", "unique_runs")),
-        "delta corpus/crashes: " + " ".join(
-            delta_text(f, delta) for f in ("corpus_entries", "corpus_bytes", "crash_artifacts",
-                                           "failing_crashes", "engine_crashes", "failed_targets")),
+            delta_text(f, delta, label) for f, label in (
+                ("covered_pcs", "edges"), ("coverage_pct", "pct"))),
+        "delta search: " + " ".join(
+            delta_text(f, delta, label) for f, label in (
+                ("n_runs", "executions"), ("unique_runs", "unique_inputs"))),
+        "delta corpus: " + " ".join(
+            delta_text(f, delta) for f in ("corpus_entries", "corpus_bytes", "promoted")),
+        "delta incidents: " + " ".join(
+            delta_text(f, delta) for f in ("crash_artifacts", "validator_crashes",
+                                           "engine_crashes", "advisory_crashes",
+                                           "timeouts", "ooms", "failed_targets")),
+        "delta repro: " + " ".join(
+            delta_text(f, delta) for f in ("repro_confirmed", "repro_not_confirmed",
+                                           "repro_timeout", "repro_not_attempted")),
     ]
     recent = [v for v in (hist.get("recent_coverage_pct") or []) if v is not None]
     if len(recent) > 1:
@@ -834,18 +1031,19 @@ def target_delta_text(targets_delta, step):
 def write_summary(args, results, started):
     """Write coverage_summary.json/.txt and append this run to the history file."""
     inventory = corpus_inventory(args.corpus_dir)
-    engine_crashes = [r["step"] for r in results if r["status"] == "engine_crash"]
+    advisory = [r["step"] for r in results if r.get("advisory")]
     summary = {
         "schema_version": "safegguf-coverage-fuzz/1",
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "git_commit": git_commit(),
         "zig_version": zig_version(args.zig),
         "advisory": True,
-        "advisory_engine_crashes": engine_crashes,
+        "advisory_engine_crashes": advisory,
         "note": ("coverage lane is advisory (nightly); production toolchain stays 0.13.0, "
                  "pinned oracle/differential and mutation campaigns are unchanged; "
-                 "engine-internal Zig 0.14.1 fuzzer crashes whose inputs do not reproduce "
-                 "are preserved as artifacts but do not fail the lane"),
+                 "incidents carry taxonomy validator_crash | engine_crash | timeout | oom "
+                 "plus a repro status, and only non-reproducing engine-internal Zig 0.14.1 "
+                 "fuzzer crashes are advisory (they do not fail the lane)"),
         "budget_seconds": args.budget_seconds,
         "wall_seconds": round(time.monotonic() - started, 1),
         "seed_corpus": os.path.join(REPO_ROOT, "tests", "corpus"),
@@ -878,16 +1076,18 @@ def write_summary(args, results, started):
     lines.append("")
     for r in results:
         cov = r["coverage"] or {}
-        crash_info = ""
+        incident = ""
+        if r.get("taxonomy"):
+            incident = " taxonomy=%s site=%s repro=%s calls=%s" % (
+                r["taxonomy"], r.get("crash_site") or "?",
+                r.get("repro_status") or "?", r.get("repro_calls", 0))
         if r["crash_artifact"]:
-            repro = {True: "yes", False: "no", None: "n/a"}[r.get("crash_reproduced")]
-            crash_info = " crash=%s site=%s repro=%s" % (
-                r["crash_artifact"], r.get("crash_site") or "?", repro)
+            incident += " artifact=%s" % r["crash_artifact"]
         lines.append(
-            "%-28s %-12s runs=%-9s unique=%-9s edges=%s/%s (%.2f%%) corpus=%d promoted=%d%s%s" % (
+            "%-28s %-16s runs=%-9s unique=%-9s edges=%s/%s (%.2f%%) corpus=%d promoted=%d%s%s" % (
                 r["step"], r["status"], cov.get("n_runs", "?"), cov.get("unique_runs", "?"),
                 cov.get("covered_pcs", "?"), cov.get("pcs_len", "?"), cov.get("coverage_pct", 0.0),
-                r["corpus_files"], r["promoted"], crash_info,
+                r["corpus_files"], r["promoted"], incident,
                 target_delta_text(summary["history"].get("targets_delta"), r["step"]),
             )
         )
@@ -953,18 +1153,22 @@ def main():
     for target in selected:
         result = run_bounded(args, target, budgets[target["step"]], args.artifacts_dir, global_cache_dir)
         results.append(result)
-        log("target %s: status=%s promoted=%d" % (target["step"], result["status"], result["promoted"]))
-        if result["status"] not in ("ok", "engine_crash"):
+        log("target %s: status=%s taxonomy=%s repro=%s promoted=%d" % (
+            target["step"], result["status"], result.get("taxonomy") or "-",
+            result.get("repro_status") or "-", result["promoted"]))
+        if result["status"] != "ok" and not result.get("advisory"):
             exit_code = 1
             if not args.keep_going:
                 break
 
     write_summary(args, results, started)
-    advisory = [r["step"] for r in results if r["status"] == "engine_crash"]
+    advisory = [r["step"] for r in results if r.get("advisory")]
     if exit_code != 0:
-        log("lane FAILED: crash or unexpected engine exit; see %s" % args.artifacts_dir)
+        log("lane FAILED: validator crash, timeout, OOM or unexpected engine exit; see %s"
+            % args.artifacts_dir)
     elif advisory:
-        log("lane OK with advisory engine crashes (did not fail lane): %s" % ", ".join(advisory))
+        log("lane OK with advisory engine crashes (repro_status=repro_not_confirmed, "
+            "did not fail lane): %s" % ", ".join(advisory))
     else:
         log("lane OK")
     return exit_code
