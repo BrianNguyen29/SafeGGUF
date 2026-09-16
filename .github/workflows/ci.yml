@@ -293,7 +293,6 @@ jobs:
                   ],
                   "licenseConcluded": "NOASSERTION",
                   "copyrightText": "NOASSERTION",
-                  "downloadLocation": "NOASSERTION",
               })
               relationships.append({
                   "spdxElementId": "SPDXRef-Package-safegguf",

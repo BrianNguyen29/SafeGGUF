@@ -4,13 +4,13 @@
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg)](https://ziglang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blue.svg)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
-[![Release](https://img.shields.io/badge/release-v0.3.5-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.6-green.svg)](https://github.com/BrianNguyen29/SafeGGUF/releases)
 
 SafeGGUF is a memory-safe, overflow-checked structural and arithmetic validator for **GGUF** model files, written in Zig. It inspects model headers, metadata, and tensor descriptors to reject malformed or adversarial input before weights are mapped into production inference runtimes such as `llama.cpp` or other `ggml`-based loaders.
 
 Validation reads only the header, metadata, descriptor table, and alignment padding through a 64 KiB sliding-window reader; tensor payload bytes are never read, so models larger than available memory can be inspected. The CLI is fail-closed: unknown arguments exit with standard `EX_*` codes, and every result carries structured diagnostics and the pinned upstream type-table provenance.
 
-> **Release status.** The latest tagged release is **v0.3.5**. `main` is unreleased and carries post-v0.3.5 work; this README documents `main` unless a statement is explicitly marked as release-only.
+> **Release status.** The latest tagged release is **v0.3.6** (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` currently matches that release commit. This README documents `main` unless a statement is explicitly marked as release-only.
 
 ## Overview
 
@@ -99,9 +99,11 @@ safegguf --help | -h | help
 safegguf --version
 ```
 
+Output from the released v0.3.6 `x86_64-linux` binary:
+
 ```text
-SafeGGUF 0.3.5
-source_commit: 33dc9bab5ab8f84697b93e85d969d251725f1152
+SafeGGUF 0.3.6
+source_commit: ddbf045591cd7a2c7c69252012092440025723eb
 zig: 0.13.0
 build_mode: ReleaseSafe
 target: x86_64-linux
@@ -265,7 +267,7 @@ Two failure modes are kept distinct: exceeding the validator allocation quota is
 
 ## Verifying Releases
 
-Tagged releases publish cross-platform binaries, `SHA256SUMS.txt`, a keyless Sigstore signature bundle (`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`). GitHub artifact attestations cover the release binaries and the SBOM. The release workflow verifies checksums, signature, and attestations **before** publishing and aborts on any failure; signing is keyless (the release workflow's GitHub OIDC identity — no long-lived release signing key).
+Tagged releases publish cross-platform binaries, `SHA256SUMS.txt`, a keyless Sigstore signature bundle (`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`). GitHub artifact attestations cover the release binaries: a build-provenance attestation, and an SBOM attestation whose `spdx.dev/Document` predicate is the SBOM content and whose subjects are those same binaries. The `safegguf.spdx.json` release asset itself is not an attestation subject; verify the attested SBOM content through a binary subject, as in step 4. The release workflow verifies checksums, signature, and attestations **before** publishing and aborts on any failure; signing is keyless (the release workflow's GitHub OIDC identity — no long-lived release signing key).
 
 ```bash
 # 1. Verify the checksum manifest's keyless Sigstore signature
@@ -278,9 +280,27 @@ cosign verify-blob \
 # 2. Verify the binaries against the signed manifest
 sha256sum -c SHA256SUMS.txt
 
-# 3. Verify the GitHub build provenance attestation for a binary
-gh attestation verify safegguf-x86_64-linux --repo BrianNguyen29/SafeGGUF
+# 3. Verify the build provenance attestation for a binary, pinning the signer
+#    workflow and the expected source tag and commit
+gh attestation verify safegguf-x86_64-linux \
+  --repo BrianNguyen29/SafeGGUF \
+  --signer-workflow BrianNguyen29/SafeGGUF/.github/workflows/ci.yml \
+  --predicate-type https://slsa.dev/provenance/v1 \
+  --source-ref refs/tags/v0.3.6 \
+  --source-digest ddbf045591cd7a2c7c69252012092440025723eb
+
+# 4. Verify the attested SBOM content (spdx.dev/Document predicate) for the
+#    same binary; --format json prints the verified statement, whose
+#    verificationResult.statement.predicate is the signed SBOM
+gh attestation verify safegguf-x86_64-linux \
+  --repo BrianNguyen29/SafeGGUF \
+  --signer-workflow BrianNguyen29/SafeGGUF/.github/workflows/ci.yml \
+  --predicate-type https://spdx.dev/Document/v2.3 \
+  --source-ref refs/tags/v0.3.6 \
+  --source-digest ddbf045591cd7a2c7c69252012092440025723eb
 ```
+
+The `--source-ref`/`--source-digest` values above are those of the latest tagged release (v0.3.6); substitute the tag and commit of the release being verified.
 
 Do not rely on a manually compared checksum alone: the manifest is only meaningful when its signature and the binaries' provenance attestations verify.
 
@@ -344,7 +364,7 @@ The `real-corpus` gate evaluates the manifest's tier-1 entries and enforces the 
 
 ## Project Status
 
-* **Latest tagged release:** v0.3.5. `main` is unreleased; post-v0.3.5 work is not yet in a tagged release.
+* **Latest tagged release:** v0.3.6 (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` currently matches the release commit.
 * **Upstream type table pinned to:** ggml `0.23.0` (`e91ded11bdcd78c42f9c8d3978ff6686eb4c1226`); the Zig table must stay in sync with the pinned revision, enforced by the type-oracle and differential checks.
 * **Toolchain pinned to:** Zig `0.13.0`; the project has zero Zig package dependencies and builds with the standard library only.
 
