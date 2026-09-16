@@ -2,7 +2,7 @@
 
 SafeGGUF is designed as a memory-safe, overflow-checked pre-admission validation layer for AI model weights stored in the GGUF format.
 
-> **Release status:** **v0.3.6** is the latest tagged release (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` currently matches the v0.3.6 release commit. Unless marked otherwise, the guarantees below describe `main`.
+> **Release status:** **v0.3.6** is the latest tagged release (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` may carry unreleased commits on top of that tag. Unless marked otherwise, the guarantees below describe `main`.
 
 ## Supported Versions
 
@@ -52,7 +52,7 @@ gh attestation verify safegguf-x86_64-linux \
 
 The `--source-ref`/`--source-digest` values above are those of the latest tagged release (v0.3.6); substitute the tag and commit of the release being verified.
 
-`safegguf --version` reports the embedded version, source commit, Zig version, build mode, target, and pinned ggml target/commit.
+`safegguf --version` reports the embedded version, source commit, Zig version, build mode, target, and pinned ggml target/commit. Source builds report the embedded default version, which CI checks against the latest tagged release; release artifacts report the version of the tag they were built from.
 
 ### Regression Fixture Provenance
 

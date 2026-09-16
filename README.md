@@ -10,7 +10,7 @@ SafeGGUF is a memory-safe, overflow-checked structural and arithmetic validator 
 
 Validation reads only the header, metadata, descriptor table, and alignment padding through a 64 KiB sliding-window reader; tensor payload bytes are never read, so models larger than available memory can be inspected. The CLI is fail-closed: unknown arguments exit with standard `EX_*` codes, and every result carries structured diagnostics and the pinned upstream type-table provenance.
 
-> **Release status.** The latest tagged release is **v0.3.6** (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` currently matches that release commit. This README documents `main` unless a statement is explicitly marked as release-only.
+> **Release status.** The latest tagged release is **v0.3.6** (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` may carry unreleased commits on top of that tag. This README documents `main` unless a statement is explicitly marked as release-only.
 
 ## Overview
 
@@ -111,7 +111,7 @@ ggml_target: 0.23.0
 ggml_commit: e91ded11bdcd78c42f9c8d3978ff6686eb4c1226
 ```
 
-All values are injected at build time from the source tree, toolchain, and build options; no wall-clock timestamp is embedded. The version defaults to `0.3.5` for source builds and is set explicitly with `-Dversion=<value>` by the release workflow.
+All values are injected at build time from the source tree, toolchain, and build options; no wall-clock timestamp is embedded. Source builds report the version embedded in `build.zig`, which CI checks against the latest tagged release for drift; the release workflow overrides it per tag with `-Dversion=<value>`.
 
 ## Exit Codes
 
@@ -306,7 +306,7 @@ Do not rely on a manually compared checksum alone: the manifest is only meaningf
 
 ## Embedding (Zig Library)
 
-The library exposes a `Validator` that manages its own `QuotaAllocator` and `WorkBudget` from a `Limits` value. `validateOwned()` returns a `Result` that owns the parsed document and frees it through the captured validator-managed allocator:
+The library exposes a `Validator` that manages its own `QuotaAllocator` and `WorkBudget` from a `Limits` value. `validateOwned()` returns a `Result` that owns the parsed document together with its own heap-allocated validation state (a quota allocator with independent accounting, plus the run's work budget):
 
 ```zig
 const std = @import("std");
@@ -327,7 +327,15 @@ pub fn validateGgufFile(allocator: std.mem.Allocator, file: std.fs.File) !void {
 }
 ```
 
-The document's allocations live in the validator-managed allocator: call `Result.deinit()` while the producing `Validator` is still alive, and free each `Result` exactly once. A `Validator` is not thread-safe, but it can be reused sequentially; use one instance per thread or add external synchronization. The legacy `validate()` + `deinitDocument()` pair remains supported.
+### Ownership
+
+`validateOwned()` is the independent-ownership entry point. The returned `Result` owns a heap-allocated `OwnedValidationState` — the quota allocator whose accounting covers the document's allocations, plus the run's work budget — so the document stays valid and `deinit()` stays correct after the producing `Validator` leaves scope, is moved or copied, is reused for further validations, or is destroyed. The only lifetime requirement that remains is that the parent allocator passed to `Validator.init()` (for example `std.testing.allocator`) outlives the `Result`.
+
+* Release the document only through `Result.deinit()`; never pass `Result.doc` to `Validator.deinitDocument()`, which would free through the wrong accounting path and leave the owned state behind. `deinit()` is idempotent, so each document is freed exactly once as long as its `Result` is not duplicated (next point).
+* Do not duplicate a `Result` with a struct copy (`var alias = res;`): both values would alias one owned state and the same document allocations, and `deinit()` through the alias is a use-after-free / double free. To hand ownership to another binding, move it with `Result.take()`, which returns the sole remaining owner and leaves the source inert (`take()`/`deinit()` on it afterwards are no-ops).
+* Threading: a `Validator` is not thread-safe, but it can be reused sequentially; use one instance per thread or add external synchronization. A live `Result` shares no mutable state with its producer, but it must be `deinit()`ed from one thread only.
+
+The legacy `validate()` + `deinitDocument()` pair remains supported: its borrowed documents are allocated from the Validator's own `QuotaAllocator`, so they must be released with `deinitDocument()` on the same instance that produced them, before that instance is discarded.
 
 ## Testing
 
@@ -341,6 +349,7 @@ zig build test --summary all          # unit, regression, and fuzz-corpus sweep
 zig build -Doptimize=ReleaseSafe
 python tests/cli_test.py              # end-to-end CLI exit-code contract
 python tests/negative_corpus.py       # provenance-tiered reject corpus (exit 2 per case)
+python scripts/version_consistency.py # embedded build default vs latest v* tag (full clone with tags)
 
 # Upstream oracles and differential testing (network clone + CMake)
 bash tests/build_oracle.sh            # pinned ggml 0.23.0 oracle; skips if built
@@ -358,13 +367,13 @@ python tests/real_corpus.py           # tier-1 real-world corpus gate (default -
                                       # ReleaseSafe binary + network
 ```
 
-CI (`.github/workflows/ci.yml`) runs `core`, `oracle`, `fuzz`, and `bench` jobs on Ubuntu 24.04 and macOS 14, plus a tier-1 `real-corpus` gate on pull requests and `v*` tags; a tag-triggered `release` job builds five targets, generates the SBOM, signs the checksum manifest, and publishes after verifying its own artifacts.
+CI (`.github/workflows/ci.yml`) runs `core`, `oracle`, `fuzz`, and `bench` jobs on Ubuntu 24.04 and macOS 14, a `version-consistency` check that fails when the embedded build default drifts from the latest `v*` tag, plus a tier-1 `real-corpus` gate on pull requests and `v*` tags. The tag-triggered `release` job depends on all of those checks plus a tag-only `windows-gate`, which reuses `.github/workflows/windows.yml` — the native windows-latest lane that also runs directly on main pushes and pull requests — so a failed or skipped Windows gate blocks the release and the Windows executable is never published without native validation of the tagged commit. The release job then builds five targets, generates the SBOM, signs the checksum manifest, and publishes after verifying its own artifacts.
 
 The `real-corpus` gate evaluates the manifest's tier-1 entries and enforces the runner's coverage floors, so a run with 0 verified entries can never `PASS` (`0` PASS / `1` FAIL / `3` INCONCLUSIVE, the last one NEUTRAL for a tolerated network-only failure on pull requests; `v*` tags run the gate fail-closed, where an outage, a skipped entry, or an unmet floor blocks the release). Additional scheduled workflows cover nightly fuzzing and the nightly advisory real-world corpus lane (report-only).
 
 ## Project Status
 
-* **Latest tagged release:** v0.3.6 (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` currently matches the release commit.
+* **Latest tagged release:** v0.3.6 (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` may carry unreleased commits on top of it.
 * **Upstream type table pinned to:** ggml `0.23.0` (`e91ded11bdcd78c42f9c8d3978ff6686eb4c1226`); the Zig table must stay in sync with the pinned revision, enforced by the type-oracle and differential checks.
 * **Toolchain pinned to:** Zig `0.13.0`; the project has zero Zig package dependencies and builds with the standard library only.
 

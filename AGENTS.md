@@ -31,7 +31,7 @@ python tests/real_corpus.py --tier 1 --tolerate-download-errors   # PR mode (ci.
 python tests/real_corpus.py --tier 1                              # fail-closed mode (v* tags/releases); an outage, skipped entry, or unmet floor blocks
 ```
 
-Windows runtime lane (`.github/workflows/windows.yml`, additive — no required-check or release wiring) runs `generate_fixtures.py` → `zig build test` → ReleaseSafe build → `cli_test.py` → `negative_corpus.py` natively on windows-latest.
+Windows runtime lane (`.github/workflows/windows.yml`) runs `generate_fixtures.py` → `zig build test` → ReleaseSafe build → `cli_test.py` → `negative_corpus.py` natively on windows-latest. It runs directly on main pushes and pull requests and is also the release gate on `v*` tags: ci.yml reuses it via `workflow_call` as its tag-only `windows-gate` job, which `release` needs — a failed or skipped gate skips the release, so the Windows binary is never published without native validation of the tagged commit.
 
 Expensive suites — network clone + CMake; only run when touching parsing/types/upstream-compat behavior:
 
