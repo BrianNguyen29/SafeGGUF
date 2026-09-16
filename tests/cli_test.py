@@ -84,7 +84,7 @@ def test_positive():
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout
 
-    print("  ✓ All positive tests passed.")
+    print("  [ok] All positive tests passed.")
 
 def test_negative_validation():
     print("Running negative validation tests (must exit code 2)...")
@@ -137,7 +137,7 @@ def test_negative_validation():
         assert rc == 2, f"Expected returncode 2 (Validation REJECT) for {args}, got {rc}\nStdout: {stdout}\nStderr: {stderr}"
         assert expected_err in stderr, f"Expected error {expected_err} in stderr for {args}, got: {stderr}"
 
-    print("  ✓ All negative validation tests passed with exit code 2.")
+    print("  [ok] All negative validation tests passed with exit code 2.")
 
 def test_negative_json():
     print("Running negative JSON formatting tests (must exit code 2 and emit valid JSON)...")
@@ -168,7 +168,7 @@ def test_negative_json():
     # Provenance accompanies REJECT JSON (gguf-spec profile field name).
     assert data["type_layout_source"] == GGML_PROVENANCE
 
-    print("  ✓ All negative JSON tests passed.")
+    print("  [ok] All negative JSON tests passed.")
 
 def test_rich_rejection_context():
     print("Running rich rejection context tests (slice 11 findings)...")
@@ -228,7 +228,7 @@ def test_rich_rejection_context():
     assert "expected_offset: 128" in stderr
     assert "Validator rejected untrusted GGUF stream" not in stderr
 
-    print("  ✓ All rich rejection context tests passed.")
+    print("  [ok] All rich rejection context tests passed.")
 
 def write_variable_array_fixture(path, count):
     """Writes a minimal metadata-only GGUF v3 whose single metadata entry is
@@ -288,7 +288,7 @@ def test_variable_array_cap_override():
         assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
         assert "E_ResourceLimitExceeded" in stderr, f"Missing resource error: {stderr}"
 
-        print("  ✓ Variable-array cap override tests passed.")
+        print("  [ok] Variable-array cap override tests passed.")
     finally:
         # This scratch fixture is not registered in differential.py's
         # EXPECTED_MATRIX; remove it so later fixture sweeps stay clean.
@@ -320,7 +320,7 @@ def test_usage_and_flags():
         rc, stdout, stderr = run_cli(*args)
         assert rc == 64, f"Expected returncode 64 (EX_USAGE) for {args}, got {rc}\nStdout: {stdout}\nStderr: {stderr}"
 
-    print("  ✓ All usage tests passed with exit code 64.")
+    print("  [ok] All usage tests passed with exit code 64.")
 
 def test_io_error():
     print("Running IO error tests (must exit code 74)...")
@@ -338,7 +338,7 @@ def test_io_error():
     # Provenance accompanies ERROR JSON too (default gguf-spec profile).
     assert data["type_layout_source"] == GGML_PROVENANCE
 
-    print("  ✓ IO error tests passed with exit code 74 and status ERROR.")
+    print("  [ok] IO error tests passed with exit code 74 and status ERROR.")
 
 def test_help():
     print("Running CLI help contract tests (must exit code 0)...")
@@ -346,13 +346,13 @@ def test_help():
         rc, stdout, stderr = run_cli(flag)
         assert rc == 0, f"Expected returncode 0 for {flag}, got {rc}"
         output = stdout + stderr
-        assert "SafeGGUF v0.3.5" in output, f"Version missing in help: {output}"
+        assert "SafeGGUF v0.3.6" in output, f"Version missing in help: {output}"
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
         assert "default: little" in output, f"Default little endian missing in help: {output}"
         assert "--format <text|json>" in output
         assert "--max-variable-array-elements <N>" in output, f"Variable-array cap flag missing in help: {output}"
         assert "default: 1000000" in output, f"Variable-array cap default missing in help: {output}"
-    print("  ✓ All help contract tests passed with exit code 0.")
+    print("  [ok] All help contract tests passed with exit code 0.")
 
 if __name__ == "__main__":
     if not os.path.exists(BINARY):
