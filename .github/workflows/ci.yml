@@ -51,6 +51,9 @@ jobs:
       - name: Verify C-ABI Compilation & Test Python Bindings
         run: python bindings/python/tests/test_binding.py
 
+      - name: Generate Security Testbed Fixtures
+        run: python tests/generate_security_testbed.py
+
       - name: Run Hybrid Triage Test Suite
         run: python tests/test_triage.py
 

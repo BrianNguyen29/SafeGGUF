@@ -17,14 +17,15 @@ spec:
         sizeLimit: 10Mi
 
   # ============================================================================
-  # SafeGGUF Pre-Admission Firewall (Init Container)
+  # SafeGGUF Pre-Admission Firewall & Content-Hash Handoff Pipeline
   # Fails closed (exit code 2): If the model file is malformed, tampered,
   # or contains arithmetic integer wraps, the Pod terminates before any memory
   # is mapped into the production inference container.
   # ============================================================================
   initContainers:
+    # Phase 1: Structural & Arithmetic Pre-Admission Validation
     - name: safegguf-pre-admission-validator
-      image: ghcr.io/briannguyen29/safegguf:v0.3.6
+      image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
       imagePullPolicy: IfNotPresent
       command:
         - /usr/local/bin/safegguf
@@ -47,8 +48,6 @@ spec:
         - name: model-volume
           mountPath: /models
           readOnly: true
-        - name: attestation-volume
-          mountPath: /attestation
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
@@ -60,39 +59,71 @@ spec:
         seccompProfile:
           type: RuntimeDefault
 
-  # ============================================================================
-  # Anti-TOCTOU & Content-Hash Handoff Architecture:
-  # To eliminate Time-Of-Check to Time-Of-Use risks across container boundaries:
-  # 1. Mount 'model-volume' strictly as 'readOnly: true' in all containers.
-  # 2. Content-Hash Handoff: The initContainer validates the model and can write
-  #    its cryptographic digest (SHA-256) to 'attestation-volume' (in-memory emptyDir).
-  # 3. Downstream serving container verifies the digest matches its admission manifest
-  #    before mapping weights into memory.
-  # ============================================================================
+    # Phase 2: Cryptographic Content-Hash Attestation Generation (In-Memory CAS)
+    # Executed strictly AFTER SafeGGUF exits 0 (STRUCTURALLY_ACCEPTED).
+    # Emits SHA-256 digest into ephemeral memory-backed volume.
+    - name: safegguf-attestation-generator
+      image: busybox:1.36-musl
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -euo pipefail
+          echo "[SafeGGUF Attestation] Generating cryptographic SHA-256 digest..."
+          sha256sum /models/model.gguf > /attestation/model.gguf.sha256
+          echo "[SafeGGUF Attestation] Attestation written: $(cat /attestation/model.gguf.sha256)"
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "64Mi"
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+      volumeMounts:
+        - name: model-volume
+          mountPath: /models
+          readOnly: true
+        - name: attestation-volume
+          mountPath: /attestation
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
 
   # ============================================================================
   # Downstream Production Inference Serving Container (e.g. llama.cpp / vLLM)
-  # Only starts if the initContainer above exits with code 0 (PASS).
+  # Anti-TOCTOU Verification Gate:
+  # Verifies the SHA-256 digest against the attested hash from Phase 2
+  # immediately before loading model weights into process address space.
   # ============================================================================
   containers:
     - name: llama-cpp-server
       image: ghcr.io/ggerganov/llama.cpp:server
       command:
-        - /server
-        - -m
-        - /models/model.gguf
+        - /bin/sh
         - -c
-        - "4096"
-        - --host
-        - "0.0.0.0"
-        - --port
-        - "8080"
+        - |
+          set -euo pipefail
+          echo "[Inference Gate] Validating cryptographic attestation against in-memory digest..."
+          sha256sum -c /attestation/model.gguf.sha256
+          echo "[Inference Gate] Attestation verified (Anti-TOCTOU passed). Launching server..."
+          exec /server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080
       ports:
         - containerPort: 8080
           name: http
       volumeMounts:
         - name: model-volume
           mountPath: /models
+          readOnly: true
+        - name: attestation-volume
+          mountPath: /attestation
           readOnly: true
       resources:
         limits:

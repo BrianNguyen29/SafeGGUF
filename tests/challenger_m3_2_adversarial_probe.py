@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Challenger M3_2: Adversarial Boundary & Empirical Stress Verification Harness
-Evaluates `safegguf-triage` (Milestone M3: Hybrid Triage CLI & Bayesian Engine).
+Evaluates `safegguf-triage` (Milestone M3: Hybrid Triage CLI & Deterministic Rule Engine).
 
 Test Dimensions:
 1. Boundary condition invariants:
@@ -120,7 +120,7 @@ def test_boundary_invariants():
         sev_ok = sev in valid_severities
         cat_ok = cat in valid_categories and (cat == threat_cat)
         act_ok = act in valid_actions and (act == rec)
-        prob_ok = (0.0 <= prob <= 1.0)
+        prob_ok = (prob is None or (0.0 <= prob <= 1.0))
 
         all_ok = score_ok and sev_ok and cat_ok and act_ok and prob_ok
         details = f"score={score}, sev={sev}, cat={cat}, act={act}, prob={prob}"
