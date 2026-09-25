@@ -37,6 +37,28 @@ pub const Document = struct {
     }
 };
 
+/// Inspect the GGUF header to automatically detect endianness based on magic and version bytes.
+/// Returns null if header cannot be read or is not a recognizable GGUF v2/v3 file.
+pub fn detectEndianness(reader: Reader) ?std.builtin.Endian {
+    if (reader.size < 8) return null;
+    var magic_buf: [4]u8 = undefined;
+    reader.readBytes(0, &magic_buf) catch return null;
+    if (!std.mem.eql(u8, &magic_buf, &types.MAGIC)) return null;
+
+    var ver_buf: [4]u8 = undefined;
+    reader.readBytes(4, &ver_buf) catch return null;
+
+    // Little endian: version 2 or 3 is [0x02/0x03, 0x00, 0x00, 0x00]
+    if (ver_buf[1] == 0 and ver_buf[2] == 0 and ver_buf[3] == 0 and (ver_buf[0] == 2 or ver_buf[0] == 3)) {
+        return .little;
+    }
+    // Big endian: version 2 or 3 is [0x00, 0x00, 0x00, 0x02/0x03]
+    if (ver_buf[0] == 0 and ver_buf[1] == 0 and ver_buf[2] == 0 and (ver_buf[3] == 2 or ver_buf[3] == 3)) {
+        return .big;
+    }
+    return null;
+}
+
 pub fn parseDocument(
     allocator: std.mem.Allocator,
     reader: Reader,

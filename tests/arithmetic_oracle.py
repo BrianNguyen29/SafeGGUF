@@ -47,6 +47,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 TYPES_ZIG = os.path.join(REPO_ROOT, "src", "gguf", "types.zig")
 BINARY = os.path.join(REPO_ROOT, "zig-out", "bin", "safegguf")
+if sys.platform == "win32" and not BINARY.endswith(".exe") and os.path.exists(BINARY + ".exe"):
+    BINARY += ".exe"
 
 U64_MAX = (1 << 64) - 1
 
