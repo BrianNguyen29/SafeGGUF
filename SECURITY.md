@@ -74,9 +74,10 @@ SafeGGUF enforces pre-admission defense-in-depth before untrusted model files ar
    - `70`: Internal software / host memory failure.
    - `74`: File I/O or filesystem stat error.
 4. **Time-of-Check to Time-of-Use (TOCTOU):**
-   SafeGGUF validates files on disk or streams. To prevent TOCTOU vulnerabilities where a file is swapped or modified between validation and loading:
-   - Deployers should validate files in immutable content-addressable storage (CAS).
-   - Verify cryptographic hashes (e.g. SHA-256) matching the validated file before admission to inference runtimes.
+   SafeGGUF provides in-process descriptor validation (`safegguf_validate_fd` / `safegguf.validate_fd`). To achieve TOCTOU-resistance:
+   - Downstream inference loaders must consume the exact same open file descriptor (`O_RDONLY`), OR
+   - Deployers must validate files stored in immutable Content-Addressable Storage (CAS) and hand off the verified cryptographic digest (e.g. SHA-256) directly to downstream inference runtimes.
+   Path-based validation (`safegguf_validate_path`) alone cannot prevent external file swapping if an attacker possesses write permissions on the file path between validation and loader ingestion.
 5. **`PASS` Scope:** `PASS` means the file satisfies the selected SafeGGUF structural, arithmetic, and resource-policy checks. It is not a trust or malware verdict for model behavior, templates, or downstream runtime code.
 
 ### Immutable CAS Example (Stage, Validate, Digest-Pin, Load)

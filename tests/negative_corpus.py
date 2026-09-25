@@ -92,6 +92,8 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 SAFEGGUF_BIN = os.path.join(REPO_ROOT, "zig-out", "bin", "safegguf")
+if sys.platform == "win32" and not SAFEGGUF_BIN.endswith(".exe") and os.path.exists(SAFEGGUF_BIN + ".exe"):
+    SAFEGGUF_BIN += ".exe"
 NEGATIVE_DIR = os.path.join(SCRIPT_DIR, "fixtures", "negative")
 
 BUG_CLASSES = ("parse", "int-overflow", "dims", "types", "alloc", "metadata")

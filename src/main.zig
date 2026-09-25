@@ -68,9 +68,10 @@ fn run() anyerror!void {
     }
 
     var endian: std.builtin.Endian = .little;
+    var auto_endian: bool = false;
     var format: OutputFormat = .text;
     var profile: types.Profile = .gguf_spec;
-    var limit = limits.Limits{};
+    var limit = limits.Limits.initFromEnv();
 
     // The variable-array cap is a sub-limit: max_array_elements is checked
     // first, so an override above it could never take effect (contradictory).
@@ -79,13 +80,15 @@ fn run() anyerror!void {
     while (args.next()) |arg| {
         if (std.mem.eql(u8, arg, "--endian")) {
             const val_arg = args.next() orelse {
-                try stderr.print("Error: --endian requires 'little' or 'big'\n", .{});
+                try stderr.print("Error: --endian requires 'little', 'big', or 'auto'\n", .{});
                 std.process.exit(64);
             };
             if (std.mem.eql(u8, val_arg, "big")) {
                 endian = .big;
             } else if (std.mem.eql(u8, val_arg, "little")) {
                 endian = .little;
+            } else if (std.mem.eql(u8, val_arg, "auto")) {
+                auto_endian = true;
             } else {
                 try stderr.print("Error: invalid endian value '{s}'\n", .{val_arg});
                 std.process.exit(64);
@@ -133,6 +136,38 @@ fn run() anyerror!void {
                 std.process.exit(64);
             }
             limit.max_variable_array_elements = parsed;
+        } else if (std.mem.eql(u8, arg, "--max-memory-mb")) {
+            const val_arg = args.next() orelse {
+                try stderr.print("Error: --max-memory-mb requires a positive integer N\n", .{});
+                std.process.exit(64);
+            };
+            const parsed = std.fmt.parseInt(u64, val_arg, 10) catch {
+                try stderr.print("Error: invalid --max-memory-mb value '{s}'\n", .{val_arg});
+                std.process.exit(64);
+            };
+            if (parsed == 0) {
+                try stderr.print("Error: --max-memory-mb must be greater than 0\n", .{});
+                std.process.exit(64);
+            }
+            const bytes = std.math.mul(u64, parsed, 1024 * 1024) catch {
+                try stderr.print("Error: --max-memory-mb value '{s}' is out of range\n", .{val_arg});
+                std.process.exit(64);
+            };
+            limit.max_total_alloc_bytes = bytes;
+        } else if (std.mem.eql(u8, arg, "--max-work-budget")) {
+            const val_arg = args.next() orelse {
+                try stderr.print("Error: --max-work-budget requires a positive integer N\n", .{});
+                std.process.exit(64);
+            };
+            const parsed = std.fmt.parseInt(u64, val_arg, 10) catch {
+                try stderr.print("Error: invalid --max-work-budget value '{s}'\n", .{val_arg});
+                std.process.exit(64);
+            };
+            if (parsed == 0) {
+                try stderr.print("Error: --max-work-budget must be greater than 0\n", .{});
+                std.process.exit(64);
+            }
+            limit.max_work_units = parsed;
         } else {
             // Fail closed: reject unknown arguments immediately
             try stderr.print("Error: unknown argument '{s}'\n\n", .{arg});
@@ -202,7 +237,11 @@ fn run() anyerror!void {
 
     // High-level Validator automatically manages QuotaAllocator and WorkBudget
     var val = Validator.init(gpa.allocator(), limit, profile);
-    val.endian = endian;
+    if (auto_endian) {
+        val.endian = safegguf.parser.detectEndianness(r) orelse .little;
+    } else {
+        val.endian = endian;
+    }
 
     // Diagnostics channel: parse/structural raise sites snapshot their position
     // into parse_ctx (via WorkBudget.ctx) so a rejection can be rendered with
@@ -451,12 +490,14 @@ fn printUsage(writer: anytype) !void {
     try writer.print("SafeGGUF v{s} - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{build_info.version});
     try writer.print("Usage: safegguf inspect <path_to_model.gguf> [options]\n", .{});
     try writer.print("Options:\n", .{});
-    try writer.print("  --endian <little|big>           Byte order (default: little)\n", .{});
+    try writer.print("  --endian <little|big|auto>      Byte order (default: little)\n", .{});
     try writer.print("  --format <text|json>            Output format (default: text)\n", .{});
     try writer.print("  --profile <gguf-spec|llama-cpp> Validation profile (default: gguf-spec):\n", .{});
     try writer.print("                                    gguf-spec: resource-bounded GGUF v3 structural safe subset\n", .{});
     try writer.print("                                    llama-cpp: ggml 0.23.0 safe pre-admission subset\n", .{});
     try writer.print("  --max-variable-array-elements <N> String/nested-array element sanity cap (default: {d})\n", .{(limits.Limits{}).max_variable_array_elements});
+    try writer.print("  --max-memory-mb <N>             Maximum allocation quota in MiB (default: 128)\n", .{});
+    try writer.print("  --max-work-budget <N>           Maximum logical work units budget (default: 10000000)\n", .{});
     try writer.print("  --help, -h                      Display this help message and exit\n", .{});
     try writer.print("  --version                       Print version and build provenance and exit\n", .{});
 }
