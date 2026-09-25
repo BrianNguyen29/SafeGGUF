@@ -338,6 +338,16 @@ def test_io_error():
     # Provenance accompanies ERROR JSON too (default gguf-spec profile).
     assert data["type_layout_source"] == GGML_PROVENANCE
 
+    # 3. Non-regular path target (a directory) must fail closed as an IO error
+    #    instead of surfacing as an opaque mid-parse read failure. Windows
+    #    rejects directory opens earlier, hence the two accepted error codes.
+    rc, stdout, stderr = run_cli("inspect", FIXTURES, "--format", "json")
+    assert rc == 74, f"Expected returncode 74 (EX_IOERR) for a directory path, got {rc}\nStdout: {stdout}\nStderr: {stderr}"
+    data = json.loads(stdout)
+    assert data["status"] == "ERROR", f"Expected status ERROR, got {data['status']}"
+    assert data["error_code"] in ("E_FILE_STAT_FAILED", "E_FILE_OPEN_FAILED"), data
+    assert data["type_layout_source"] == GGML_PROVENANCE
+
     print("  [ok] IO error tests passed with exit code 74 and status ERROR.")
 
 def test_help():
