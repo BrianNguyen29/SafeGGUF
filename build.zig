@@ -43,6 +43,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     lib.root_module.addImport("safegguf", safegguf_mod);
+    lib.root_module.addOptions("build_options", build_options);
     b.installArtifact(lib);
 
     // C-ABI Static Library
@@ -53,6 +54,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     static_lib.root_module.addImport("safegguf", safegguf_mod);
+    static_lib.root_module.addOptions("build_options", build_options);
     b.installArtifact(static_lib);
 
     const tests = b.addTest(.{

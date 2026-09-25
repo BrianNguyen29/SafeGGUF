@@ -137,6 +137,35 @@ def fuzz_options_enums():
             f"expected 64 + InvalidEndian, got rc={rc} error={err_code}",
         )
 
+    # Test non-NULL reserved pointer must fail closed with exit 64:
+    dummy_ptr = ctypes.c_void_p(0xDEADBEEF)
+    opts = SafeggufOptionsV1(
+        struct_size=correct_size,
+        profile=0,
+        endian=0,
+        max_alloc_bytes=0,
+        max_work_units=0,
+        max_scanned_bytes=0,
+        reserved=dummy_ptr,
+    )
+    res = SafeggufResult()
+    rc = lib.safegguf_validate_path_v1(str(VALID_FIXTURE).encode("utf-8"), ctypes.byref(opts), ctypes.byref(res))
+    err_code = res.error_code.decode("utf-8", errors="replace")
+    record(
+        "reserved!=NULL",
+        rc == Status.USAGE_ERROR and "E_USAGE_INVALID_OPTIONS" in err_code,
+        f"expected 64 + E_USAGE_INVALID_OPTIONS, got rc={rc} error={err_code}",
+    )
+
+    # Early options validation with non-existent path must return 64, not 74:
+    rc = lib.safegguf_validate_path_v1(b"C:\\__non_existent_file__.gguf", ctypes.byref(opts), ctypes.byref(res))
+    err_code = res.error_code.decode("utf-8", errors="replace")
+    record(
+        "reserved!=NULL with non-existent file returns 64 (pre-validation)",
+        rc == Status.USAGE_ERROR and "E_USAGE_INVALID_OPTIONS" in err_code,
+        f"expected 64 + E_USAGE_INVALID_OPTIONS, got rc={rc} error={err_code}",
+    )
+
 def fuzz_path_boundaries():
     print("\n--- Fuzzing 3: Path Boundaries & Malformed Strings ---")
     res = SafeggufResult()

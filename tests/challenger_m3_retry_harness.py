@@ -246,7 +246,7 @@ def suite_network_adversarial():
     t = data.get("triage", {})
     record(
         "NET-AUTO-UNREACHABLE-FALLBACK",
-        rc == 0 and t.get("engine") in ("offline_deterministic_fallback", "offline_bayesian_fallback") and "fallback" in t.get("rationale", "").lower(),
+        rc == 0 and t.get("engine") == "offline_deterministic_fallback" and "fallback" in t.get("rationale", "").lower(),
         f"engine={t.get('engine')}, rc={rc}"
     )
 

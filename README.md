@@ -130,9 +130,9 @@ SafeGGUF implements a deterministic, fail-closed exit taxonomy:
 
 | Exit Code | Constant | Meaning | Action in Ingress Pipeline |
 | :---: | :--- | :--- | :--- |
-| **`0`** | `EX_OK` | **PASS**: Model satisfies all structural & arithmetic invariants | **Admit to inference engine** |
-| **`2`** | `EX_REJECT` | **REJECT**: Malformed header, arithmetic overflow, or tamper | **Hard Drop & quarantine** |
-| **`64`** | `EX_USAGE` | **USAGE**: Invalid CLI parameters or flags | Reject invocation / fix script |
+| **`0`** | `EX_OK` | **PASS**: Model satisfies all structural & arithmetic invariants | **`STRUCTURALLY_ACCEPTED`** $\rightarrow$ Proceed to downstream policy |
+| **`2`** | `EX_REJECT` | **REJECT**: Malformed header, arithmetic overflow, or tamper | **`HARD_DROP_INGRESS`** & quarantine |
+| **`64`** | `EX_USAGE` | **USAGE**: Invalid CLI parameters or options | Reject invocation / fix script |
 | **`70`** | `EX_SOFTWARE` | **SOFTWARE**: Internal invariant error or host OOM | Alert operations / retry |
 | **`74`** | `EX_IOERR` | **IOERR**: File missing, unreadable, or storage failure | Check volume mount / disk |
 
@@ -226,9 +226,9 @@ docker build -t safegguf:v0.3.6 .
 docker run --rm -v $(pwd)/models:/models:ro safegguf:v0.3.6 inspect /models/model.gguf
 ```
 
-### 2. Kubernetes Ingress InitContainer
+### 2. Kubernetes Ingress InitContainer & Cryptographic Handoff
 
-Deploy SafeGGUF as an admission firewall inside your inference Pods before `llama.cpp` or `vLLM` starts:
+Deploy SafeGGUF as an admission firewall inside your inference Pods before `llama.cpp` or `vLLM` starts, utilizing an in-memory ephemeral volume for the **Anti-TOCTOU Content-Hash Attestation** (see [`deploy/k8s/safegguf-initcontainer.yaml`](deploy/k8s/safegguf-initcontainer.yaml)):
 
 ```yaml
 apiVersion: v1
@@ -241,9 +241,13 @@ spec:
     - name: model-volume
       persistentVolumeClaim:
         claimName: models-pvc
+    - name: attestation-volume
+      emptyDir:
+        medium: Memory
   initContainers:
+    # Phase 1: Fail-closed structural & arithmetic inspection
     - name: safegguf-firewall
-      image: ghcr.io/briannguyen29/safegguf:v0.3.6
+      image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
       command:
         - /usr/local/bin/safegguf
         - inspect
@@ -252,10 +256,6 @@ spec:
         - llama-cpp
         - --endian
         - auto
-      resources:
-        limits:
-          cpu: "500m"
-          memory: "128Mi"
       volumeMounts:
         - name: model-volume
           mountPath: /models
@@ -265,10 +265,38 @@ spec:
         readOnlyRootFilesystem: true
         runAsNonRoot: true
         runAsUser: 65532
+
+    # Phase 2: Cryptographic SHA-256 digest attestation into in-memory CAS
+    - name: safegguf-attestation-generator
+      image: busybox:1.36-musl
+      command:
+        - /bin/sh
+        - -c
+        - sha256sum /models/model.gguf > /attestation/model.gguf.sha256
+      volumeMounts:
+        - name: model-volume
+          mountPath: /models
+          readOnly: true
+        - name: attestation-volume
+          mountPath: /attestation
+
   containers:
+    # Serving Container: Verifies hash before loading weights (Anti-TOCTOU Gate)
     - name: llama-cpp-server
       image: ghcr.io/ggerganov/llama.cpp:server
-      # Starts ONLY if the InitContainer above exited with code 0 (PASS)
+      command:
+        - /bin/sh
+        - -c
+        - |
+          sha256sum -c /attestation/model.gguf.sha256
+          exec /server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080
+      volumeMounts:
+        - name: model-volume
+          mountPath: /models
+          readOnly: true
+        - name: attestation-volume
+          mountPath: /attestation
+          readOnly: true
 ```
 
 ---
@@ -292,12 +320,13 @@ python tools/safegguf-triage/safegguf_triage.py /path/to/model.gguf --mode offli
   "safegguf_exit_code": 2,
   "error_code": "E_ArithmeticOverflow",
   "triage": {
-    "engine": "offline_bayesian_rule_engine",
+    "engine": "deterministic_rule_classifier",
+    "structural_verdict": "REJECT",
     "risk_score": 0.980,
+    "risk_band": "Critical",
     "severity": "Critical",
     "threat_category": "Arithmetic-Exploit",
-    "downstream_exploit_prob": 0.95,
-    "recommendation": ">>> HARD_DROP_INGRESS <<<",
+    "recommendation": "HARD_DROP_INGRESS",
     "rationale": "Rejected by SafeGGUF with error code 'E_ArithmeticOverflow' in category 'arithmetic'."
   }
 }
@@ -326,7 +355,7 @@ SafeGGUF has been subjected to continuous multi-agent adversarial auditing and e
 | 09 | Python Bindings Integration           | Path & Raw FD validation    | 10 / 10 suites    | PASS (100.0%)   |
 | 10 | C-ABI Adversarial Probes              | NULL, handle 0/-1, TOCTOU   | 57 / 57 probes    | PASS (100.0%)   |
 | 11 | C-ABI Deep Stress & Concurrency       | 0..100k chars, 32 threads   | 48 / 48 probes    | PASS (100.0%)   |
-| 12 | Hybrid Triage Unit & Integration      | Bayesian logic, JSON/Text   | 38 / 38 tests     | PASS (100.0%)   |
+| 12 | Hybrid Triage Unit & Integration      | Rule logic, JSON/Text       | 39 / 39 tests     | PASS (100.0%)   |
 | 13 | Triage Challenger 1 Probing           | Security fixtures matrix    | 42 / 42 probes    | PASS (100.0%)   |
 | 14 | Triage Challenger 2 Probing           | Zero leakage (39 exploits:0)| 56 / 56 probes    | PASS (100.0%)   |
 | 15 | Triage Network Adversarial Stress     | Socket timeout, 502, HTML   | 45 / 45 tests     | PASS (100.0%)   |

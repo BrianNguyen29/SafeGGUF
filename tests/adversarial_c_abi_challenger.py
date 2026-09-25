@@ -233,7 +233,8 @@ def run_tests():
         assert lib.safegguf_validate_path(None, 0, 0) == 64
         assert lib.safegguf_validate_fd(0, 0, 0) == 74
         assert lib.safegguf_validate_fd(-1, 0, 0) == 74
-        assert lib.safegguf_validate_path(b"C:\\__non_existent__.gguf", 999, -999) == 74
+        assert lib.safegguf_validate_path(b"C:\\__non_existent__.gguf", 0, 0) == 74
+        assert lib.safegguf_validate_path(b"C:\\__non_existent__.gguf", 999, -999) == 64
     check("1,000 rapid adversarial iterations completed cleanly without crash", True)
 
     print("\n--- Test Suite 7: Python Binding (safegguf-py) Guardrails ---")

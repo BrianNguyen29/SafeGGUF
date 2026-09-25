@@ -54,8 +54,7 @@ def validate_json_schema(data: Dict[str, Any], expected_exit: Optional[int] = No
 
     triage_keys = [
         "engine", "score", "risk_score", "severity", "category",
-        "threat_category", "noul", "downstream_exploit_prob",
-        "action", "recommendation", "rationale"
+        "threat_category", "action", "recommendation", "rationale"
     ]
     for k in triage_keys:
         if k not in triage:
@@ -66,14 +65,15 @@ def validate_json_schema(data: Dict[str, Any], expected_exit: Optional[int] = No
         return False, f"score ({triage['score']}) != risk_score ({triage['risk_score']})"
     if triage["category"] != triage["threat_category"]:
         return False, f"category != threat_category"
-    if triage["noul"] != triage["downstream_exploit_prob"]:
-        return False, f"noul != downstream_exploit_prob"
+    if "noul" in triage and "downstream_exploit_prob" in triage:
+        if triage["noul"] != triage["downstream_exploit_prob"]:
+            return False, f"noul != downstream_exploit_prob"
     if triage["action"] != triage["recommendation"]:
         return False, f"action != recommendation"
 
     if not (0.0 <= triage["score"] <= 1.0):
         return False, f"Score out of bounds: {triage['score']}"
-    if not (0.0 <= triage["noul"] <= 1.0):
+    if "noul" in triage and not (0.0 <= triage["noul"] <= 1.0):
         return False, f"Noul out of bounds: {triage['noul']}"
 
     if triage["severity"] not in ("None", "Low", "Medium", "High", "Critical"):
@@ -417,7 +417,7 @@ def probe_env_and_fallback():
     ok = (rc == 0)
     try:
         j = json.loads(out)
-        ok = ok and (j["triage"]["engine"] in ("deterministic_rule_classifier", "offline_bayesian_rule_engine"))
+        ok = ok and (j["triage"]["engine"] in ("deterministic_rule_classifier", "offline_rule_classifier"))
     except Exception:
         ok = False
     record("Auto mode with empty TYPESAFE_API_KEY falls back to offline engine", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
@@ -427,7 +427,7 @@ def probe_env_and_fallback():
     ok = (rc == 0)
     try:
         j = json.loads(out)
-        ok = ok and (j["triage"]["engine"] in ("online_jev_system_one", "offline_deterministic_fallback", "offline_bayesian_fallback"))
+        ok = ok and (j["triage"]["engine"] in ("online_jev_system_one", "offline_deterministic_fallback"))
     except Exception:
         ok = False
     record("Auto mode with dummy key executes without crash", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
@@ -437,7 +437,7 @@ def probe_env_and_fallback():
     ok = (rc == 0)
     try:
         j = json.loads(out)
-        ok = ok and (j["triage"]["engine"] in ("deterministic_rule_classifier", "offline_bayesian_rule_engine"))
+        ok = ok and (j["triage"]["engine"] in ("deterministic_rule_classifier", "offline_rule_classifier"))
     except Exception:
         ok = False
     record("Explicit offline mode unconditionally uses offline engine", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")

@@ -111,9 +111,9 @@ finally:
 
 ---
 
-## 4. Triển Khai Kubernetes Cloud-Native (InitContainer Pattern)
+## 4. Triển Khai Kubernetes Cloud-Native & Anti-TOCTOU Handoff
 
-Mẫu Pod Deployment trong Kubernetes áp dụng mô hình InitContainer siêu nhẹ:
+Mẫu Pod Deployment trong Kubernetes áp dụng mô hình InitContainer 2 giai đoạn với chốt chặn mật mã Content-Hash Handoff (xem chi tiết tại [`deploy/k8s/safegguf-initcontainer.yaml`](../deploy/k8s/safegguf-initcontainer.yaml) và [`deploy/k8s/attestation_handoff.sh`](../deploy/k8s/attestation_handoff.sh)):
 
 ```yaml
 apiVersion: v1
@@ -129,9 +129,24 @@ spec:
       emptyDir:
         medium: Memory
   initContainers:
+    # Giai đoạn 1: Thẩm định cấu trúc và số học với SafeGGUF (Fail-closed exit 2)
     - name: safegguf-validator
       image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
-      command: ["safegguf", "inspect", "/models/model.gguf", "--profile", "llama-cpp"]
+      command: ["/usr/local/bin/safegguf", "inspect", "/models/model.gguf", "--profile", "llama-cpp", "--format", "json", "--endian", "auto"]
+      volumeMounts:
+        - name: model-storage
+          mountPath: /models
+          readOnly: true
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65532
+
+    # Giai đoạn 2: Tạo attestation digest SHA-256 vào volume bộ nhớ tạm (CAS)
+    - name: safegguf-attestation-generator
+      image: busybox:1.36-musl
+      command: ["/bin/sh", "-c", "sha256sum /models/model.gguf > /attestation/model.gguf.sha256"]
       volumeMounts:
         - name: model-storage
           mountPath: /models
@@ -142,22 +157,29 @@ spec:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
         runAsNonRoot: true
-        runAsUser: 65532
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
+        runAsUser: 65534
+
   containers:
+    # Tầng Inference Runtime: Đối soát attestation hash trước khi mmap trọng số
     - name: llama-cpp-server
       image: ghcr.io/ggerganov/llama.cpp:server
-      command: ["/server", "-m", "/models/model.gguf"]
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -euo pipefail
+          echo "[Inference Gate] Validating cryptographic attestation..."
+          sha256sum -c /attestation/model.gguf.sha256
+          exec /server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080
       volumeMounts:
         - name: model-storage
           mountPath: /models
           readOnly: true
+        - name: attestation-storage
+          mountPath: /attestation
+          readOnly: true
 ```
-> **Đặc tính Fail-Closed**: Nếu tệp model bị lỗi hoặc độc hại, container `safegguf-validator` sẽ thoát với mã `exit 2`, ngăn chặn toàn bộ Pod khởi động, cô lập hoàn toàn rủi ro khỏi cụm máy chủ.
+> **Đặc tính Fail-Closed & Anti-TOCTOU**: Nếu tệp model bị lỗi hoặc độc hại, container `safegguf-validator` sẽ thoát với mã `exit 2`, ngăn chặn toàn bộ Pod khởi động. Nếu tệp model bị tráo đổi sau khi kiểm tra, bước `sha256sum -c` tại container serving sẽ phát hiện sai lệch và từ chối tải trọng số vào bộ nhớ.
 
 ---
 

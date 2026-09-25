@@ -3,7 +3,7 @@
 safegguf-triage: Production Hybrid Model Admission & Semantic Security Triage Tool.
 
 Integrates SafeGGUF deterministic verification with TypeSafe Jev (System One) semantic
-risk scoring. Supports seamless automatic fallback to the Offline Deterministic Bayesian
+risk scoring. Supports seamless automatic fallback to the Offline Deterministic Rule
 Engine for air-gapped, zero-cloud production environments.
 """
 
@@ -70,7 +70,7 @@ def run_safegguf(binary: str, file_path: str, profile: str = "llama-cpp") -> Dic
             "message": str(e)
         }
 
-def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
+def offline_rule_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
     """
     Deterministic rule-based triage engine for air-gapped environments.
     Maps structured SafeGGUF diagnostics to validated risk scoring.
@@ -91,8 +91,6 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
             "severity": "None",
             "category": "Structural-Pass",
             "threat_category": "Structural-Pass",
-            "noul": 0.00,
-            "downstream_exploit_prob": 0.00,
             "action": "STRUCTURALLY_ACCEPTED",
             "recommendation": "STRUCTURALLY_ACCEPTED",
             "rationale": "Model strictly satisfies structural, arithmetic, and resource limits. Semantic and weight safety must be verified by downstream admission policy."
@@ -101,15 +99,13 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
     if exit_code == 74 or "FILE_OPEN" in err_code or err_code == "E_FILE_OPEN_FAILED":
         return {
             "engine": "deterministic_rule_classifier",
-            "structural_verdict": "REJECT",
+            "structural_verdict": "ERROR",
             "score": 0.500,
             "risk_score": 0.500,
             "risk_band": "High",
             "severity": "High",
             "category": "IO-Error",
             "threat_category": "IO-Error",
-            "noul": 0.500,
-            "downstream_exploit_prob": 0.500,
             "action": "HARD_DROP_INGRESS",
             "recommendation": "HARD_DROP_INGRESS",
             "rationale": f"I/O or filesystem error encountered: {err_code or msg or 'E_FILE_OPEN_FAILED'}."
@@ -151,13 +147,11 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
             score = 0.980
             sev = "Critical"
             cat = "Arithmetic-Exploit"
-            noul = 0.95
             rationale = "Signed 64-bit arithmetic overflow during tensor dimension/product validation."
         elif key == "general.alignment" or "alignment" in str(msg).lower():
             score = 0.450
             sev = "Medium"
             cat = "Compatibility-Divergence"
-            noul = 0.40
             rationale = "Non-power-of-two alignment divergence (allowed under gguf-spec, rejected under llama-cpp)."
         else:
             diag_text = (str(msg) + " " + " ".join(str(f.get("message", "")) for f in findings if isinstance(f, dict))).lower()
@@ -165,13 +159,11 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
                 score = 0.980
                 sev = "Critical"
                 cat = "Arithmetic-Exploit"
-                noul = 0.95
                 rationale = "Arithmetic overflow detected in tensor geometry diagnostics."
             else:
                 score = 0.450
                 sev = "Medium"
                 cat = "Compatibility-Divergence"
-                noul = 0.40
                 rationale = "Upstream compatibility invariant divergence."
 
     # Branch 2: Genuine arithmetic integer overflow exploits
@@ -184,7 +176,6 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
         score = 0.980
         sev = "Critical"
         cat = "Arithmetic-Exploit"
-        noul = 0.95
         rationale = f"Arithmetic overflow or integer exploit detected ({err_code})."
 
     # Branch 3: Resource exhaustion and quota ceilings
@@ -198,7 +189,6 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
         score = 0.750
         sev = "High"
         cat = "Resource-Exhaustion"
-        noul = 0.70
         rationale = f"Resource exhaustion or quota ceiling exceeded ({err_code})."
 
     # Branch 4: Deep diagnosis of E_NonContiguousTensorOffset
@@ -207,19 +197,16 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
             score = 0.720
             sev = "High"
             cat = "Alignment-Tamper"
-            noul = 0.65
             rationale = f"Tensor payload overlap detected: offset {offset} < expected {expected_offset}."
         elif file_size is not None and offset is not None and offset > file_size:
             score = 0.720
             sev = "High"
             cat = "Alignment-Tamper"
-            noul = 0.65
             rationale = f"Out-of-bounds tensor offset detected: offset {offset} exceeds file size {file_size}."
         elif alignment is not None and offset is not None and offset % alignment != 0:
             score = 0.720
             sev = "High"
             cat = "Alignment-Tamper"
-            noul = 0.65
             rationale = f"Misaligned tensor offset: offset {offset} is not divisible by alignment {alignment}."
         elif (
             offset is not None
@@ -231,13 +218,11 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
             score = 0.450
             sev = "Medium"
             cat = "Compatibility-Divergence"
-            noul = 0.40
             rationale = f"Non-contiguous aligned tensor gap (offset {offset} > expected {expected_offset})."
         else:
             score = 0.450
             sev = "Medium"
             cat = "Compatibility-Divergence"
-            noul = 0.40
             rationale = f"Non-contiguous tensor offset ({err_code})."
 
     # Branch 5: Structural alignment and zero-padding tampering
@@ -251,7 +236,6 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
         score = 0.720
         sev = "High"
         cat = "Alignment-Tamper"
-        noul = 0.65
         rationale = f"Structural alignment or zero-padding tampering detected ({err_code})."
 
     # Branch 6: Compatibility divergence
@@ -264,7 +248,6 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
         score = 0.450
         sev = "Medium"
         cat = "Compatibility-Divergence"
-        noul = 0.40
         rationale = f"Compatibility divergence detected ({err_code})."
 
     # Branch 7: Malformed headers, syntax errors, and steganography
@@ -272,7 +255,6 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
         score = 0.520
         sev = "Medium"
         cat = "Malformed-Header"
-        noul = 0.42
         rationale = f"Rejected by SafeGGUF with error code '{err_code}' in category '{category}'."
 
     rec = "HARD_DROP_INGRESS" if score >= 0.50 else "CANARY_SANDBOX"
@@ -286,12 +268,13 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
         "severity": sev,
         "category": cat,
         "threat_category": cat,
-        "noul": score,
-        "downstream_exploit_prob": score,
         "action": rec,
         "recommendation": rec,
         "rationale": rationale,
     }
+
+# Backward compatibility alias
+offline_bayesian_triage = offline_rule_triage
 
 def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback: bool = True) -> Dict[str, Any]:
     """
@@ -305,6 +288,16 @@ def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback
     import urllib.request
     import urllib.error
     import ssl
+
+    # ARCHITECTURAL INVARIANT: structural_verdict is strictly and solely derived
+    # from SafeGGUF core exit code. Jev risk score can NEVER override or alter this verdict.
+    core_code = safegguf_res.get("exit_code")
+    if core_code == 0:
+        structural_verdict = "STRUCTURALLY_ACCEPTED"
+    elif core_code == 2:
+        structural_verdict = "REJECT"
+    else:
+        structural_verdict = "ERROR"
 
     req_data = {
         "model": "jev-latest",
@@ -351,31 +344,38 @@ def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback
 
             if score < 0.15:
                 sev = "None"
-                rec = "STRUCTURALLY_ACCEPTED"
             elif score < 0.35:
                 sev = "Low"
-                rec = "STRUCTURALLY_ACCEPTED"
             elif score < 0.65:
                 sev = "Medium"
-                rec = "CANARY_SANDBOX"
             elif score < 0.85:
                 sev = "High"
-                rec = "HARD_DROP_INGRESS"
             else:
                 sev = "Critical"
+
+            # Downstream admission recommendation respects structural verdict first:
+            # If SafeGGUF rejected or errored, policy MUST NOT admit to production.
+            if structural_verdict in ("REJECT", "ERROR"):
                 rec = "HARD_DROP_INGRESS"
+            else:
+                if score < 0.35:
+                    rec = "STRUCTURALLY_ACCEPTED"
+                elif score < 0.65:
+                    rec = "CANARY_SANDBOX"
+                else:
+                    rec = "HARD_DROP_INGRESS"
 
             return {
                 "engine": "online_jev_system_one",
-                "structural_verdict": "STRUCTURALLY_ACCEPTED" if score < 0.20 else "REJECT",
+                "structural_verdict": structural_verdict,
                 "score": score,
                 "risk_score": score,
                 "risk_band": sev,
                 "severity": sev,
                 "category": cat,
                 "threat_category": cat,
-                "noul": score,
-                "downstream_exploit_prob": score,
+                "noul": noul,
+                "downstream_exploit_prob": noul,
                 "action": rec,
                 "recommendation": rec,
                 "rationale": answers.get("threat_category", {}).get("rationale", "Evaluated by online TypeSafe Jev System One model."),
@@ -383,8 +383,9 @@ def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback
     except Exception as exc:
         if not allow_fallback:
             raise ConnectionError(f"Online triage failed to connect to TypeSafe Jev API: {exc}") from exc
-        fallback = offline_bayesian_triage(safegguf_res)
+        fallback = offline_rule_triage(safegguf_res)
         fallback["engine"] = "offline_deterministic_fallback"
+        fallback["structural_verdict"] = structural_verdict
         fallback["rationale"] = f"Online API call failed ({type(exc).__name__}: {exc}); fallback to offline rule classifier: " + fallback.get("rationale", "")
         return fallback
 
@@ -399,12 +400,12 @@ def triage_model(file_path: str, profile: str = "llama-cpp", mode: str = "auto")
             raise ValueError("Mode 'online' selected but TYPESAFE_API_KEY environment variable is not set.")
         triage_info = online_jev_triage(raw_res, api_key, allow_fallback=False)
     elif mode == "offline":
-        triage_info = offline_bayesian_triage(raw_res)
+        triage_info = offline_rule_triage(raw_res)
     else:  # auto
         if api_key:
             triage_info = online_jev_triage(raw_res, api_key, allow_fallback=True)
         else:
-            triage_info = offline_bayesian_triage(raw_res)
+            triage_info = offline_rule_triage(raw_res)
 
     exit_code = raw_res.get("exit_code", 2)
     err_code = raw_res.get("error_code") or ""

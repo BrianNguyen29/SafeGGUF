@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-tests/test_triage.py - Comprehensive Test Suite for safegguf-triage CLI & Bayesian Engine.
+tests/test_triage.py - Comprehensive Test Suite for safegguf-triage CLI & Deterministic Rule Engine.
 
 Covers Milestone M3 / Requirement R3:
 1. Benign Model Admission (score ~0.010, Benign, ADMIT_PRODUCTION, exit 0)
@@ -28,6 +28,13 @@ TRIAGE_SCRIPT = REPO_ROOT / "tools" / "safegguf-triage" / "safegguf_triage.py"
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
 NEGATIVE_DIR = FIXTURES_DIR / "negative"
 SECURITY_DIR = FIXTURES_DIR / "security_testbed"
+
+
+def setUpModule():
+    """Ensure deterministic security fixtures exist even on clean checkouts."""
+    if not SECURITY_DIR.exists() or not any(SECURITY_DIR.glob("*.gguf")):
+        generator_script = REPO_ROOT / "tests" / "generate_security_testbed.py"
+        subprocess.run([sys.executable, str(generator_script)], check=True)
 
 
 def run_triage(
@@ -111,7 +118,7 @@ class TestTriageArithmeticExploits(unittest.TestCase):
         self.assertGreaterEqual(t["risk_score"], 0.950)
         self.assertEqual(t["threat_category"], "Arithmetic-Exploit")
         self.assertEqual(t["severity"], "Critical")
-        self.assertGreaterEqual(t["downstream_exploit_prob"], 0.90)
+        self.assertGreaterEqual(t["risk_score"], 0.90)
         self.assertEqual(t["recommendation"], "HARD_DROP_INGRESS")
 
     def test_cve_2026_27940_memsize_overflow(self):
@@ -394,8 +401,62 @@ class TestTriageModesAndFallback(unittest.TestCase):
             res = safegguf_triage.online_jev_triage({"status": "PASS", "exit_code": 0}, api_key="sk-test-mock-key")
             self.assertEqual(res["engine"], "online_jev_system_one")
             self.assertEqual(res["threat_category"], "Structural-Pass")
+            self.assertEqual(res["structural_verdict"], "STRUCTURALLY_ACCEPTED")
             self.assertEqual(res["action"], "STRUCTURALLY_ACCEPTED")
             self.assertAlmostEqual(res["risk_score"], 0.02)
+
+    def test_invariance_core_reject_with_jev_low_risk(self):
+        """P2 Regression: Core REJECT must NEVER be upgraded by low Jev risk score."""
+        from unittest.mock import patch, MagicMock
+        sys.path.insert(0, str(TRIAGE_SCRIPT.parent))
+        import safegguf_triage
+
+        # Jev claims low risk 0.01 and Structural-Pass, but SafeGGUF rejected (exit 2)
+        mock_resp_json = {
+            "model": "jev-latest",
+            "answers": {
+                "risk_score": {"score": 0.01, "confidence": 0.99},
+                "threat_category": {"choice": "Structural-Pass", "rationale": "Model claims to be clean."},
+                "exploit_prob": {"probability": 0.01}
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(mock_resp_json).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            res = safegguf_triage.online_jev_triage({"status": "REJECT", "exit_code": 2, "error_code": "E_ArithmeticOverflow"}, api_key="sk-test-mock-key")
+            # Invariant: structural_verdict MUST remain REJECT
+            self.assertEqual(res["structural_verdict"], "REJECT")
+            # Invariant: Admission action MUST drop because core rejected
+            self.assertEqual(res["action"], "HARD_DROP_INGRESS")
+
+    def test_invariance_core_pass_with_jev_high_risk(self):
+        """P2 Regression: Core PASS must preserve STRUCTURALLY_ACCEPTED even if Jev flags semantic risk."""
+        from unittest.mock import patch, MagicMock
+        sys.path.insert(0, str(TRIAGE_SCRIPT.parent))
+        import safegguf_triage
+
+        # Jev claims critical semantic risk 0.95, while SafeGGUF passed structural validation (exit 0)
+        mock_resp_json = {
+            "model": "jev-latest",
+            "answers": {
+                "risk_score": {"score": 0.95, "confidence": 0.99},
+                "threat_category": {"choice": "Semantic-Anomaly", "rationale": "Severe weight distortion."},
+                "exploit_prob": {"probability": 0.90}
+            }
+        }
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(mock_resp_json).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            res = safegguf_triage.online_jev_triage({"status": "PASS", "exit_code": 0}, api_key="sk-test-mock-key")
+            # Invariant: structural_verdict remains STRUCTURALLY_ACCEPTED
+            self.assertEqual(res["structural_verdict"], "STRUCTURALLY_ACCEPTED")
+            # But downstream policy drops due to high semantic risk score
+            self.assertEqual(res["action"], "HARD_DROP_INGRESS")
+            self.assertEqual(res["severity"], "Critical")
 
 
 class TestTriageOutputFormats(unittest.TestCase):

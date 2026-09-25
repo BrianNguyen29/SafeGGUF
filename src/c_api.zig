@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const safegguf = @import("root.zig");
 
 const types = safegguf.types;
@@ -6,8 +7,10 @@ const reader_mod = safegguf.reader;
 const limits = safegguf.limits;
 const Validator = safegguf.Validator;
 
+const version_z: [:0]const u8 = std.fmt.comptimePrint("{s}", .{build_options.version});
+
 pub export fn safegguf_version() [*:0]const u8 {
-    return "0.3.7-dev";
+    return version_z.ptr;
 }
 
 pub const OptionsV1 = extern struct {
@@ -52,23 +55,29 @@ fn populateResult(
     }
 }
 
-fn validateInternal(
-    file: std.fs.File,
-    file_size: u64,
-    options: ?*const OptionsV1,
-    profile_id: c_int,
-    endian_id: c_int,
-    out_result: ?*Result,
-) c_int {
-    // 1. Strict options validation if options struct is provided
+fn validateOptions(options: ?*const OptionsV1, out_result: ?*Result) ?c_int {
     if (options) |opts| {
         if (opts.struct_size != @sizeOf(OptionsV1)) {
             populateResult(out_result, 64, "E_USAGE_INVALID_OPTIONS", "usage", "options", "Invalid struct_size in safegguf_options_v1_t");
             return 64;
         }
+        if (opts.reserved != null) {
+            populateResult(out_result, 64, "E_USAGE_INVALID_OPTIONS", "usage", "options", "Reserved field must be NULL in safegguf_options_v1_t");
+            return 64;
+        }
+        if (opts.profile != 0 and opts.profile != 1) {
+            populateResult(out_result, 64, "E_USAGE_INVALID_PROFILE", "usage", "options", "Invalid profile_id: must be 0 (gguf-spec) or 1 (llama-cpp)");
+            return 64;
+        }
+        if (opts.endian != 0 and opts.endian != 1 and opts.endian != 2) {
+            populateResult(out_result, 64, "E_USAGE_INVALID_ENDIAN", "usage", "options", "Invalid endian_id: must be 0 (little), 1 (big), or 2 (auto)");
+            return 64;
+        }
     }
+    return null;
+}
 
-    // 2. Strict enum validation (no silent fallback!)
+fn validateEnums(profile_id: c_int, endian_id: c_int, out_result: ?*Result) ?c_int {
     if (profile_id != 0 and profile_id != 1) {
         populateResult(out_result, 64, "E_USAGE_INVALID_PROFILE", "usage", "options", "Invalid profile_id: must be 0 (gguf-spec) or 1 (llama-cpp)");
         return 64;
@@ -77,7 +86,17 @@ fn validateInternal(
         populateResult(out_result, 64, "E_USAGE_INVALID_ENDIAN", "usage", "options", "Invalid endian_id: must be 0 (little), 1 (big), or 2 (auto)");
         return 64;
     }
+    return null;
+}
 
+fn validateInternal(
+    file: std.fs.File,
+    file_size: u64,
+    options: ?*const OptionsV1,
+    profile_id: c_int,
+    endian_id: c_int,
+    out_result: ?*Result,
+) c_int {
     const profile: types.Profile = switch (profile_id) {
         1 => .llama_cpp,
         else => .gguf_spec,
@@ -92,7 +111,7 @@ fn validateInternal(
         else => .little,
     };
 
-    // 3. Resource limits: start from env / defaults, then override with options if specified
+    // Resource limits: start from env / defaults, then override with options if specified
     var lim = limits.Limits.initFromEnv();
     if (options) |opts| {
         if (opts.max_alloc_bytes > 0) lim.max_total_alloc_bytes = opts.max_alloc_bytes;
@@ -137,6 +156,9 @@ pub export fn safegguf_validate_path_v1(
     options: ?*const OptionsV1,
     out_result: ?*Result,
 ) c_int {
+    // 1. Strict options validation FIRST before any filesystem or path checks!
+    if (validateOptions(options, out_result)) |code| return code;
+
     const ptr = path_ptr orelse {
         populateResult(out_result, 64, "E_USAGE_NULL_PATH", "usage", "input", "Target path pointer is NULL");
         return 64;
@@ -148,7 +170,7 @@ pub export fn safegguf_validate_path_v1(
     }
 
     const profile_id = if (options) |o| o.profile else 1; // default llama-cpp
-    const endian_id = if (options) |o| o.endian else 2;   // default auto
+    const endian_id = if (options) |o| o.endian else 2; // default auto
 
     const file = std.fs.cwd().openFile(path_slice, .{}) catch {
         populateResult(out_result, 74, "E_FILE_OPEN_FAILED", "io", "filesystem", "Failed to open file on disk");
@@ -169,6 +191,9 @@ pub export fn safegguf_validate_fd_v1(
     options: ?*const OptionsV1,
     out_result: ?*Result,
 ) c_int {
+    // 1. Strict options validation FIRST before any descriptor or filesystem checks!
+    if (validateOptions(options, out_result)) |code| return code;
+
     const builtin = @import("builtin");
     if (builtin.os.tag == .windows) {
         if (handle_int <= 0) {
@@ -201,7 +226,7 @@ pub export fn safegguf_validate_fd_v1(
     }
 
     const profile_id = if (options) |o| o.profile else 1; // default llama-cpp
-    const endian_id = if (options) |o| o.endian else 2;   // default auto
+    const endian_id = if (options) |o| o.endian else 2; // default auto
 
     return validateInternal(file, stat.size, options, profile_id, endian_id, out_result);
 }
@@ -211,6 +236,9 @@ pub export fn safegguf_validate_path(
     profile_id: c_int,
     endian_id: c_int,
 ) c_int {
+    // 1. Strict enum validation FIRST!
+    if (validateEnums(profile_id, endian_id, null)) |code| return code;
+
     const ptr = path_ptr orelse return 64;
     const path_slice = std.mem.span(ptr);
     if (path_slice.len == 0 or path_slice.len > 4096) return 74;
@@ -227,6 +255,9 @@ pub export fn safegguf_validate_fd(
     profile_id: c_int,
     endian_id: c_int,
 ) c_int {
+    // 1. Strict enum validation FIRST!
+    if (validateEnums(profile_id, endian_id, null)) |code| return code;
+
     const builtin = @import("builtin");
     if (builtin.os.tag == .windows) {
         if (handle_int <= 0) return 74;
