@@ -1,6 +1,6 @@
 # SafeGGUF Production Readiness & Security Audit Report
 
-**Trạng thái Phán quyết**: **CERTIFIED ENTERPRISE PRODUCTION READY** (100% Đã Kiểm Chứng Thực Nghiệm)  
+**Trạng thái Phán quyết**: **INTERNAL SECURITY VERIFICATION PASSED** (Internal Security Verification Matrix)  
 **Phiên bản Phần mềm**: SafeGGUF v0.3.6 (Hardened Release)  
 **Thời gian Hoàn tất Kiểm toán**: 2026-09-25  
 **Phạm vi Kiểm toán**: Lõi Zig CLI, Thư viện C-ABI `libsafegguf`, Python Bindings `safegguf-py`, Hybrid Triage CLI `safegguf-triage`, Cấu hình Cloud-Native Docker/Kubernetes.
@@ -9,7 +9,7 @@
 
 ## 1. Tóm Tắt Điều Hành (Executive Summary)
 
-Đợt kiểm toán an ninh đối kháng và đánh giá mức độ sẵn sàng Production cho toàn bộ hệ sinh thái **SafeGGUF** đã được thực hiện độc lập, đa tầng và hoàn tất thành công 100%.
+Đợt kiểm toán an ninh đối kháng và đánh giá nội bộ mức độ sẵn sàng Production cho toàn bộ hệ sinh thái **SafeGGUF** đã được hoàn tất với bộ kiểm thử tự động đạt tỷ lệ vượt qua 100%.
 
 Toàn bộ 5 yêu cầu kỹ thuật (**R1 – R5**) và các tiêu chí chấp thuận (Acceptance Criteria) đã được kiểm chứng qua các bộ thử nghiệm tự động, bài test áp lực đối kháng (adversarial stress testing), kiểm tra chống tấn công tráo đổi tệp (**Anti-TOCTOU**), thẩm duyệt loại bỏ mã giả (Zero-Facade & Zero-Heuristics), và xác minh cơ chế vận hành độc lập (**Air-Gapped Offline Bayesian Fallback**).
 
@@ -53,7 +53,7 @@ Trong suốt chu trình kiểm toán đa tác tử, các chuyên gia phản bi�
 
 ---
 
-## 4. Chứng Nhận Các Trụ Cột Triển Khai (Component Certifications)
+## 4. Ma Trận Đánh Giá Các Trụ Cột Triển Khai (Component Verification Matrix)
 
 ### 4.1. Lõi Zig CLI (Core Engine)
 - Tự động nhận diện endianness (`--endian auto`) hoạt động hoàn hảo trên các model Big-Endian v2/v3 mà không cần cấu hình thủ công.
@@ -61,13 +61,13 @@ Trong suốt chu trình kiểm toán đa tác tử, các chuyên gia phản bi�
 
 ### 4.2. Thư Viện C-ABI & Python Bindings (`safegguf-py`)
 - C Header [`include/safegguf.h`](include/safegguf.h) và thư viện động/tĩnh (`safegguf.dll`, `libsafegguf.so`) sẵn sàng tích hợp trực tiếp vào các hệ thống backend C/C++, Go, Rust, Python.
-- Module Python cung cấp phương thức `safegguf.validate_fd(fd)`, giải quyết triệt để rủi ro tấn công tráo đổi file **TOCTOU** (Time-Of-Check to Time-Of-Use) bằng cách validate trực tiếp trên descriptor mở chế độ `O_RDONLY`.
+- Module Python cung cấp phương thức `safegguf.validate_fd(fd)`, phòng ngừa rủi ro tấn công tráo đổi file **TOCTOU** (Time-Of-Check to Time-Of-Use) khi downstream loader sử dụng chung file descriptor mở chế độ `O_RDONLY`.
 
 ### 4.3. Công Cụ Hybrid Triage (`safegguf-triage`)
 - Tích hợp linh hoạt 2 chế độ:
-  - **Online**: Kết nối mô hình phán đoán Jev System One (TypeSafe AI) khi có cấu hình `TYPESAFE_API_KEY`.
-  - **Offline (Air-Gapped)**: Tự động kích hoạt Offline Deterministic Bayesian Rule Engine, đảm bảo hoạt động an toàn trong môi trường mạng biệt lập với độ trễ $< 10\text{ ms}$, không tốn chi phí token.
-- Phán đoán typed judgments: Thang điểm `Score` (0.010 - 0.980), phân loại `Choice`, xác suất `Noul`, và 3 khuyến nghị hành động (`ADMIT_PRODUCTION`, `CANARY_SANDBOX`, `HARD_DROP_INGRESS`).
+  - **Online**: Kết nối mô hình phán đoán Jev System One (TypeSafe AI) qua verified TLS khi có cấu hình `TYPESAFE_API_KEY`.
+  - **Offline (Air-Gapped)**: Tự động kích hoạt Deterministic Rule Classifier, đảm bảo hoạt động an toàn trong môi trường mạng biệt lập với độ trễ $< 10\text{ ms}$, không tốn chi phí token.
+- Phán đoán typed judgments: Thang điểm `risk_score` (0.00 - 0.98), phân loại rủi ro cấu trúc, và phân định rõ ràng giữa `STRUCTURALLY_ACCEPTED` và quyết định semantic admission downstream.
 
 ### 4.4. Đóng Gói Cloud-Native & Kubernetes
 - Container image tối giản xây dựng qua [`Dockerfile`](Dockerfile) với dung lượng siêu nhẹ $< 5\text{ MB}$ trên nền tảng Distroless non-root (UID 65532).
@@ -77,4 +77,4 @@ Trong suốt chu trình kiểm toán đa tác tử, các chuyên gia phản bi�
 
 ## 5. Kết Luận & Phán Quyết Bàn Giao
 
-Hệ thống **SafeGGUF v0.3.6** chính thức đạt chứng nhận **ENTERPRISE PRODUCTION READY**. Tất cả 4 Milestones kỹ thuật đã hoàn thành xuất sắc, được bảo vệ bởi các rào chắn đối kháng cực hạn, không còn bất kỳ điểm nghẽn hay mã giả lập nào.
+Hệ thống **SafeGGUF** chính thức đạt trạng thái **INTERNAL SECURITY VERIFICATION PASSED**. Tất cả các rào chắn kiểm thử tự động, hợp đồng C-ABI, và cơ chế bảo vệ cấu trúc đều đã được kiểm chứng đầy đủ.

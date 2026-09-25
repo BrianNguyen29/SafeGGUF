@@ -72,8 +72,9 @@ def run_safegguf(binary: str, file_path: str, profile: str = "llama-cpp") -> Dic
 
 def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Deterministic rule-based triage engine for air-gapped, zero-Jev environments.
+    Deterministic rule-based triage engine for air-gapped environments.
     Maps structured SafeGGUF diagnostics to validated risk scoring.
+    Does NOT infer model trust or semantic safety: PASS yields STRUCTURALLY_ACCEPTED.
     """
     exit_code = safegguf_res.get("exit_code", 2)
     err_code = safegguf_res.get("error_code", "") or ""
@@ -82,29 +83,33 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
 
     if exit_code == 0:
         return {
-            "engine": "offline_bayesian_rule_engine",
-            "score": 0.010,
-            "risk_score": 0.010,
+            "engine": "deterministic_rule_classifier",
+            "structural_verdict": "STRUCTURALLY_ACCEPTED",
+            "score": 0.00,
+            "risk_score": 0.00,
+            "risk_band": "None",
             "severity": "None",
-            "category": "Benign",
-            "threat_category": "Benign",
-            "noul": 0.01,
-            "downstream_exploit_prob": 0.01,
-            "action": "ADMIT_PRODUCTION",
-            "recommendation": "ADMIT_PRODUCTION",
-            "rationale": "Model strictly satisfies all structural, arithmetic, and alignment checks."
+            "category": "Structural-Pass",
+            "threat_category": "Structural-Pass",
+            "noul": 0.00,
+            "downstream_exploit_prob": 0.00,
+            "action": "STRUCTURALLY_ACCEPTED",
+            "recommendation": "STRUCTURALLY_ACCEPTED",
+            "rationale": "Model strictly satisfies structural, arithmetic, and resource limits. Semantic and weight safety must be verified by downstream admission policy."
         }
 
     if exit_code == 74 or "FILE_OPEN" in err_code or err_code == "E_FILE_OPEN_FAILED":
         return {
-            "engine": "offline_bayesian_rule_engine",
+            "engine": "deterministic_rule_classifier",
+            "structural_verdict": "REJECT",
             "score": 0.500,
             "risk_score": 0.500,
+            "risk_band": "High",
             "severity": "High",
             "category": "IO-Error",
             "threat_category": "IO-Error",
-            "noul": 0.0,
-            "downstream_exploit_prob": 0.0,
+            "noul": 0.500,
+            "downstream_exploit_prob": 0.500,
             "action": "HARD_DROP_INGRESS",
             "recommendation": "HARD_DROP_INGRESS",
             "rationale": f"I/O or filesystem error encountered: {err_code or msg or 'E_FILE_OPEN_FAILED'}."
@@ -273,14 +278,16 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
     rec = "HARD_DROP_INGRESS" if score >= 0.50 else "CANARY_SANDBOX"
 
     return {
-        "engine": "offline_bayesian_rule_engine",
+        "engine": "deterministic_rule_classifier",
+        "structural_verdict": "REJECT",
         "score": score,
         "risk_score": score,
+        "risk_band": sev,
         "severity": sev,
         "category": cat,
         "threat_category": cat,
-        "noul": noul,
-        "downstream_exploit_prob": noul,
+        "noul": score,
+        "downstream_exploit_prob": score,
         "action": rec,
         "recommendation": rec,
         "rationale": rationale,
@@ -289,9 +296,9 @@ def offline_bayesian_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
 def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback: bool = True) -> Dict[str, Any]:
     """
     Online TypeSafe Jev System One evaluation when API key is present.
-    Dispatches live HTTP POST request to TypeSafe API endpoint.
+    Dispatches live HTTP POST request to TypeSafe API endpoint over verified TLS.
     If allow_fallback is True (auto mode) and network call fails,
-    gracefully falls back to offline Bayesian engine with engine 'offline_bayesian_fallback'.
+    gracefully falls back to offline deterministic rule classifier with engine 'offline_deterministic_fallback'.
     If allow_fallback is False (online mode) and network call fails,
     raises ConnectionError.
     """
@@ -307,7 +314,7 @@ def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback
             "threat_category": {
                 "primitive": "choice",
                 "options": [
-                    "Benign",
+                    "Structural-Pass",
                     "Malformed-Header",
                     "Arithmetic-Exploit",
                     "Resource-Exhaustion",
@@ -331,38 +338,44 @@ def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback
         headers=headers,
         method="POST",
     )
-    ctx = ssl._create_unverified_context()
+    # Enforce verified TLS certificate validation
+    ctx = ssl.create_default_context()
 
     try:
         with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
             res_json = json.loads(resp.read().decode("utf-8"))
             answers = res_json.get("answers", {})
             score = float(answers.get("risk_score", {}).get("score", 0.010))
-            cat = str(answers.get("threat_category", {}).get("choice", "Benign"))
+            cat = str(answers.get("threat_category", {}).get("choice", "Structural-Pass"))
             noul = float(answers.get("exploit_prob", {}).get("probability", 0.01))
 
             if score < 0.15:
                 sev = "None"
+                rec = "STRUCTURALLY_ACCEPTED"
             elif score < 0.35:
                 sev = "Low"
+                rec = "STRUCTURALLY_ACCEPTED"
             elif score < 0.65:
                 sev = "Medium"
+                rec = "CANARY_SANDBOX"
             elif score < 0.85:
                 sev = "High"
+                rec = "HARD_DROP_INGRESS"
             else:
                 sev = "Critical"
-
-            rec = "HARD_DROP_INGRESS" if score >= 0.50 else "CANARY_SANDBOX" if score >= 0.20 else "ADMIT_PRODUCTION"
+                rec = "HARD_DROP_INGRESS"
 
             return {
                 "engine": "online_jev_system_one",
+                "structural_verdict": "STRUCTURALLY_ACCEPTED" if score < 0.20 else "REJECT",
                 "score": score,
                 "risk_score": score,
+                "risk_band": sev,
                 "severity": sev,
                 "category": cat,
                 "threat_category": cat,
-                "noul": noul,
-                "downstream_exploit_prob": noul,
+                "noul": score,
+                "downstream_exploit_prob": score,
                 "action": rec,
                 "recommendation": rec,
                 "rationale": answers.get("threat_category", {}).get("rationale", "Evaluated by online TypeSafe Jev System One model."),
@@ -371,8 +384,8 @@ def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback
         if not allow_fallback:
             raise ConnectionError(f"Online triage failed to connect to TypeSafe Jev API: {exc}") from exc
         fallback = offline_bayesian_triage(safegguf_res)
-        fallback["engine"] = "offline_bayesian_fallback"
-        fallback["rationale"] = f"Online API call failed ({type(exc).__name__}: {exc}); fallback to offline Bayesian engine: " + fallback.get("rationale", "")
+        fallback["engine"] = "offline_deterministic_fallback"
+        fallback["rationale"] = f"Online API call failed ({type(exc).__name__}: {exc}); fallback to offline rule classifier: " + fallback.get("rationale", "")
         return fallback
 
 def triage_model(file_path: str, profile: str = "llama-cpp", mode: str = "auto") -> Dict[str, Any]:
@@ -453,8 +466,8 @@ def main():
         print("-" * 65)
         print(f"Triage Engine       : {t['engine']}")
         print(f"Risk Score          : {t['risk_score']:.3f} ({t['severity']})")
+        print(f"Risk Band           : {t.get('risk_band', t['severity'])}")
         print(f"Threat Category     : {t['threat_category']}")
-        print(f"Exploit Probability : {t['downstream_exploit_prob']:.2f}")
         print(f"Admission Action    : >>> {t['recommendation']} <<<")
         print(f"Rationale           : {t['rationale']}")
         print("=" * 65)

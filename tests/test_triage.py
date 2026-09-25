@@ -59,7 +59,7 @@ def run_triage(
 
 
 class TestTriageBenign(unittest.TestCase):
-    """Suite 1: Benign & Valid GGUF Models"""
+    """Suite 1: Structurally Valid GGUF Models (Structural-Pass, Decoupled from Semantic Safety)"""
 
     def test_canonical_valid_model(self):
         fixture = FIXTURES_DIR / "valid.gguf"
@@ -69,11 +69,12 @@ class TestTriageBenign(unittest.TestCase):
         self.assertEqual(data["safegguf_verdict"], "PASS")
         self.assertEqual(data["safegguf_exit_code"], 0)
         t = data["triage"]
-        self.assertAlmostEqual(t["risk_score"], 0.010, delta=0.040)
-        self.assertEqual(t["threat_category"], "Benign")
+        self.assertEqual(t["engine"], "deterministic_rule_classifier")
+        self.assertEqual(t["structural_verdict"], "STRUCTURALLY_ACCEPTED")
+        self.assertEqual(t["risk_score"], 0.0)
+        self.assertEqual(t["threat_category"], "Structural-Pass")
         self.assertEqual(t["severity"], "None")
-        self.assertEqual(t["recommendation"], "ADMIT_PRODUCTION")
-        self.assertLessEqual(t["downstream_exploit_prob"], 0.05)
+        self.assertEqual(t["recommendation"], "STRUCTURALLY_ACCEPTED")
 
     def test_scalar_tensor_model(self):
         fixture = FIXTURES_DIR / "scalar.gguf"
@@ -82,8 +83,8 @@ class TestTriageBenign(unittest.TestCase):
         data = json.loads(stdout)
         self.assertEqual(data["safegguf_verdict"], "PASS")
         self.assertEqual(data["safegguf_exit_code"], 0)
-        self.assertEqual(data["triage"]["threat_category"], "Benign")
-        self.assertEqual(data["triage"]["recommendation"], "ADMIT_PRODUCTION")
+        self.assertEqual(data["triage"]["threat_category"], "Structural-Pass")
+        self.assertEqual(data["triage"]["recommendation"], "STRUCTURALLY_ACCEPTED")
 
     def test_profile_divergent_valid_under_gguf_spec(self):
         fixture = SECURITY_DIR / "scenario4_diff_align_non_power_two.gguf"
@@ -92,8 +93,8 @@ class TestTriageBenign(unittest.TestCase):
         data = json.loads(stdout)
         self.assertEqual(data["safegguf_verdict"], "PASS")
         self.assertEqual(data["safegguf_exit_code"], 0)
-        self.assertEqual(data["triage"]["threat_category"], "Benign")
-        self.assertEqual(data["triage"]["recommendation"], "ADMIT_PRODUCTION")
+        self.assertEqual(data["triage"]["threat_category"], "Structural-Pass")
+        self.assertEqual(data["triage"]["recommendation"], "STRUCTURALLY_ACCEPTED")
 
 
 class TestTriageArithmeticExploits(unittest.TestCase):
@@ -323,14 +324,14 @@ class TestTriageModesAndFallback(unittest.TestCase):
         rc, stdout, stderr = run_triage(str(fixture), mode="auto", env=clean_env)
         self.assertEqual(rc, 0, f"Expected rc 0, got {rc}. Stderr: {stderr}")
         data = json.loads(stdout)
-        self.assertEqual(data["triage"]["engine"], "offline_bayesian_rule_engine")
+        self.assertEqual(data["triage"]["engine"], "deterministic_rule_classifier")
 
     def test_explicit_offline_mode(self):
         fixture = FIXTURES_DIR / "valid.gguf"
         rc, stdout, stderr = run_triage(str(fixture), mode="offline")
         self.assertEqual(rc, 0, f"Expected rc 0, got {rc}. Stderr: {stderr}")
         data = json.loads(stdout)
-        self.assertEqual(data["triage"]["engine"], "offline_bayesian_rule_engine")
+        self.assertEqual(data["triage"]["engine"], "deterministic_rule_classifier")
 
     def test_online_mode_without_api_key_fails_cleanly(self):
         fixture = FIXTURES_DIR / "valid.gguf"
@@ -345,8 +346,8 @@ class TestTriageModesAndFallback(unittest.TestCase):
         rc, stdout, stderr = run_triage(str(fixture), mode="auto", env=env)
         self.assertEqual(rc, 0, f"Expected rc 0, got {rc}. Stderr: {stderr}")
         data = json.loads(stdout)
-        self.assertEqual(data["triage"]["engine"], "offline_bayesian_fallback")
-        self.assertIn("fallback to offline Bayesian engine", data["triage"]["rationale"])
+        self.assertEqual(data["triage"]["engine"], "offline_deterministic_fallback")
+        self.assertIn("fallback to offline rule classifier", data["triage"]["rationale"])
 
     def test_online_mode_with_unreachable_api_fails_cleanly(self):
         fixture = FIXTURES_DIR / "valid.gguf"
@@ -354,6 +355,23 @@ class TestTriageModesAndFallback(unittest.TestCase):
         rc, stdout, stderr = run_triage(str(fixture), mode="online", env=env)
         self.assertEqual(rc, 70, f"Expected rc 70 on unreachable online API, got {rc}. Stderr: {stderr}")
         self.assertIn("Online triage failed", stderr)
+
+    def test_tls_verification_enforces_default_ssl_context(self):
+        """P0 Requirement: Ensure TLS verification is active and default context is used."""
+        import ssl
+        from unittest.mock import patch
+        sys.path.insert(0, str(TRIAGE_SCRIPT.parent))
+        import safegguf_triage
+
+        with patch("ssl.create_default_context") as mock_ssl_ctx:
+            mock_ctx_inst = mock_ssl_ctx.return_value
+            with patch("urllib.request.urlopen") as mock_open:
+                mock_open.side_effect = ssl.SSLError("certificate verify failed: self-signed certificate")
+                with self.assertRaises(ConnectionError) as cm:
+                    safegguf_triage.online_jev_triage({"status": "PASS", "exit_code": 0}, api_key="sk-test", allow_fallback=False)
+                self.assertIn("certificate verify failed", str(cm.exception))
+            # Verify ssl.create_default_context was called (NOT _create_unverified_context)
+            mock_ssl_ctx.assert_called_once()
 
     def test_online_mode_with_mock_api_success(self):
         from unittest.mock import patch, MagicMock
@@ -364,7 +382,7 @@ class TestTriageModesAndFallback(unittest.TestCase):
             "model": "jev-latest",
             "answers": {
                 "risk_score": {"score": 0.02, "confidence": 0.99},
-                "threat_category": {"choice": "Benign", "rationale": "Model verified safe by Jev System One."},
+                "threat_category": {"choice": "Structural-Pass", "rationale": "Model verified structurally sound by Jev System One."},
                 "exploit_prob": {"probability": 0.01}
             }
         }
@@ -375,8 +393,8 @@ class TestTriageModesAndFallback(unittest.TestCase):
         with patch("urllib.request.urlopen", return_value=mock_resp):
             res = safegguf_triage.online_jev_triage({"status": "PASS", "exit_code": 0}, api_key="sk-test-mock-key")
             self.assertEqual(res["engine"], "online_jev_system_one")
-            self.assertEqual(res["threat_category"], "Benign")
-            self.assertEqual(res["action"], "ADMIT_PRODUCTION")
+            self.assertEqual(res["threat_category"], "Structural-Pass")
+            self.assertEqual(res["action"], "STRUCTURALLY_ACCEPTED")
             self.assertAlmostEqual(res["risk_score"], 0.02)
 
 
@@ -392,7 +410,7 @@ class TestTriageOutputFormats(unittest.TestCase):
         for k in required_top:
             self.assertIn(k, data)
 
-        required_triage = ["engine", "risk_score", "severity", "threat_category", "downstream_exploit_prob", "recommendation", "rationale"]
+        required_triage = ["engine", "risk_score", "severity", "threat_category", "recommendation", "rationale"]
         for k in required_triage:
             self.assertIn(k, data["triage"])
 
@@ -402,9 +420,10 @@ class TestTriageOutputFormats(unittest.TestCase):
         self.assertEqual(rc, 0, f"Expected rc 0, got {rc}. Stderr: {stderr}")
         self.assertIn("SAFEGGUF MODEL ADMISSION TRIAGE REPORT", stdout)
         self.assertIn("Risk Score", stdout)
+        self.assertIn("Risk Band", stdout)
         self.assertIn("Threat Category", stdout)
         self.assertIn("Admission Action", stdout)
-        self.assertIn("ADMIT_PRODUCTION", stdout)
+        self.assertIn("STRUCTURALLY_ACCEPTED", stdout)
 
 
 class TestTriageCliUsage(unittest.TestCase):

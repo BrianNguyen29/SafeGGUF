@@ -172,7 +172,7 @@ def run_tests():
     path_bytes = valid_model.encode("utf-8")
     for desc, p, e in adversarial_combos:
         rc = lib.safegguf_validate_path(path_bytes, p, e)
-        check(f"path combo ({desc}) -> exit {rc}", rc in (0, 2), f"unexpected code {rc}")
+        check(f"path combo ({desc}) -> exit {rc}", rc == 64, f"expected 64 USAGE_ERROR, got {rc}")
 
     with open(valid_model, "rb") as f:
         if sys.platform == "win32":
@@ -183,7 +183,7 @@ def run_tests():
 
         for desc, p, e in adversarial_combos:
             rc = lib.safegguf_validate_fd(raw_h, p, e)
-            check(f"fd combo ({desc}) -> exit {rc}", rc in (0, 2), f"unexpected code {rc}")
+            check(f"fd combo ({desc}) -> exit {rc}", rc == 64, f"expected 64 USAGE_ERROR, got {rc}")
 
     print("\n--- Test Suite 4: Anti-TOCTOU & Seek Offset Preservation ---")
     with open(valid_model, "rb") as f:
@@ -246,7 +246,7 @@ def run_tests():
 
     for bad_fd in [None, "invalid_fd", 99999]:
         res = safegguf.validate_fd(bad_fd)
-        check(f"safegguf.validate_fd({bad_fd!r}) is IO_ERROR (74)", res.exit_code == 74 and res.status == "IO_ERROR")
+        check(f"safegguf.validate_fd({bad_fd!r}) is USAGE_ERROR or IO_ERROR", res.exit_code in (64, 74) and res.status in ("USAGE_ERROR", "IO_ERROR"))
 
     print("\n=======================================================")
     if failures:

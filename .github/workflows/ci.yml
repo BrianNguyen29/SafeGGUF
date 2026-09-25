@@ -48,6 +48,15 @@ jobs:
       - name: Run Negative Corpus & Advisory Provenance Checks (Exit 2 Reject Contract)
         run: python tests/negative_corpus.py
 
+      - name: Verify C-ABI Compilation & Test Python Bindings
+        run: python bindings/python/tests/test_binding.py
+
+      - name: Run Hybrid Triage Test Suite
+        run: python tests/test_triage.py
+
+      - name: Run FFI Boundary Fuzzing Suite
+        run: python tests/fuzz_ffi_boundaries.py
+
   # Version metadata guard: `build.zig` embeds the default version that source
   # builds report (`safegguf --version`). It must track the latest release tag,
   # or a plain `zig build` from `main` claims an older release than the one
