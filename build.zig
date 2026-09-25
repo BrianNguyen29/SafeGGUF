@@ -35,6 +35,26 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addOptions("build_options", build_options);
     b.installArtifact(exe);
 
+    // C-ABI Shared Library (for dynamic linking, Python/Go bindings)
+    const lib = b.addSharedLibrary(.{
+        .name = "safegguf",
+        .root_source_file = b.path("src/c_api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    lib.root_module.addImport("safegguf", safegguf_mod);
+    b.installArtifact(lib);
+
+    // C-ABI Static Library
+    const static_lib = b.addStaticLibrary(.{
+        .name = "safegguf",
+        .root_source_file = b.path("src/c_api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    static_lib.root_module.addImport("safegguf", safegguf_mod);
+    b.installArtifact(static_lib);
+
     const tests = b.addTest(.{
         .root_source_file = b.path("tests/validator_test.zig"),
         .target = target,

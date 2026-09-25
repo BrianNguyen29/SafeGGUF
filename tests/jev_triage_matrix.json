@@ -1,0 +1,4536 @@
+{
+  "timestamp": "2026-09-24T15:56:16Z",
+  "engine": "TypeSafe Jev System One (jev-latest)",
+  "profile": "gguf-spec",
+  "metrics": {
+    "total_files_evaluated": 67,
+    "classification_threshold": 0.5,
+    "confusion_matrix": {
+      "true_positives": 57,
+      "true_negatives": 10,
+      "false_positives": 0,
+      "false_negatives": 0
+    },
+    "metrics": {
+      "alignment_rate": 1.0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1_score": 1.0,
+      "false_positive_rate": 0.0,
+      "false_negative_rate": 0.0
+    },
+    "severity_distribution": {
+      "None": 2,
+      "Low": 8,
+      "Medium": 23,
+      "High": 19,
+      "Critical": 15
+    },
+    "category_distribution": {
+      "Benign": 10,
+      "Malformed-Header": 23,
+      "Arithmetic-Exploit": 15,
+      "Resource-Exhaustion": 9,
+      "Alignment-Tamper": 10
+    },
+    "category_cross_tabulation": {
+      "PASS": {
+        "Benign": 10,
+        "Malformed-Header": 0,
+        "Arithmetic-Exploit": 0,
+        "Resource-Exhaustion": 0,
+        "Alignment-Tamper": 0
+      },
+      "arithmetic": {
+        "Benign": 0,
+        "Malformed-Header": 0,
+        "Arithmetic-Exploit": 13,
+        "Resource-Exhaustion": 0,
+        "Alignment-Tamper": 0
+      },
+      "resource": {
+        "Benign": 0,
+        "Malformed-Header": 0,
+        "Arithmetic-Exploit": 0,
+        "Resource-Exhaustion": 7,
+        "Alignment-Tamper": 0
+      },
+      "format": {
+        "Benign": 0,
+        "Malformed-Header": 23,
+        "Arithmetic-Exploit": 2,
+        "Resource-Exhaustion": 1,
+        "Alignment-Tamper": 10
+      },
+      "bounds": {
+        "Benign": 0,
+        "Malformed-Header": 0,
+        "Arithmetic-Exploit": 0,
+        "Resource-Exhaustion": 0,
+        "Alignment-Tamper": 0
+      },
+      "compatibility": {
+        "Benign": 0,
+        "Malformed-Header": 0,
+        "Arithmetic-Exploit": 0,
+        "Resource-Exhaustion": 0,
+        "Alignment-Tamper": 0
+      },
+      "other": {
+        "Benign": 0,
+        "Malformed-Header": 0,
+        "Arithmetic-Exploit": 0,
+        "Resource-Exhaustion": 1,
+        "Alignment-Tamper": 0
+      }
+    }
+  },
+  "triage_results": [
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\alloc_dos_tensor.gguf",
+      "file_name": "alloc_dos_tensor.gguf",
+      "file_size": 24,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_UnexpectedEof",
+      "safegguf_category": "format",
+      "safegguf_message": "Truncated file: GGUF structure extends past end of file",
+      "safegguf_findings": [
+        {
+          "code": "E_UnexpectedEof",
+          "severity": "reject",
+          "message": "Truncated file: GGUF structure extends past end of file",
+          "stage": "parse",
+          "category": "format"
+        }
+      ],
+      "raw_header": {
+        "file_size": 24,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1000000,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_UnexpectedEof'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.09
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\big_endian_v3.gguf",
+      "file_name": "big_endian_v3.gguf",
+      "file_size": 160,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_UnsupportedVersion",
+      "safegguf_category": "format",
+      "safegguf_message": "GGUF version not supported by the selected profile",
+      "safegguf_findings": [
+        {
+          "code": "E_UnsupportedVersion",
+          "severity": "reject",
+          "message": "GGUF version not supported by the selected profile",
+          "stage": "parse",
+          "category": "format"
+        }
+      ],
+      "raw_header": {
+        "file_size": 160,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 50331648,
+        "tensor_count": 72057594037927936,
+        "metadata_kv_count": 72057594037927936,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_UnsupportedVersion'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 18.26
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\duplicate_key.gguf",
+      "file_name": "duplicate_key.gguf",
+      "file_size": 114,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_DuplicateMetadataKey",
+      "safegguf_category": "format",
+      "safegguf_message": "Duplicate metadata key",
+      "safegguf_findings": [
+        {
+          "code": "E_DuplicateMetadataKey",
+          "severity": "reject",
+          "message": "Duplicate metadata key",
+          "stage": "parse",
+          "category": "format",
+          "offset": 69,
+          "key": "general.architecture"
+        }
+      ],
+      "raw_header": {
+        "file_size": 114,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 2,
+        "metadata_keys": [
+          "general.architecture"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_DuplicateMetadataKey'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 28.09
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\duplicate_tensor.gguf",
+      "file_name": "duplicate_tensor.gguf",
+      "file_size": 384,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_DuplicateTensorName",
+      "safegguf_category": "format",
+      "safegguf_message": "Duplicate tensor name",
+      "safegguf_findings": [
+        {
+          "code": "E_DuplicateTensorName",
+          "severity": "reject",
+          "message": "Duplicate tensor name",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 1,
+          "tensor": "same_name"
+        }
+      ],
+      "raw_header": {
+        "file_size": 384,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_DuplicateTensorName'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 18.54
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\element_product_overflow.gguf",
+      "file_name": "element_product_overflow.gguf",
+      "file_size": 96,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "prod_overflow",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 18.37
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\empty_tensor_name.gguf",
+      "file_name": "empty_tensor_name.gguf",
+      "file_size": 96,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidTensorName",
+      "safegguf_category": "format",
+      "safegguf_message": "Invalid tensor name (empty or exceeds length limit)",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidTensorName",
+          "severity": "reject",
+          "message": "Invalid tensor name (empty or exceeds length limit)",
+          "stage": "parse",
+          "category": "format",
+          "tensor_index": 0,
+          "offset": 24
+        }
+      ],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidTensorName'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 22.22
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\gap.gguf",
+      "file_name": "gap.gguf",
+      "file_size": 608,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 608,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.92,
+        "normalized_score": 0.23,
+        "severity_level": "Low",
+        "confidence": 0.625,
+        "rationale": "File successfully validated under profile 'gguf-spec'. Contains benign profile-specific divergences (e.g. non-power-of-2 alignment, 64-byte name, or non-contiguous gaps) which satisfy the canonical GGUF specification but may diverge from legacy loaders.",
+        "probabilities": {
+          "0": 0.2,
+          "1": 0.7,
+          "2": 0.08,
+          "3": 0.02,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.725,
+        "rationale": "Standard-compliant model admitted under canonical GGUF profile.",
+        "probabilities": {
+          "Benign": 0.78,
+          "Malformed-Header": 0.1,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.02,
+          "Alignment-Tamper": 0.1
+        }
+      },
+      "noul": {
+        "probability": 0.25,
+        "rationale": "Low to moderate probability of downstream divergence depending on whether the target runtime supports generalized GGUF v3 layout."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 20.31
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\hyphen_key.gguf",
+      "file_name": "hyphen_key.gguf",
+      "file_size": 74,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidKeyFormat",
+      "safegguf_category": "format",
+      "safegguf_message": "Metadata key violates the GGUF key grammar",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidKeyFormat",
+          "severity": "reject",
+          "message": "Metadata key violates the GGUF key grammar",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "general.model-architecture"
+        }
+      ],
+      "raw_header": {
+        "file_size": 74,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.model-architecture"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidKeyFormat'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 17.44
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\invalid_bool.gguf",
+      "file_name": "invalid_bool.gguf",
+      "file_size": 53,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidBoolean",
+      "safegguf_category": "format",
+      "safegguf_message": "Boolean value must be 0 or 1",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidBoolean",
+          "severity": "reject",
+          "message": "Boolean value must be 0 or 1",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "general.bool_val"
+        }
+      ],
+      "raw_header": {
+        "file_size": 53,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.bool_val"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidBoolean'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.31
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\invalid_key.gguf",
+      "file_name": "invalid_key.gguf",
+      "file_size": 71,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidKeyFormat",
+      "safegguf_category": "format",
+      "safegguf_message": "Metadata key violates the GGUF key grammar",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidKeyFormat",
+          "severity": "reject",
+          "message": "Metadata key violates the GGUF key grammar",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "InvalidKeyWithUppercase"
+        }
+      ],
+      "raw_header": {
+        "file_size": 71,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "InvalidKeyWithUppercase"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidKeyFormat'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.13
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\llama_cpp_overflow.gguf",
+      "file_name": "llama_cpp_overflow.gguf",
+      "file_size": 160,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 1,
+          "tensor": "t1",
+          "offset": 32
+        }
+      ],
+      "raw_header": {
+        "file_size": 160,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.0
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\name_64.gguf",
+      "file_name": "name_64.gguf",
+      "file_size": 256,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 256,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.92,
+        "normalized_score": 0.23,
+        "severity_level": "Low",
+        "confidence": 0.625,
+        "rationale": "File successfully validated under profile 'gguf-spec'. Contains benign profile-specific divergences (e.g. non-power-of-2 alignment, 64-byte name, or non-contiguous gaps) which satisfy the canonical GGUF specification but may diverge from legacy loaders.",
+        "probabilities": {
+          "0": 0.2,
+          "1": 0.7,
+          "2": 0.08,
+          "3": 0.02,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.725,
+        "rationale": "Standard-compliant model admitted under canonical GGUF profile.",
+        "probabilities": {
+          "Benign": 0.78,
+          "Malformed-Header": 0.1,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.02,
+          "Alignment-Tamper": 0.1
+        }
+      },
+      "noul": {
+        "probability": 0.25,
+        "rationale": "Low to moderate probability of downstream divergence depending on whether the target runtime supports generalized GGUF v3 layout."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.68
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\nested_array.gguf",
+      "file_name": "nested_array.gguf",
+      "file_size": 96,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.nested_arr"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.92,
+        "normalized_score": 0.23,
+        "severity_level": "Low",
+        "confidence": 0.625,
+        "rationale": "File successfully validated under profile 'gguf-spec'. Contains benign profile-specific divergences (e.g. non-power-of-2 alignment, 64-byte name, or non-contiguous gaps) which satisfy the canonical GGUF specification but may diverge from legacy loaders.",
+        "probabilities": {
+          "0": 0.2,
+          "1": 0.7,
+          "2": 0.08,
+          "3": 0.02,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.725,
+        "rationale": "Standard-compliant model admitted under canonical GGUF profile.",
+        "probabilities": {
+          "Benign": 0.78,
+          "Malformed-Header": 0.1,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.02,
+          "Alignment-Tamper": 0.1
+        }
+      },
+      "noul": {
+        "probability": 0.25,
+        "rationale": "Low to moderate probability of downstream divergence depending on whether the target runtime supports generalized GGUF v3 layout."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.5
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\nonzero_header_padding.gguf",
+      "file_name": "nonzero_header_padding.gguf",
+      "file_size": 96,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidAlignmentPadding",
+      "safegguf_category": "format",
+      "safegguf_message": "Alignment padding bytes are non-zero",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidAlignmentPadding",
+          "severity": "reject",
+          "message": "Alignment padding bytes are non-zero",
+          "stage": "parse",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "weight",
+          "offset": 62
+        }
+      ],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.74,
+        "normalized_score": 0.685,
+        "severity_level": "High",
+        "confidence": 0.55,
+        "rationale": "Alignment padding tampering detected: 'E_InvalidAlignmentPadding'. Non-zero bytes injected into descriptor alignment padding violate anti-tamper invariants and indicate payload concealment or steganography.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.06,
+          "2": 0.22,
+          "3": 0.64,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.55,
+        "rationale": "Downstream loaders may overlook padding or suffer undefined behavior if unaligned."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.09
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\out_of_bounds.gguf",
+      "file_name": "out_of_bounds.gguf",
+      "file_size": 60,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_TensorOutOfBounds",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor data extends past end of file",
+      "safegguf_findings": [
+        {
+          "code": "E_TensorOutOfBounds",
+          "severity": "reject",
+          "message": "Tensor data extends past end of file",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "test",
+          "offset": 1024
+        }
+      ],
+      "raw_header": {
+        "file_size": 60,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.96,
+        "normalized_score": 0.74,
+        "severity_level": "High",
+        "confidence": 0.6,
+        "rationale": "Structural boundary violation: 'E_TensorOutOfBounds'. Tensor offsets overlap with neighboring tensors or extend beyond physical file boundaries, risking out-of-bounds memory read or state corruption.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.15,
+          "3": 0.68,
+          "4": 0.15
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.92,
+        "rationale": "Downstream loaders will perform out-of-bounds reads or memory overlap corruption."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.73
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\overflow.gguf",
+      "file_name": "overflow.gguf",
+      "file_size": 83,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "blk.0.attn_q.weight",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 83,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.81
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\overlap.gguf",
+      "file_name": "overlap.gguf",
+      "file_size": 352,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_TensorOverlap",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor data ranges overlap",
+      "safegguf_findings": [
+        {
+          "code": "E_TensorOverlap",
+          "severity": "reject",
+          "message": "Tensor data ranges overlap",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 1,
+          "tensor": "t1",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 352,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.96,
+        "normalized_score": 0.74,
+        "severity_level": "High",
+        "confidence": 0.6,
+        "rationale": "Structural boundary violation: 'E_TensorOverlap'. Tensor offsets overlap with neighboring tensors or extend beyond physical file boundaries, risking out-of-bounds memory read or state corruption.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.15,
+          "3": 0.68,
+          "4": 0.15
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.92,
+        "rationale": "Downstream loaders will perform out-of-bounds reads or memory overlap corruption."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.65
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\removed_type_slot31.gguf",
+      "file_name": "removed_type_slot31.gguf",
+      "file_size": 60,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidTensorType",
+      "safegguf_category": "format",
+      "safegguf_message": "Unknown, deprecated, or removed GGML tensor type",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidTensorType",
+          "severity": "reject",
+          "message": "Unknown, deprecated, or removed GGML tensor type",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "test",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 60,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidTensorType'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.64
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\scalar.gguf",
+      "file_name": "scalar.gguf",
+      "file_size": 96,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.04,
+        "normalized_score": 0.01,
+        "severity_level": "None",
+        "confidence": 0.95,
+        "rationale": "File passed all structural, arithmetic, bounds, and alignment checks with zero findings. Verified completely safe for downstream model ingestion.",
+        "probabilities": {
+          "0": 0.96,
+          "1": 0.04,
+          "2": 0.0,
+          "3": 0.0,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.95,
+        "rationale": "File conforms completely to the GGUF specification.",
+        "probabilities": {
+          "Benign": 0.96,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.02,
+        "rationale": "Downstream loaders will parse and ingest this file safely with no memory corruption risk."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.21
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\signed_dim_overflow.gguf",
+      "file_name": "signed_dim_overflow.gguf",
+      "file_size": 96,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "dim_overflow",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.24
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\truncated_final_padding.gguf",
+      "file_name": "truncated_final_padding.gguf",
+      "file_size": 68,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 68,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.92,
+        "normalized_score": 0.23,
+        "severity_level": "Low",
+        "confidence": 0.625,
+        "rationale": "File successfully validated under profile 'gguf-spec'. Contains benign profile-specific divergences (e.g. non-power-of-2 alignment, 64-byte name, or non-contiguous gaps) which satisfy the canonical GGUF specification but may diverge from legacy loaders.",
+        "probabilities": {
+          "0": 0.2,
+          "1": 0.7,
+          "2": 0.08,
+          "3": 0.02,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.725,
+        "rationale": "Standard-compliant model admitted under canonical GGUF profile.",
+        "probabilities": {
+          "Benign": 0.78,
+          "Malformed-Header": 0.1,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.02,
+          "Alignment-Tamper": 0.1
+        }
+      },
+      "noul": {
+        "probability": 0.25,
+        "rationale": "Low to moderate probability of downstream divergence depending on whether the target runtime supports generalized GGUF v3 layout."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.71
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\truncated_header_padding_zero_tensors.gguf",
+      "file_name": "truncated_header_padding_zero_tensors.gguf",
+      "file_size": 24,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_UnexpectedEof",
+      "safegguf_category": "format",
+      "safegguf_message": "Truncated file: GGUF structure extends past end of file",
+      "safegguf_findings": [
+        {
+          "code": "E_UnexpectedEof",
+          "severity": "reject",
+          "message": "Truncated file: GGUF structure extends past end of file",
+          "stage": "parse",
+          "category": "format"
+        }
+      ],
+      "raw_header": {
+        "file_size": 24,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.74,
+        "normalized_score": 0.685,
+        "severity_level": "High",
+        "confidence": 0.55,
+        "rationale": "Alignment padding tampering detected: 'E_UnexpectedEof'. Non-zero bytes injected into descriptor alignment padding violate anti-tamper invariants and indicate payload concealment or steganography.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.06,
+          "2": 0.22,
+          "3": 0.64,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.55,
+        "rationale": "Downstream loaders may overlook padding or suffer undefined behavior if unaligned."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.14
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\type40_truncated_false_pass.gguf",
+      "file_name": "type40_truncated_false_pass.gguf",
+      "file_size": 84,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_TensorOutOfBounds",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor data extends past end of file",
+      "safegguf_findings": [
+        {
+          "code": "E_TensorOutOfBounds",
+          "severity": "reject",
+          "message": "Tensor data extends past end of file",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "x",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 84,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.96,
+        "normalized_score": 0.74,
+        "severity_level": "High",
+        "confidence": 0.6,
+        "rationale": "Structural boundary violation: 'E_TensorOutOfBounds'. Tensor offsets overlap with neighboring tensors or extend beyond physical file boundaries, risking out-of-bounds memory read or state corruption.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.15,
+          "3": 0.68,
+          "4": 0.15
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.92,
+        "rationale": "Downstream loaders will perform out-of-bounds reads or memory overlap corruption."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.71
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\valid.gguf",
+      "file_name": "valid.gguf",
+      "file_size": 448,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 448,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.architecture"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.04,
+        "normalized_score": 0.01,
+        "severity_level": "None",
+        "confidence": 0.95,
+        "rationale": "File passed all structural, arithmetic, bounds, and alignment checks with zero findings. Verified completely safe for downstream model ingestion.",
+        "probabilities": {
+          "0": 0.96,
+          "1": 0.04,
+          "2": 0.0,
+          "3": 0.0,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.95,
+        "rationale": "File conforms completely to the GGUF specification.",
+        "probabilities": {
+          "Benign": 0.96,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.02,
+        "rationale": "Downstream loaders will parse and ingest this file safely with no memory corruption risk."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.54
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\version_2.gguf",
+      "file_name": "version_2.gguf",
+      "file_size": 69,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_UnsupportedVersion",
+      "safegguf_category": "format",
+      "safegguf_message": "GGUF version not supported by the selected profile",
+      "safegguf_findings": [
+        {
+          "code": "E_UnsupportedVersion",
+          "severity": "reject",
+          "message": "GGUF version not supported by the selected profile",
+          "stage": "parse",
+          "category": "format"
+        }
+      ],
+      "raw_header": {
+        "file_size": 69,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 2,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.architecture"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_UnsupportedVersion'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.16
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\zero_dimension.gguf",
+      "file_name": "zero_dimension.gguf",
+      "file_size": 96,
+      "group": "positive",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ZeroDimensionNotAllowed",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor dimensions must be positive",
+      "safegguf_findings": [
+        {
+          "code": "E_ZeroDimensionNotAllowed",
+          "severity": "reject",
+          "message": "Tensor dimensions must be positive",
+          "stage": "parse",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "zero_dim",
+          "offset": 24
+        }
+      ],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_ZeroDimensionNotAllowed'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.09
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\cve-2025-53630-cumulative-overflow.gguf",
+      "file_name": "cve-2025-53630-cumulative-overflow.gguf",
+      "file_size": 160,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_TensorOutOfBounds",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor data extends past end of file",
+      "safegguf_findings": [
+        {
+          "code": "E_TensorOutOfBounds",
+          "severity": "reject",
+          "message": "Tensor data extends past end of file",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "cve-2025-53630-cumulative-0",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 160,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_TensorOutOfBounds'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.44
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\cve-2026-27940-memsize-overflow.gguf",
+      "file_name": "cve-2026-27940-memsize-overflow.gguf",
+      "file_size": 96,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "cve-2026-27940-memsize",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 18.21
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\cve-2026-33298-ggml-nbytes-overflow.gguf",
+      "file_name": "cve-2026-33298-ggml-nbytes-overflow.gguf",
+      "file_size": 92,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "ovf_flagship",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 92,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.05
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-alloc-key-string-len-dos.gguf",
+      "file_name": "synthetic-alloc-key-string-len-dos.gguf",
+      "file_size": 48,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ResourceLimitExceeded",
+      "safegguf_category": "resource",
+      "safegguf_message": "Configured resource limit exceeded",
+      "safegguf_findings": [
+        {
+          "code": "E_ResourceLimitExceeded",
+          "severity": "reject",
+          "message": "Configured resource limit exceeded",
+          "stage": "parse",
+          "category": "resource",
+          "offset": 24
+        }
+      ],
+      "raw_header": {
+        "file_size": 48,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_ResourceLimitExceeded'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 24.75
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-alloc-kv-count-dos.gguf",
+      "file_name": "synthetic-alloc-kv-count-dos.gguf",
+      "file_size": 24,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ResourceLimitExceeded",
+      "safegguf_category": "resource",
+      "safegguf_message": "Configured resource limit exceeded",
+      "safegguf_findings": [
+        {
+          "code": "E_ResourceLimitExceeded",
+          "severity": "reject",
+          "message": "Configured resource limit exceeded",
+          "stage": "parse",
+          "category": "resource"
+        }
+      ],
+      "raw_header": {
+        "file_size": 24,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 18446744073709551615,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_ResourceLimitExceeded'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.78
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-dims-ndims-5.gguf",
+      "file_name": "synthetic-dims-ndims-5.gguf",
+      "file_size": 97,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidDimensionCount",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor dimension count out of allowed range",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidDimensionCount",
+          "severity": "reject",
+          "message": "Tensor dimension count out of allowed range",
+          "stage": "parse",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "five_dims",
+          "offset": 24
+        }
+      ],
+      "raw_header": {
+        "file_size": 97,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidDimensionCount'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.36
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-dims-uint32-max.gguf",
+      "file_name": "synthetic-dims-uint32-max.gguf",
+      "file_size": 56,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidDimensionCount",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor dimension count out of allowed range",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidDimensionCount",
+          "severity": "reject",
+          "message": "Tensor dimension count out of allowed range",
+          "stage": "parse",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "max_dims",
+          "offset": 24
+        }
+      ],
+      "raw_header": {
+        "file_size": 56,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_InvalidDimensionCount'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.7
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-int-overflow-dims-product.gguf",
+      "file_name": "synthetic-int-overflow-dims-product.gguf",
+      "file_size": 72,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "ovf_dims",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 72,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.39
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-int-overflow-nbytes.gguf",
+      "file_name": "synthetic-int-overflow-nbytes.gguf",
+      "file_size": 73,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "ovf_bytes",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 73,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.99
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-metadata-array-count-dos.gguf",
+      "file_name": "synthetic-metadata-array-count-dos.gguf",
+      "file_size": 67,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ResourceLimitExceeded",
+      "safegguf_category": "resource",
+      "safegguf_message": "Configured resource limit exceeded",
+      "safegguf_findings": [
+        {
+          "code": "E_ResourceLimitExceeded",
+          "severity": "reject",
+          "message": "Configured resource limit exceeded",
+          "stage": "parse",
+          "category": "resource",
+          "offset": 24,
+          "key": "general.arr"
+        }
+      ],
+      "raw_header": {
+        "file_size": 67,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.arr"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_ResourceLimitExceeded'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.17
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-metadata-invalid-utf8-value.gguf",
+      "file_name": "synthetic-metadata-invalid-utf8-value.gguf",
+      "file_size": 60,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidUtf8",
+      "safegguf_category": "format",
+      "safegguf_message": "String or tensor name is not valid UTF-8",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidUtf8",
+          "severity": "reject",
+          "message": "String or tensor name is not valid UTF-8",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "general.name"
+        }
+      ],
+      "raw_header": {
+        "file_size": 60,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.name"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidUtf8'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.88
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-parse-metadata-string-past-eof.gguf",
+      "file_name": "synthetic-parse-metadata-string-past-eof.gguf",
+      "file_size": 64,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_UnexpectedEof",
+      "safegguf_category": "format",
+      "safegguf_message": "Truncated file: GGUF structure extends past end of file",
+      "safegguf_findings": [
+        {
+          "code": "E_UnexpectedEof",
+          "severity": "reject",
+          "message": "Truncated file: GGUF structure extends past end of file",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "general.name"
+        }
+      ],
+      "raw_header": {
+        "file_size": 64,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.name"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_UnexpectedEof'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.62
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-parse-truncated-tensor-descriptor.gguf",
+      "file_name": "synthetic-parse-truncated-tensor-descriptor.gguf",
+      "file_size": 68,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_UnexpectedEof",
+      "safegguf_category": "format",
+      "safegguf_message": "Truncated file: GGUF structure extends past end of file",
+      "safegguf_findings": [
+        {
+          "code": "E_UnexpectedEof",
+          "severity": "reject",
+          "message": "Truncated file: GGUF structure extends past end of file",
+          "stage": "parse",
+          "category": "format"
+        }
+      ],
+      "raw_header": {
+        "file_size": 68,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_UnexpectedEof'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.73
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-types-invalid-tensor-type-43.gguf",
+      "file_name": "synthetic-types-invalid-tensor-type-43.gguf",
+      "file_size": 62,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidTensorType",
+      "safegguf_category": "format",
+      "safegguf_message": "Unknown, deprecated, or removed GGML tensor type",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidTensorType",
+          "severity": "reject",
+          "message": "Unknown, deprecated, or removed GGML tensor type",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "type43",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 62,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidTensorType'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.85
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\negative\\synthetic-types-metadata-value-type-99.gguf",
+      "file_name": "synthetic-types-metadata-value-type-99.gguf",
+      "file_size": 60,
+      "group": "negative_corpus",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidMetadataType",
+      "safegguf_category": "format",
+      "safegguf_message": "Unknown or invalid metadata value type",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidMetadataType",
+          "severity": "reject",
+          "message": "Unknown or invalid metadata value type",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "general.bad_type"
+        }
+      ],
+      "raw_header": {
+        "file_size": 60,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.bad_type"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidMetadataType'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.95
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario1_overflow_block_div_count.gguf",
+      "file_name": "scenario1_overflow_block_div_count.gguf",
+      "file_size": 65,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "ovf_block",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 65,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.81
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario1_overflow_byte_accumulation.gguf",
+      "file_name": "scenario1_overflow_byte_accumulation.gguf",
+      "file_size": 65,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "ovf_accum",
+          "offset": 18446744073709551360
+        }
+      ],
+      "raw_header": {
+        "file_size": 65,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.37
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario1_overflow_extreme_dims_product.gguf",
+      "file_name": "scenario1_overflow_extreme_dims_product.gguf",
+      "file_size": 72,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "ovf_prod",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 72,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.89
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario1_overflow_signed_i64_dim.gguf",
+      "file_name": "scenario1_overflow_signed_i64_dim.gguf",
+      "file_size": 64,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "ovf_sdim",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 64,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.04
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario1_overflow_signed_i64_product.gguf",
+      "file_name": "scenario1_overflow_signed_i64_product.gguf",
+      "file_size": 73,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ArithmeticOverflow",
+      "safegguf_category": "arithmetic",
+      "safegguf_message": "Checked arithmetic overflow while computing tensor layout",
+      "safegguf_findings": [
+        {
+          "code": "E_ArithmeticOverflow",
+          "severity": "reject",
+          "message": "Checked arithmetic overflow while computing tensor layout",
+          "stage": "structural",
+          "category": "arithmetic",
+          "tensor_index": 0,
+          "tensor": "ovf_sprod",
+          "offset": 0
+        }
+      ],
+      "raw_header": {
+        "file_size": 73,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 3.86,
+        "normalized_score": 0.965,
+        "severity_level": "Critical",
+        "confidence": 0.85,
+        "rationale": "Critical arithmetic vulnerability detected: 'E_ArithmeticOverflow'. 64-bit integer overflow in tensor dimensions, block counts, or byte accumulation. In unvalidated C/C++ runtimes, integer truncation leads to undersized buffer allocation followed by catastrophic heap buffer overflow or arbitrary write.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.0,
+          "2": 0.02,
+          "3": 0.1,
+          "4": 0.88
+        }
+      },
+      "choice": {
+        "category": "Arithmetic-Exploit",
+        "confidence": 0.95,
+        "rationale": "Definitive integer overflow in dimensional product or byte size calculation.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.02,
+          "Arithmetic-Exploit": 0.96,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.01
+        }
+      },
+      "noul": {
+        "probability": 0.98,
+        "rationale": "Near certainty (0.98) of downstream crash or heap corruption: unvalidated multiplication overflows produce tiny allocations in llama.cpp, leading directly to memory corruption upon tensor read."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 23.89
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario2_tamper_misaligned_offset.gguf",
+      "file_name": "scenario2_tamper_misaligned_offset.gguf",
+      "file_size": 322,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_MisalignedTensor",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor offset is not aligned to the file alignment",
+      "safegguf_findings": [
+        {
+          "code": "E_MisalignedTensor",
+          "severity": "reject",
+          "message": "Tensor offset is not aligned to the file alignment",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "misaligned",
+          "offset": 17
+        }
+      ],
+      "raw_header": {
+        "file_size": 322,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.96,
+        "normalized_score": 0.74,
+        "severity_level": "High",
+        "confidence": 0.6,
+        "rationale": "Structural boundary violation: 'E_MisalignedTensor'. Tensor offsets overlap with neighboring tensors or extend beyond physical file boundaries, risking out-of-bounds memory read or state corruption.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.15,
+          "3": 0.68,
+          "4": 0.15
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.92,
+        "rationale": "Downstream loaders will perform out-of-bounds reads or memory overlap corruption."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.61
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario2_tamper_oob_offset.gguf",
+      "file_name": "scenario2_tamper_oob_offset.gguf",
+      "file_size": 130,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_TensorOutOfBounds",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor data extends past end of file",
+      "safegguf_findings": [
+        {
+          "code": "E_TensorOutOfBounds",
+          "severity": "reject",
+          "message": "Tensor data extends past end of file",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "oob_tensor",
+          "offset": 1024
+        }
+      ],
+      "raw_header": {
+        "file_size": 130,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.96,
+        "normalized_score": 0.74,
+        "severity_level": "High",
+        "confidence": 0.6,
+        "rationale": "Structural boundary violation: 'E_TensorOutOfBounds'. Tensor offsets overlap with neighboring tensors or extend beyond physical file boundaries, risking out-of-bounds memory read or state corruption.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.15,
+          "3": 0.68,
+          "4": 0.15
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.92,
+        "rationale": "Downstream loaders will perform out-of-bounds reads or memory overlap corruption."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.51
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario2_tamper_overlapping_payload.gguf",
+      "file_name": "scenario2_tamper_overlapping_payload.gguf",
+      "file_size": 616,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_TensorOverlap",
+      "safegguf_category": "format",
+      "safegguf_message": "Tensor data ranges overlap",
+      "safegguf_findings": [
+        {
+          "code": "E_TensorOverlap",
+          "severity": "reject",
+          "message": "Tensor data ranges overlap",
+          "stage": "structural",
+          "category": "format",
+          "tensor_index": 1,
+          "tensor": "tensor_b",
+          "offset": 32
+        }
+      ],
+      "raw_header": {
+        "file_size": 616,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.96,
+        "normalized_score": 0.74,
+        "severity_level": "High",
+        "confidence": 0.6,
+        "rationale": "Structural boundary violation: 'E_TensorOverlap'. Tensor offsets overlap with neighboring tensors or extend beyond physical file boundaries, risking out-of-bounds memory read or state corruption.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.15,
+          "3": 0.68,
+          "4": 0.15
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.92,
+        "rationale": "Downstream loaders will perform out-of-bounds reads or memory overlap corruption."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.95
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario2_tamper_padding_multichunk.gguf",
+      "file_name": "scenario2_tamper_padding_multichunk.gguf",
+      "file_size": 640,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidAlignmentPadding",
+      "safegguf_category": "format",
+      "safegguf_message": "Alignment padding bytes are non-zero",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidAlignmentPadding",
+          "severity": "reject",
+          "message": "Alignment padding bytes are non-zero",
+          "stage": "parse",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "pad_multi",
+          "offset": 354,
+          "key": "general.alignment"
+        }
+      ],
+      "raw_header": {
+        "file_size": 640,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.alignment"
+        ],
+        "alignment": 512,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.74,
+        "normalized_score": 0.685,
+        "severity_level": "High",
+        "confidence": 0.55,
+        "rationale": "Alignment padding tampering detected: 'E_InvalidAlignmentPadding'. Non-zero bytes injected into descriptor alignment padding violate anti-tamper invariants and indicate payload concealment or steganography.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.06,
+          "2": 0.22,
+          "3": 0.64,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.55,
+        "rationale": "Downstream loaders may overlook padding or suffer undefined behavior if unaligned."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.72
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario2_tamper_padding_nonzero.gguf",
+      "file_name": "scenario2_tamper_padding_nonzero.gguf",
+      "file_size": 224,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidAlignmentPadding",
+      "safegguf_category": "format",
+      "safegguf_message": "Alignment padding bytes are non-zero",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidAlignmentPadding",
+          "severity": "reject",
+          "message": "Alignment padding bytes are non-zero",
+          "stage": "parse",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "pad_tensor",
+          "offset": 66
+        }
+      ],
+      "raw_header": {
+        "file_size": 224,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.74,
+        "normalized_score": 0.685,
+        "severity_level": "High",
+        "confidence": 0.55,
+        "rationale": "Alignment padding tampering detected: 'E_InvalidAlignmentPadding'. Non-zero bytes injected into descriptor alignment padding violate anti-tamper invariants and indicate payload concealment or steganography.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.06,
+          "2": 0.22,
+          "3": 0.64,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Alignment-Tamper",
+        "confidence": 0.9,
+        "rationale": "Structural integrity tampering involving tensor offsets or alignment padding.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.01,
+          "Alignment-Tamper": 0.92
+        }
+      },
+      "noul": {
+        "probability": 0.55,
+        "rationale": "Downstream loaders may overlook padding or suffer undefined behavior if unaligned."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.68
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario3_budget_string_len_cap.gguf",
+      "file_name": "scenario3_budget_string_len_cap.gguf",
+      "file_size": 125,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ResourceLimitExceeded",
+      "safegguf_category": "resource",
+      "safegguf_message": "Configured resource limit exceeded",
+      "safegguf_findings": [
+        {
+          "code": "E_ResourceLimitExceeded",
+          "severity": "reject",
+          "message": "Configured resource limit exceeded",
+          "stage": "parse",
+          "category": "resource",
+          "offset": 24,
+          "key": "quota.long_string"
+        }
+      ],
+      "raw_header": {
+        "file_size": 125,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "quota.long_string"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_ResourceLimitExceeded'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.25
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario3_budget_tensor_count_cap.gguf",
+      "file_name": "scenario3_budget_tensor_count_cap.gguf",
+      "file_size": 24,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ResourceLimitExceeded",
+      "safegguf_category": "resource",
+      "safegguf_message": "Configured resource limit exceeded",
+      "safegguf_findings": [
+        {
+          "code": "E_ResourceLimitExceeded",
+          "severity": "reject",
+          "message": "Configured resource limit exceeded",
+          "stage": "parse",
+          "category": "resource"
+        }
+      ],
+      "raw_header": {
+        "file_size": 24,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1000001,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_ResourceLimitExceeded'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.21
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario3_budget_units_exhaustion.gguf",
+      "file_name": "scenario3_budget_units_exhaustion.gguf",
+      "file_size": 64,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ResourceLimitExceeded",
+      "safegguf_category": "resource",
+      "safegguf_message": "Configured resource limit exceeded",
+      "safegguf_findings": [
+        {
+          "code": "E_ResourceLimitExceeded",
+          "severity": "reject",
+          "message": "Configured resource limit exceeded",
+          "stage": "parse",
+          "category": "resource",
+          "offset": 24,
+          "key": "quota.huge_array"
+        }
+      ],
+      "raw_header": {
+        "file_size": 64,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "quota.huge_array"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_ResourceLimitExceeded'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.41
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario3_budget_variable_array_cap.gguf",
+      "file_name": "scenario3_budget_variable_array_cap.gguf",
+      "file_size": 63,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_ResourceLimitExceeded",
+      "safegguf_category": "resource",
+      "safegguf_message": "Configured resource limit exceeded",
+      "safegguf_findings": [
+        {
+          "code": "E_ResourceLimitExceeded",
+          "severity": "reject",
+          "message": "Configured resource limit exceeded",
+          "stage": "parse",
+          "category": "resource",
+          "offset": 24,
+          "key": "quota.var_array"
+        }
+      ],
+      "raw_header": {
+        "file_size": 63,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "quota.var_array"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_ResourceLimitExceeded'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.8
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario3_quota_alloc_ceiling_dos.gguf",
+      "file_name": "scenario3_quota_alloc_ceiling_dos.gguf",
+      "file_size": 134433624,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_TotalAllocationLimitExceeded",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [
+        {
+          "code": "E_TotalAllocationLimitExceeded",
+          "severity": "reject",
+          "message": "Configured memory allocation quota exceeded"
+        }
+      ],
+      "raw_header": {
+        "file_size": 134433624,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 2100,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.92,
+        "normalized_score": 0.73,
+        "severity_level": "High",
+        "confidence": 0.725,
+        "rationale": "Resource exhaustion attack detected: 'E_TotalAllocationLimitExceeded'. The file triggers memory quota limits (exceeding 128 MB allocation ceiling) or parser WorkBudget caps, designed to exhaust memory or CPU.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.02,
+          "2": 0.12,
+          "3": 0.78,
+          "4": 0.08
+        }
+      },
+      "choice": {
+        "category": "Resource-Exhaustion",
+        "confidence": 0.9125,
+        "rationale": "Denial-of-Service via unbounded memory allocation or infinite work loop.",
+        "probabilities": {
+          "Benign": 0.0,
+          "Malformed-Header": 0.04,
+          "Arithmetic-Exploit": 0.01,
+          "Resource-Exhaustion": 0.93,
+          "Alignment-Tamper": 0.02
+        }
+      },
+      "noul": {
+        "probability": 0.88,
+        "rationale": "High probability (0.88) of downstream process termination: unconstrained memory allocation or loop causes host OOM or unhandled exception in standard runtimes."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 1906.27
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario4_diff_align_non_power_two.gguf",
+      "file_name": "scenario4_diff_align_non_power_two.gguf",
+      "file_size": 216,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 216,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "general.alignment"
+        ],
+        "alignment": 24,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.92,
+        "normalized_score": 0.23,
+        "severity_level": "Low",
+        "confidence": 0.625,
+        "rationale": "File successfully validated under profile 'gguf-spec'. Contains benign profile-specific divergences (e.g. non-power-of-2 alignment, 64-byte name, or non-contiguous gaps) which satisfy the canonical GGUF specification but may diverge from legacy loaders.",
+        "probabilities": {
+          "0": 0.2,
+          "1": 0.7,
+          "2": 0.08,
+          "3": 0.02,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.725,
+        "rationale": "Standard-compliant model admitted under canonical GGUF profile.",
+        "probabilities": {
+          "Benign": 0.78,
+          "Malformed-Header": 0.1,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.02,
+          "Alignment-Tamper": 0.1
+        }
+      },
+      "noul": {
+        "probability": 0.4,
+        "rationale": "Low to moderate probability of downstream divergence depending on whether the target runtime supports generalized GGUF v3 layout."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 17.67
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario4_diff_name_exact_64.gguf",
+      "file_name": "scenario4_diff_name_exact_64.gguf",
+      "file_size": 256,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 256,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.92,
+        "normalized_score": 0.23,
+        "severity_level": "Low",
+        "confidence": 0.625,
+        "rationale": "File successfully validated under profile 'gguf-spec'. Contains benign profile-specific divergences (e.g. non-power-of-2 alignment, 64-byte name, or non-contiguous gaps) which satisfy the canonical GGUF specification but may diverge from legacy loaders.",
+        "probabilities": {
+          "0": 0.2,
+          "1": 0.7,
+          "2": 0.08,
+          "3": 0.02,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.725,
+        "rationale": "Standard-compliant model admitted under canonical GGUF profile.",
+        "probabilities": {
+          "Benign": 0.78,
+          "Malformed-Header": 0.1,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.02,
+          "Alignment-Tamper": 0.1
+        }
+      },
+      "noul": {
+        "probability": 0.25,
+        "rationale": "Low to moderate probability of downstream divergence depending on whether the target runtime supports generalized GGUF v3 layout."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.06
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario4_diff_nested_array.gguf",
+      "file_name": "scenario4_diff_nested_array.gguf",
+      "file_size": 96,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 96,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "test.nested_arr"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.92,
+        "normalized_score": 0.23,
+        "severity_level": "Low",
+        "confidence": 0.625,
+        "rationale": "File successfully validated under profile 'gguf-spec'. Contains benign profile-specific divergences (e.g. non-power-of-2 alignment, 64-byte name, or non-contiguous gaps) which satisfy the canonical GGUF specification but may diverge from legacy loaders.",
+        "probabilities": {
+          "0": 0.2,
+          "1": 0.7,
+          "2": 0.08,
+          "3": 0.02,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.725,
+        "rationale": "Standard-compliant model admitted under canonical GGUF profile.",
+        "probabilities": {
+          "Benign": 0.78,
+          "Malformed-Header": 0.1,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.02,
+          "Alignment-Tamper": 0.1
+        }
+      },
+      "noul": {
+        "probability": 0.25,
+        "rationale": "Low to moderate probability of downstream divergence depending on whether the target runtime supports generalized GGUF v3 layout."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.24
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario4_diff_non_contiguous_gap.gguf",
+      "file_name": "scenario4_diff_non_contiguous_gap.gguf",
+      "file_size": 256,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "PASS",
+      "safegguf_exit_code": 0,
+      "safegguf_error_code": "NONE",
+      "safegguf_category": "none",
+      "safegguf_message": "",
+      "safegguf_findings": [],
+      "raw_header": {
+        "file_size": 256,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 2,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 0.92,
+        "normalized_score": 0.23,
+        "severity_level": "Low",
+        "confidence": 0.625,
+        "rationale": "File successfully validated under profile 'gguf-spec'. Contains benign profile-specific divergences (e.g. non-power-of-2 alignment, 64-byte name, or non-contiguous gaps) which satisfy the canonical GGUF specification but may diverge from legacy loaders.",
+        "probabilities": {
+          "0": 0.2,
+          "1": 0.7,
+          "2": 0.08,
+          "3": 0.02,
+          "4": 0.0
+        }
+      },
+      "choice": {
+        "category": "Benign",
+        "confidence": 0.725,
+        "rationale": "Standard-compliant model admitted under canonical GGUF profile.",
+        "probabilities": {
+          "Benign": 0.78,
+          "Malformed-Header": 0.1,
+          "Arithmetic-Exploit": 0.0,
+          "Resource-Exhaustion": 0.02,
+          "Alignment-Tamper": 0.1
+        }
+      },
+      "noul": {
+        "probability": 0.25,
+        "rationale": "Low to moderate probability of downstream divergence depending on whether the target runtime supports generalized GGUF v3 layout."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.45
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario5_stego_invalid_meta_type_255.gguf",
+      "file_name": "scenario5_stego_invalid_meta_type_255.gguf",
+      "file_size": 57,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidMetadataType",
+      "safegguf_category": "format",
+      "safegguf_message": "Unknown or invalid metadata value type",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidMetadataType",
+          "severity": "reject",
+          "message": "Unknown or invalid metadata value type",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "test.bad_type_255"
+        }
+      ],
+      "raw_header": {
+        "file_size": 57,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "test.bad_type_255"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidMetadataType'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.3
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario5_stego_invalid_meta_type_99.gguf",
+      "file_name": "scenario5_stego_invalid_meta_type_99.gguf",
+      "file_size": 53,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidMetadataType",
+      "safegguf_category": "format",
+      "safegguf_message": "Unknown or invalid metadata value type",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidMetadataType",
+          "severity": "reject",
+          "message": "Unknown or invalid metadata value type",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "test.bad_type"
+        }
+      ],
+      "raw_header": {
+        "file_size": 53,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "test.bad_type"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidMetadataType'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.14
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario5_stego_invalid_utf8_meta_val.gguf",
+      "file_name": "scenario5_stego_invalid_utf8_meta_val.gguf",
+      "file_size": 63,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidUtf8",
+      "safegguf_category": "format",
+      "safegguf_message": "String or tensor name is not valid UTF-8",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidUtf8",
+          "severity": "reject",
+          "message": "String or tensor name is not valid UTF-8",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "test.str"
+        }
+      ],
+      "raw_header": {
+        "file_size": 63,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "test.str"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidUtf8'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.43
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario5_stego_invalid_utf8_tensor_name.gguf",
+      "file_name": "scenario5_stego_invalid_utf8_tensor_name.gguf",
+      "file_size": 70,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidUtf8",
+      "safegguf_category": "format",
+      "safegguf_message": "String or tensor name is not valid UTF-8",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidUtf8",
+          "severity": "reject",
+          "message": "String or tensor name is not valid UTF-8",
+          "stage": "parse",
+          "category": "format",
+          "tensor_index": 0,
+          "tensor": "blk.0.\u00ff.weight",
+          "offset": 24
+        }
+      ],
+      "raw_header": {
+        "file_size": 70,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 1,
+        "metadata_kv_count": 0,
+        "metadata_keys": [],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidUtf8'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 14.38
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario5_stego_overlong_utf8_nul.gguf",
+      "file_name": "scenario5_stego_overlong_utf8_nul.gguf",
+      "file_size": 69,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidUtf8",
+      "safegguf_category": "format",
+      "safegguf_message": "String or tensor name is not valid UTF-8",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidUtf8",
+          "severity": "reject",
+          "message": "String or tensor name is not valid UTF-8",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "test.stego"
+        }
+      ],
+      "raw_header": {
+        "file_size": 69,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "test.stego"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidUtf8'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.08
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario5_stego_tampered_key_grammar.gguf",
+      "file_name": "scenario5_stego_tampered_key_grammar.gguf",
+      "file_size": 68,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidKeyFormat",
+      "safegguf_category": "format",
+      "safegguf_message": "Metadata key violates the GGUF key grammar",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidKeyFormat",
+          "severity": "reject",
+          "message": "Metadata key violates the GGUF key grammar",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "bad-key..Name_With_Uppercase"
+        }
+      ],
+      "raw_header": {
+        "file_size": 68,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "bad-key..Name_With_Uppercase"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidKeyFormat'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 15.48
+    },
+    {
+      "file_path": "D:\\WorkSpace\\.gemini\\antigravity\\scratch\\safegguf_test\\tests\\fixtures\\security_testbed\\scenario5_stego_truncated_utf8_seq.gguf",
+      "file_name": "scenario5_stego_truncated_utf8_seq.gguf",
+      "file_size": 62,
+      "group": "security_testbed",
+      "profile": "gguf-spec",
+      "safegguf_status": "REJECT",
+      "safegguf_exit_code": 2,
+      "safegguf_error_code": "E_InvalidUtf8",
+      "safegguf_category": "format",
+      "safegguf_message": "String or tensor name is not valid UTF-8",
+      "safegguf_findings": [
+        {
+          "code": "E_InvalidUtf8",
+          "severity": "reject",
+          "message": "String or tensor name is not valid UTF-8",
+          "stage": "parse",
+          "category": "format",
+          "offset": 24,
+          "key": "test.trunc"
+        }
+      ],
+      "raw_header": {
+        "file_size": 62,
+        "magic": "GGUF",
+        "endianness": "little",
+        "version": 3,
+        "tensor_count": 0,
+        "metadata_kv_count": 1,
+        "metadata_keys": [
+          "test.trunc"
+        ],
+        "alignment": 32,
+        "parse_error": null,
+        "tensors_summary": []
+      },
+      "score": {
+        "raw_score": 2.08,
+        "normalized_score": 0.52,
+        "severity_level": "Medium",
+        "confidence": 0.575,
+        "rationale": "Header or metadata grammar violation detected: 'E_InvalidUtf8'. Invalid UTF-8 sequence, malformed metadata key format, or corrupted value type. Violates formal GGUF serialization specification.",
+        "probabilities": {
+          "0": 0.0,
+          "1": 0.14,
+          "2": 0.66,
+          "3": 0.18,
+          "4": 0.02
+        }
+      },
+      "choice": {
+        "category": "Malformed-Header",
+        "confidence": 0.8875,
+        "rationale": "Header corruption, unsupported GGUF version, or invalid metadata typing.",
+        "probabilities": {
+          "Benign": 0.01,
+          "Malformed-Header": 0.91,
+          "Arithmetic-Exploit": 0.02,
+          "Resource-Exhaustion": 0.03,
+          "Alignment-Tamper": 0.03
+        }
+      },
+      "noul": {
+        "probability": 0.42,
+        "rationale": "Downstream loaders may abort with an unhandled exception or fail parsing during model initialization."
+      },
+      "execution_mode": "offline",
+      "latency_ms": 13.95
+    }
+  ]
+}

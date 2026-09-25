@@ -8,12 +8,12 @@ __pycache__/
 tests/fixtures/*.gguf
 tests/fixtures/matrix/
 tests/fixtures/negative/
+tests/fixtures/security_testbed/
 tests/corpus/*.gguf
 .cache/
+.agents/
 tests/oracle/ggml_oracle
 tests/oracle/ggml_oracle_pinned
 tests/oracle/ggml_oracle_rolling
-
-
 
 tests/fuzz-artifacts/

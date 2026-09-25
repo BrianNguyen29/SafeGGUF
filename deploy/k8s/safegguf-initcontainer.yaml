@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: llm-inference-pod-with-safegguf
+  namespace: ai-serving
+  labels:
+    app: llama-cpp-serving
+    security.policy: safegguf-validated
+spec:
+  volumes:
+    - name: model-volume
+      persistentVolumeClaim:
+        claimName: unvalidated-models-pvc
+
+  # ============================================================================
+  # SafeGGUF Pre-Admission Firewall (Init Container)
+  # Fails closed (exit code 2): If the model file is malformed, tampered,
+  # or contains arithmetic integer wraps, the Pod terminates before any memory
+  # is mapped into the production inference container.
+  # ============================================================================
+  initContainers:
+    - name: safegguf-pre-admission-validator
+      image: ghcr.io/briannguyen29/safegguf:v0.3.6
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/local/bin/safegguf
+        - inspect
+        - /models/model.gguf
+        - --profile
+        - llama-cpp
+        - --format
+        - json
+        - --endian
+        - auto
+      resources:
+        limits:
+          cpu: "1000m"
+          memory: "256Mi"
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+      volumeMounts:
+        - name: model-volume
+          mountPath: /models
+          readOnly: true
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65532 # nonroot
+
+  # ============================================================================
+  # Downstream Production Inference Serving Container (e.g. llama.cpp / vLLM)
+  # Only starts if the initContainer above exits with code 0 (PASS).
+  # ============================================================================
+  containers:
+    - name: llama-cpp-server
+      image: ghcr.io/ggerganov/llama.cpp:server
+      command:
+        - /server
+        - -m
+        - /models/model.gguf
+        - -c
+        - "4096"
+        - --host
+        - "0.0.0.0"
+        - --port
+        - "8080"
+      ports:
+        - containerPort: 8080
+          name: http
+      volumeMounts:
+        - name: model-volume
+          mountPath: /models
+          readOnly: true
+      resources:
+        limits:
+          cpu: "8000m"
+          memory: "16Gi"
+        requests:
+          cpu: "2000m"
+          memory: "8Gi"

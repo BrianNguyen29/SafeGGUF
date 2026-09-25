@@ -5,6 +5,8 @@ import subprocess
 import sys
 
 BINARY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "zig-out", "bin", "safegguf")
+if sys.platform == "win32" and not BINARY.endswith(".exe") and os.path.exists(BINARY + ".exe"):
+    BINARY += ".exe"
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 # Pinned ggml provenance carried by every JSON output (PASS/REJECT/ERROR).
@@ -12,9 +14,13 @@ FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 # "type_layout_source" under gguf-spec.
 GGML_PROVENANCE = {"project": "ggml", "version": "0.23.0", "commit": "e91ded11bdcd78c42f9c8d3978ff6686eb4c1226"}
 
-def run_cli(*args):
+def run_cli(*args, env=None):
     cmd = [BINARY] + list(args)
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+    full_env = None
+    if env is not None:
+        full_env = os.environ.copy()
+        full_env.update(env)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10, env=full_env)
     return proc.returncode, proc.stdout, proc.stderr
 
 def test_positive():
@@ -305,6 +311,7 @@ def test_usage_and_flags():
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--unknown-flag"],
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--profile", "invalid-profile"],
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--format", "yaml"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--endian"],
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--endian", "middle"],
         # F-01: --max-variable-array-elements fail-closed value contract
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements"],
@@ -314,11 +321,29 @@ def test_usage_and_flags():
         # u64 max + 1 (parse overflow) and one above the generic 10M array cap
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements", "18446744073709551616"],
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-variable-array-elements", "10000001"],
+        # Resource limit flags validation
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-memory-mb"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-memory-mb", "0"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-memory-mb", "-1"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-memory-mb", "abc"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-memory-mb", "17592186044416"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-memory-mb", "18446744073709551615"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-memory-mb", "18446744073709551616"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-work-budget"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-work-budget", "0"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-work-budget", "-1"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-work-budget", "abc"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-work-budget", "18446744073709551616"],
     ]
 
     for args in bad_invocations:
         rc, stdout, stderr = run_cli(*args)
         assert rc == 64, f"Expected returncode 64 (EX_USAGE) for {args}, got {rc}\nStdout: {stdout}\nStderr: {stderr}"
+
+    # Verify specific error messages
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "valid.gguf"), "--endian")
+    assert rc == 64
+    assert "Error: --endian requires 'little', 'big', or 'auto'" in stderr
 
     print("  [ok] All usage tests passed with exit code 64.")
 
@@ -347,12 +372,120 @@ def test_help():
         assert rc == 0, f"Expected returncode 0 for {flag}, got {rc}"
         output = stdout + stderr
         assert "SafeGGUF v0.3.6" in output, f"Version missing in help: {output}"
+        assert "--endian <little|big|auto>" in output, f"Accurate endian flag missing in help: {output}"
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
         assert "default: little" in output, f"Default little endian missing in help: {output}"
         assert "--format <text|json>" in output
         assert "--max-variable-array-elements <N>" in output, f"Variable-array cap flag missing in help: {output}"
         assert "default: 1000000" in output, f"Variable-array cap default missing in help: {output}"
     print("  [ok] All help contract tests passed with exit code 0.")
+
+def test_endian_auto():
+    print("Running auto-detect endianness tests (--endian auto)...")
+    big_endian_fixture = os.path.join(FIXTURES, "big_endian_v3.gguf")
+
+    # 1. Big-Endian model with --endian auto under gguf-spec profile: PASS (code 0)
+    rc, stdout, stderr = run_cli("inspect", big_endian_fixture, "--endian", "auto", "--profile", "gguf-spec")
+    assert rc == 0, f"Expected 0 for --endian auto under gguf-spec, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout, f"Missing PASS in output: {stdout}"
+
+    # 2. Big-Endian model with --endian auto under gguf-spec profile in JSON format: PASS (code 0)
+    rc, stdout, stderr = run_cli("inspect", big_endian_fixture, "--endian", "auto", "--profile", "gguf-spec", "--format", "json")
+    assert rc == 0, f"Expected 0 for JSON --endian auto under gguf-spec, got {rc}: {stderr}"
+    data = json.loads(stdout)
+    assert data["status"] == "PASS"
+    assert data["profile"] == "gguf-spec"
+
+    # 3. Big-Endian model with --endian auto under llama-cpp profile: REJECT (code 2)
+    # Upstream ggml / llama.cpp profile enforces host native byte order
+    rc, stdout, stderr = run_cli("inspect", big_endian_fixture, "--endian", "auto", "--profile", "llama-cpp")
+    assert rc == 2, f"Expected 2 for --endian auto under llama-cpp, got {rc}: {stdout} {stderr}"
+    assert "E_CompatibilityViolation" in stdout or "E_CompatibilityViolation" in stderr
+
+    # 4. Big-Endian model with --endian auto under llama-cpp profile in JSON format: REJECT (code 2)
+    rc, stdout, stderr = run_cli("inspect", big_endian_fixture, "--endian", "auto", "--profile", "llama-cpp", "--format", "json")
+    assert rc == 2, f"Expected 2 for JSON --endian auto under llama-cpp, got {rc}: {stdout} {stderr}"
+    data_llama = json.loads(stdout)
+    assert data_llama["status"] == "REJECT"
+    assert data_llama["category"] == "compatibility"
+
+    # 5. Little-Endian model with --endian auto under both profiles: PASS (code 0)
+    valid_fixture = os.path.join(FIXTURES, "valid.gguf")
+    rc, stdout, stderr = run_cli("inspect", valid_fixture, "--endian", "auto", "--profile", "gguf-spec")
+    assert rc == 0, f"Expected 0 for --endian auto on valid.gguf (gguf-spec), got {rc}: {stderr}"
+    assert "Result: PASS" in stdout
+
+    rc, stdout, stderr = run_cli("inspect", valid_fixture, "--endian", "auto", "--profile", "llama-cpp")
+    assert rc == 0, f"Expected 0 for --endian auto on valid.gguf (llama-cpp), got {rc}: {stderr}"
+    assert "Result: PASS" in stdout
+
+    print("  [ok] Auto-detect endianness tests passed.")
+
+def test_resource_limits():
+    print("Running resource limits tests (--max-work-budget, --max-memory-mb, SAFEGGUF_MAX_*)...")
+    valid_fixture = os.path.join(FIXTURES, "valid.gguf")
+
+    # 1. --max-work-budget CLI flag override
+    rc, stdout, stderr = run_cli("inspect", valid_fixture, "--max-work-budget", "1")
+    assert rc == 2, f"Expected 2 for --max-work-budget 1, got {rc}: {stdout} {stderr}"
+    assert "E_ResourceLimitExceeded" in stderr
+
+    rc, stdout, stderr = run_cli("inspect", valid_fixture, "--max-work-budget", "10000000")
+    assert rc == 0, f"Expected 0 for --max-work-budget 10000000, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout
+
+    # 2. SAFEGGUF_MAX_WORK_BUDGET environment variable override
+    rc, stdout, stderr = run_cli("inspect", valid_fixture, env={"SAFEGGUF_MAX_WORK_BUDGET": "1"})
+    assert rc == 2, f"Expected 2 for SAFEGGUF_MAX_WORK_BUDGET=1, got {rc}: {stdout} {stderr}"
+    assert "E_ResourceLimitExceeded" in stderr
+
+    rc, stdout, stderr = run_cli("inspect", valid_fixture, env={"SAFEGGUF_MAX_WORK_BUDGET": "10000000"})
+    assert rc == 0, f"Expected 0 for SAFEGGUF_MAX_WORK_BUDGET=10000000, got {rc}: {stderr}"
+    assert "Result: PASS" in stdout
+
+    # 3. Create a temporary fixture allocating ~1.8 MB to test memory quota overrides
+    mem_fixture_path = os.path.join(FIXTURES, "temp_mem_test.gguf")
+    try:
+        num_keys = 30
+        key_len = 60000
+        b = bytearray()
+        b += b"GGUF"
+        b += struct.pack("<IQQ", 3, 0, num_keys)
+        for i in range(num_keys):
+            k = f"key_{i:04d}_".encode("ascii") + b"a" * (key_len - 9)
+            b += struct.pack("<Q", len(k))
+            b += k
+            b += struct.pack("<II", 4, 0)
+        pad = (32 - (len(b) % 32)) % 32
+        b += b"\x00" * pad
+        with open(mem_fixture_path, "wb") as f:
+            f.write(b)
+
+        # 3a. --max-memory-mb 1 -> REJECT (exit 2, E_TotalAllocationLimitExceeded)
+        rc, stdout, stderr = run_cli("inspect", mem_fixture_path, "--max-memory-mb", "1")
+        assert rc == 2, f"Expected 2 for --max-memory-mb 1, got {rc}: {stdout} {stderr}"
+        assert "E_TotalAllocationLimitExceeded" in stderr
+
+        # 3b. --max-memory-mb 5 -> PASS (exit 0)
+        rc, stdout, stderr = run_cli("inspect", mem_fixture_path, "--max-memory-mb", "5")
+        assert rc == 0, f"Expected 0 for --max-memory-mb 5, got {rc}: {stderr}"
+        assert "Result: PASS" in stdout
+
+        # 3c. SAFEGGUF_MAX_MEMORY_MB=1 -> REJECT (exit 2, E_TotalAllocationLimitExceeded)
+        rc, stdout, stderr = run_cli("inspect", mem_fixture_path, env={"SAFEGGUF_MAX_MEMORY_MB": "1"})
+        assert rc == 2, f"Expected 2 for SAFEGGUF_MAX_MEMORY_MB=1, got {rc}: {stdout} {stderr}"
+        assert "E_TotalAllocationLimitExceeded" in stderr
+
+        # 3d. SAFEGGUF_MAX_MEMORY_MB=5 -> PASS (exit 0)
+        rc, stdout, stderr = run_cli("inspect", mem_fixture_path, env={"SAFEGGUF_MAX_MEMORY_MB": "5"})
+        assert rc == 0, f"Expected 0 for SAFEGGUF_MAX_MEMORY_MB=5, got {rc}: {stderr}"
+        assert "Result: PASS" in stdout
+
+    finally:
+        if os.path.exists(mem_fixture_path):
+            os.remove(mem_fixture_path)
+
+    print("  [ok] Resource limits and environment variable tests passed.")
 
 if __name__ == "__main__":
     if not os.path.exists(BINARY):
@@ -367,4 +500,6 @@ if __name__ == "__main__":
     test_usage_and_flags()
     test_io_error()
     test_help()
+    test_endian_auto()
+    test_resource_limits()
     print("\nAll CLI end-to-end integration tests PASSED successfully!")
