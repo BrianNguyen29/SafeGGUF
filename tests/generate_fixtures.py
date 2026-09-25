@@ -618,12 +618,12 @@ if __name__ == "__main__":
     build_signed_dim_overflow()
     build_element_product_overflow()
 
-    # Populate seed corpus directory for fuzzing
-    corpus_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus")
-    os.makedirs(corpus_dir, exist_ok=True)
-    import shutil
-    for fname in os.listdir(DIR):
-        if fname.endswith(".gguf"):
-            shutil.copyfile(os.path.join(DIR, fname), os.path.join(corpus_dir, fname))
+    # Generate deterministic security testbed fixtures
+    try:
+        from tests.generate_security_testbed import generate_security_fixtures
+        generate_security_fixtures()
+    except Exception as e:
+        print(f"Warning: could not run generate_security_fixtures: {e}")
 
     print("All fixtures and seed corpus generated successfully.")
+

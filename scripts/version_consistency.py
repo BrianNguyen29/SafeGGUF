@@ -57,6 +57,46 @@ def is_shallow_checkout():
     return output is not None and output.strip() == "true"
 
 
+def is_valid_version_progression(embedded: str, tag: str) -> bool:
+    """Check whether embedded version is either exactly equal to the latest tag
+    or represents a valid next-development step (patch, minor, or major)."""
+    expected = tag[1:] if tag.startswith("v") else tag
+    if embedded == expected:
+        return True
+
+    tag_match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", expected)
+    if not tag_match:
+        return False
+    t_maj, t_min, t_pat = map(int, tag_match.groups())
+
+    dev_match = re.match(r"^(\d+)\.(\d+)\.(\d+)-dev$", embedded)
+    if not dev_match:
+        return False
+    e_maj, e_min, e_pat = map(int, dev_match.groups())
+
+    # Valid transitions for next development iteration:
+    # Next patch: (t_maj, t_min, t_pat + 1)
+    # Next minor: (t_maj, t_min + 1, 0)
+    # Next major: (t_maj + 1, 0, 0)
+    if (e_maj, e_min, e_pat) == (t_maj, t_min, t_pat + 1):
+        return True
+    if (e_maj, e_min, e_pat) == (t_maj, t_min + 1, 0):
+        return True
+    if (e_maj, e_min, e_pat) == (t_maj + 1, 0, 0):
+        return True
+
+    return False
+
+
+def expected_next_dev(tag: str) -> str:
+    expected = tag[1:] if tag.startswith("v") else tag
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", expected)
+    if m:
+        maj, minr, pat = map(int, m.groups())
+        return f"{maj}.{minr}.{pat + 1}-dev"
+    return f"{expected}-dev"
+
+
 def main():
     if not BUILD_ZIG.is_file():
         print(f"FAIL: build.zig not found at {BUILD_ZIG}", file=sys.stderr)
@@ -84,21 +124,18 @@ def main():
         print("SKIP: no git repository or no v* tags to compare against")
         return 0
 
-    print(f"latest release tag: {tag}")
-    expected = tag[1:] if tag.startswith("v") else tag
-    if embedded == expected:
-        print(f"OK: embedded default version matches the latest release tag ({tag})")
+    if is_valid_version_progression(embedded, tag):
+        print(f"OK: embedded version '{embedded}' is valid (tracks latest release tag {tag})")
         return 0
 
     print(
-        f"FAIL: embedded default version '{embedded}' != latest release tag '{tag}'",
+        f"FAIL: embedded default version '{embedded}' is not a valid progression from latest release tag '{tag}'",
         file=sys.stderr,
     )
     print(
-        "  A source build would report a version that does not match the latest "
-        "release. Update the `orelse` fallback in build.zig (release artifacts "
-        "are overridden per tag with -Dversion), or cut the tag that matches "
-        "the embedded default.",
+        "  A source build must either match the latest tag or be the valid next "
+        f"patch/minor/major -dev version (e.g. '{expected_next_dev(tag)}'). "
+        "Arbitrary versions like '99.99.99-dev' are rejected.",
         file=sys.stderr,
     )
     return 1

@@ -26,6 +26,54 @@ pub const Limits = struct {
     max_total_alloc_bytes: u64 = 128 * 1024 * 1024,
     max_work_units: u64 = 10_000_000,
     max_scanned_bytes: u64 = 256 * 1024 * 1024,
+
+    /// Initialize limits with defaults and apply any overrides from environment variables.
+    pub fn initFromEnv() Limits {
+        var lim = Limits{};
+        const alloc = std.heap.page_allocator;
+        if (std.process.getEnvVarOwned(alloc, "SAFEGGUF_MAX_MEMORY_MB")) |val| {
+            defer alloc.free(val);
+            if (std.fmt.parseInt(u64, val, 10)) |v| {
+                if (v > 0) {
+                    if (std.math.mul(u64, v, 1024 * 1024)) |bytes| {
+                        lim.max_total_alloc_bytes = bytes;
+                    } else |_| {}
+                }
+            } else |_| {}
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(alloc, "SAFEGGUF_MAX_ALLOC_BYTES")) |val| {
+            defer alloc.free(val);
+            if (std.fmt.parseInt(u64, val, 10)) |v| {
+                lim.max_total_alloc_bytes = v;
+            } else |_| {}
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(alloc, "SAFEGGUF_MAX_WORK_BUDGET")) |val| {
+            defer alloc.free(val);
+            if (std.fmt.parseInt(u64, val, 10)) |v| {
+                if (v > 0) {
+                    lim.max_work_units = v;
+                }
+            } else |_| {}
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(alloc, "SAFEGGUF_MAX_WORK_UNITS")) |val| {
+            defer alloc.free(val);
+            if (std.fmt.parseInt(u64, val, 10)) |v| {
+                lim.max_work_units = v;
+            } else |_| {}
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(alloc, "SAFEGGUF_MAX_SCANNED_BYTES")) |val| {
+            defer alloc.free(val);
+            if (std.fmt.parseInt(u64, val, 10)) |v| {
+                lim.max_scanned_bytes = v;
+            } else |_| {}
+        } else |_| {}
+
+        return lim;
+    }
 };
 
 pub const WorkBudget = struct {

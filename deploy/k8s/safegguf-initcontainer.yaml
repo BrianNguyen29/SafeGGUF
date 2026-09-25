@@ -1,0 +1,134 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: llm-inference-pod-with-safegguf
+  namespace: ai-serving
+  labels:
+    app: llama-cpp-serving
+    security.policy: safegguf-validated
+spec:
+  volumes:
+    - name: model-volume
+      persistentVolumeClaim:
+        claimName: unvalidated-models-pvc
+    - name: attestation-volume
+      emptyDir:
+        medium: Memory
+        sizeLimit: 10Mi
+
+  # ============================================================================
+  # SafeGGUF Pre-Admission Firewall & Content-Hash Handoff Pipeline
+  # Fails closed (exit code 2): If the model file is malformed, tampered,
+  # or contains arithmetic integer wraps, the Pod terminates before any memory
+  # is mapped into the production inference container.
+  # ============================================================================
+  initContainers:
+    # Phase 1: Structural & Arithmetic Pre-Admission Validation
+    - name: safegguf-pre-admission-validator
+      image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
+      imagePullPolicy: IfNotPresent
+      command:
+        - /usr/local/bin/safegguf
+        - inspect
+        - /models/model.gguf
+        - --profile
+        - llama-cpp
+        - --format
+        - json
+        - --endian
+        - auto
+      resources:
+        limits:
+          cpu: "1000m"
+          memory: "256Mi"
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+      volumeMounts:
+        - name: model-volume
+          mountPath: /models
+          readOnly: true
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65532 # nonroot
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+
+    # Phase 2: Cryptographic Content-Hash Attestation Generation (In-Memory CAS)
+    # Executed strictly AFTER SafeGGUF exits 0 (STRUCTURALLY_ACCEPTED).
+    # Emits SHA-256 digest into ephemeral memory-backed volume.
+    - name: safegguf-attestation-generator
+      image: busybox:1.36-musl
+      imagePullPolicy: IfNotPresent
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -euo pipefail
+          echo "[SafeGGUF Attestation] Generating cryptographic SHA-256 digest..."
+          sha256sum /models/model.gguf > /attestation/model.gguf.sha256
+          echo "[SafeGGUF Attestation] Attestation written: $(cat /attestation/model.gguf.sha256)"
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "64Mi"
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+      volumeMounts:
+        - name: model-volume
+          mountPath: /models
+          readOnly: true
+        - name: attestation-volume
+          mountPath: /attestation
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+
+  # ============================================================================
+  # Downstream Production Inference Serving Container (e.g. llama.cpp / vLLM)
+  # Anti-TOCTOU Verification Gate:
+  # Verifies the SHA-256 digest against the attested hash from Phase 2
+  # immediately before loading model weights into process address space.
+  # ============================================================================
+  containers:
+    - name: llama-cpp-server
+      image: ghcr.io/ggerganov/llama.cpp:server
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -euo pipefail
+          echo "[Inference Gate] Validating cryptographic attestation against in-memory digest..."
+          sha256sum -c /attestation/model.gguf.sha256
+          echo "[Inference Gate] Attestation verified (Anti-TOCTOU passed). Launching server..."
+          exec /server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080
+      ports:
+        - containerPort: 8080
+          name: http
+      volumeMounts:
+        - name: model-volume
+          mountPath: /models
+          readOnly: true
+        - name: attestation-volume
+          mountPath: /attestation
+          readOnly: true
+      resources:
+        limits:
+          cpu: "8000m"
+          memory: "16Gi"
+        requests:
+          cpu: "2000m"
+          memory: "8Gi"
