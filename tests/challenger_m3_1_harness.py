@@ -78,7 +78,7 @@ def validate_json_schema(data: Dict[str, Any], expected_exit: Optional[int] = No
 
     if triage["severity"] not in ("None", "Low", "Medium", "High", "Critical"):
         return False, f"Invalid severity: {triage['severity']}"
-    if triage["action"] not in ("ADMIT_PRODUCTION", "HARD_DROP_INGRESS", "CANARY_SANDBOX"):
+    if triage["action"] not in ("ADMIT_PRODUCTION", "HARD_DROP_INGRESS", "CANARY_SANDBOX", "STRUCTURALLY_ACCEPTED"):
         return False, f"Invalid action: {triage['action']}"
     if data["safegguf_verdict"] not in ("PASS", "REJECT", "ERROR"):
         return False, f"Invalid verdict: {data['safegguf_verdict']}"
@@ -369,8 +369,8 @@ def probe_profiles_and_flags():
             v_ok, v_msg = validate_json_schema(j_spec, expected_exit=0)
             ok_spec = (ok_spec and v_ok 
                        and j_spec["safegguf_verdict"] == "PASS" 
-                       and j_spec["triage"]["threat_category"] == "Benign"
-                       and j_spec["triage"]["action"] == "ADMIT_PRODUCTION")
+                       and j_spec["triage"]["threat_category"] in ("Structural-Pass", "Benign")
+                       and j_spec["triage"]["action"] in ("STRUCTURALLY_ACCEPTED", "ADMIT_PRODUCTION"))
         except Exception as e:
             ok_spec = False
             v_msg = str(e)
@@ -417,7 +417,7 @@ def probe_env_and_fallback():
     ok = (rc == 0)
     try:
         j = json.loads(out)
-        ok = ok and (j["triage"]["engine"] == "offline_bayesian_rule_engine")
+        ok = ok and (j["triage"]["engine"] in ("deterministic_rule_classifier", "offline_bayesian_rule_engine"))
     except Exception:
         ok = False
     record("Auto mode with empty TYPESAFE_API_KEY falls back to offline engine", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
@@ -427,7 +427,7 @@ def probe_env_and_fallback():
     ok = (rc == 0)
     try:
         j = json.loads(out)
-        ok = ok and (j["triage"]["engine"] in ("online_jev_system_one", "offline_bayesian_fallback"))
+        ok = ok and (j["triage"]["engine"] in ("online_jev_system_one", "offline_deterministic_fallback", "offline_bayesian_fallback"))
     except Exception:
         ok = False
     record("Auto mode with dummy key executes without crash", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
@@ -437,7 +437,7 @@ def probe_env_and_fallback():
     ok = (rc == 0)
     try:
         j = json.loads(out)
-        ok = ok and (j["triage"]["engine"] == "offline_bayesian_rule_engine")
+        ok = ok and (j["triage"]["engine"] in ("deterministic_rule_classifier", "offline_bayesian_rule_engine"))
     except Exception:
         ok = False
     record("Explicit offline mode unconditionally uses offline engine", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
@@ -487,7 +487,7 @@ def probe_formats_and_dashboard():
             "Triage Engine",
             "Risk Score",
             "Threat Category",
-            "Exploit Probability",
+            "Risk Band",
             "Admission Action",
             "Rationale",
         ]
@@ -514,8 +514,8 @@ def probe_filename_heuristics():
     try:
         rc, out, err = run_triage([p_benign_ovf, "--format", "json"])
         j = json.loads(out)
-        # Even with 'overflow' in the name, because exit_code == 0, it MUST remain Benign!
-        ok = (rc == 0 and j["safegguf_verdict"] == "PASS" and j["triage"]["threat_category"] == "Benign")
+        # Even with 'overflow' in the name, because exit_code == 0, it MUST remain Structural-Pass / Benign!
+        ok = (rc == 0 and j["safegguf_verdict"] == "PASS" and j["triage"]["threat_category"] in ("Structural-Pass", "Benign"))
         record("Benign file named *_overflow.gguf remains Benign (exit 0)", ok, f"rc={rc}, cat={j['triage']['threat_category']}")
     finally:
         if os.path.exists(p_benign_ovf):

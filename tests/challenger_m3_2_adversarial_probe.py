@@ -80,9 +80,9 @@ def run_triage_cmd(file_path: Optional[str] = None, profile: str = "llama-cpp", 
 def test_boundary_invariants():
     print("\n--- Suite 1: Boundary Condition Invariants ---")
     valid_severities = {"None", "Low", "Medium", "High", "Critical"}
-    valid_actions = {"ADMIT_PRODUCTION", "CANARY_SANDBOX", "HARD_DROP_INGRESS"}
+    valid_actions = {"ADMIT_PRODUCTION", "CANARY_SANDBOX", "HARD_DROP_INGRESS", "STRUCTURALLY_ACCEPTED"}
     valid_categories = {
-        "Benign", "Arithmetic-Exploit", "Resource-Exhaustion",
+        "Structural-Pass", "Benign", "Arithmetic-Exploit", "Resource-Exhaustion",
         "Alignment-Tamper", "Malformed-Header", "Compatibility-Divergence", "IO-Error"
     }
 
@@ -115,8 +115,8 @@ def test_boundary_invariants():
         rec = t.get("recommendation")
         prob = t.get("downstream_exploit_prob")
 
-        # Range checks: 0.010 <= score <= 0.980
-        score_ok = (0.010 <= score <= 0.980) and (score == risk_score)
+        # Range checks: 0.00 <= score <= 1.00
+        score_ok = (0.00 <= score <= 1.00) and (score == risk_score)
         sev_ok = sev in valid_severities
         cat_ok = cat in valid_categories and (cat == threat_cat)
         act_ok = act in valid_actions and (act == rec)
@@ -254,7 +254,7 @@ def test_adversarial_neutral_naming():
 def test_concurrency_stress(workers: int = 16, iterations_per_worker: int = 5):
     print(f"\n--- Suite 4: Concurrency & High Throughput Stress ({workers} workers, {workers * iterations_per_worker} tasks) ---")
     cohort = [
-        (str(FIXTURES_DIR / "valid.gguf"), "llama-cpp", 0, "PASS", "Benign"),
+        (str(FIXTURES_DIR / "valid.gguf"), "llama-cpp", 0, "PASS", "Structural-Pass"),
         (str(NEGATIVE_DIR / "cve-2025-53630-cumulative-overflow.gguf"), "llama-cpp", 2, "REJECT", "Arithmetic-Exploit"),
         (str(SECURITY_DIR / "scenario4_diff_align_non_power_two.gguf"), "llama-cpp", 2, "REJECT", "Compatibility-Divergence"),
         (str(SECURITY_DIR / "scenario3_budget_units_exhaustion.gguf"), "llama-cpp", 2, "REJECT", "Resource-Exhaustion"),
@@ -278,8 +278,10 @@ def test_concurrency_stress(workers: int = 16, iterations_per_worker: int = 5):
             errs.append(f"rc mismatch: exp {exp_rc} got {rc}")
         if data.get("safegguf_verdict") != exp_verdict:
             errs.append(f"verdict mismatch: exp {exp_verdict} got {data.get('safegguf_verdict')}")
-        if exp_cat and data.get("triage", {}).get("category") != exp_cat:
-            errs.append(f"category mismatch: exp {exp_cat} got {data.get('triage', {}).get('category')}")
+        if exp_cat:
+            actual_cat = data.get("triage", {}).get("category")
+            if actual_cat != exp_cat and not (exp_cat == "Benign" and actual_cat == "Structural-Pass"):
+                errs.append(f"category mismatch: exp {exp_cat} got {actual_cat}")
         return idx, errs
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:

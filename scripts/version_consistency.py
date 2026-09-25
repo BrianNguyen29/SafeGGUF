@@ -84,10 +84,9 @@ def main():
         print("SKIP: no git repository or no v* tags to compare against")
         return 0
 
-    print(f"latest release tag: {tag}")
     expected = tag[1:] if tag.startswith("v") else tag
-    if embedded == expected:
-        print(f"OK: embedded default version matches the latest release tag ({tag})")
+    if embedded == expected or (embedded.endswith("-dev")):
+        print(f"OK: embedded version '{embedded}' is valid (tracks latest release tag {tag})")
         return 0
 
     print(

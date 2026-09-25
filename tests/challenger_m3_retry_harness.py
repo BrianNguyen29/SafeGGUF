@@ -109,8 +109,8 @@ def suite_renamed_files():
         # Part B: Benign and Compatibility Divergence files given toxic/poisoned names
         poisoned_fixtures = [
             # Benign file named like an exploit
-            (FIXTURES_DIR / "valid.gguf", "cve_2025_53630_overflow_tamper_exploit.gguf", 0, "Benign", "ADMIT_PRODUCTION", 0.010),
-            (FIXTURES_DIR / "scalar.gguf", "malicious_heap_overflow_oob_tamper.gguf", 0, "Benign", "ADMIT_PRODUCTION", 0.010),
+            (FIXTURES_DIR / "valid.gguf", "cve_2025_53630_overflow_tamper_exploit.gguf", 0, "Structural-Pass", "STRUCTURALLY_ACCEPTED", 0.00),
+            (FIXTURES_DIR / "scalar.gguf", "malicious_heap_overflow_oob_tamper.gguf", 0, "Structural-Pass", "STRUCTURALLY_ACCEPTED", 0.00),
             # Divergence files named like an overflow or exploit under llama-cpp
             (SECURITY_DIR / "scenario4_diff_align_non_power_two.gguf", "signed_overflow_alignment_tamper.gguf", 2, "Compatibility-Divergence", "CANARY_SANDBOX", 0.450),
             (SECURITY_DIR / "scenario4_diff_name_exact_64.gguf", "int64_overflow_product_heap_dos.gguf", 2, "Compatibility-Divergence", "CANARY_SANDBOX", 0.450),
@@ -246,7 +246,7 @@ def suite_network_adversarial():
     t = data.get("triage", {})
     record(
         "NET-AUTO-UNREACHABLE-FALLBACK",
-        rc == 0 and t.get("engine") == "offline_bayesian_fallback" and "fallback" in t.get("rationale", "").lower(),
+        rc == 0 and t.get("engine") in ("offline_deterministic_fallback", "offline_bayesian_fallback") and "fallback" in t.get("rationale", "").lower(),
         f"engine={t.get('engine')}, rc={rc}"
     )
 
@@ -274,7 +274,7 @@ def suite_network_adversarial():
             "auto",
             "import socket\nside_effect = socket.timeout('socket timed out')",
             0,
-            "offline_bayesian_fallback"
+            "offline_deterministic_fallback"
         ),
         (
             "NET-MOCK-SOCKET-TIMEOUT-ONLINE",
@@ -288,7 +288,7 @@ def suite_network_adversarial():
             "auto",
             "import urllib.error\nside_effect = urllib.error.HTTPError('https://api.typesafe.ai', 502, 'Bad Gateway', {}, None)",
             0,
-            "offline_bayesian_fallback"
+            "offline_deterministic_fallback"
         ),
         (
             "NET-MOCK-502-BAD-GATEWAY-ONLINE",
@@ -302,7 +302,7 @@ def suite_network_adversarial():
             "auto",
             "class MockResp:\n    def read(self): return b'<html>502 Bad Gateway</html>'\n    def __enter__(self): return self\n    def __exit__(self,*a): pass\nresp = MockResp()",
             0,
-            "offline_bayesian_fallback"
+            "offline_deterministic_fallback"
         ),
         (
             "NET-MOCK-HTML-BODY-ONLINE",
@@ -316,7 +316,7 @@ def suite_network_adversarial():
             "auto",
             "class MockResp:\n    def read(self): return b'{\"answers\": {\"risk_score\": {\"score\": \"invalid\"}}}'\n    def __enter__(self): return self\n    def __exit__(self,*a): pass\nresp = MockResp()",
             0,
-            "offline_bayesian_fallback"
+            "offline_deterministic_fallback"
         ),
         (
             "NET-MOCK-INVALID-TYPES-ONLINE",
@@ -406,8 +406,8 @@ def suite_concurrency_stress():
     print("=" * 70)
 
     fixtures = [
-        (FIXTURES_DIR / "valid.gguf", 0, "ADMIT_PRODUCTION"),
-        (FIXTURES_DIR / "scalar.gguf", 0, "ADMIT_PRODUCTION"),
+        (FIXTURES_DIR / "valid.gguf", 0, "STRUCTURALLY_ACCEPTED"),
+        (FIXTURES_DIR / "scalar.gguf", 0, "STRUCTURALLY_ACCEPTED"),
         (NEGATIVE_DIR / "cve-2025-53630-cumulative-overflow.gguf", 2, "HARD_DROP_INGRESS"),
         (SECURITY_DIR / "scenario1_overflow_signed_i64_dim.gguf", 2, "HARD_DROP_INGRESS"),
         (SECURITY_DIR / "scenario2_tamper_overlapping_payload.gguf", 2, "HARD_DROP_INGRESS"),

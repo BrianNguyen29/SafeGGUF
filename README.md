@@ -7,10 +7,10 @@
 [![CI](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/ci.yml/badge.svg)](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/ci.yml)
 [![Zig](https://img.shields.io/badge/Zig-0.13.0-orange.svg?style=flat-square&logo=zig)](https://ziglang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Release](https://img.shields.io/badge/Release-v0.3.6--hardened-success.svg?style=flat-square)](https://github.com/BrianNguyen29/SafeGGUF/releases)
+[![Release](https://img.shields.io/badge/Release-v0.3.7--dev-blue.svg?style=flat-square)](https://github.com/BrianNguyen29/SafeGGUF)
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blueviolet.svg?style=flat-square)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
 [![Docker](https://img.shields.io/badge/Docker-Distroless%20%3C%205MB-2496ED.svg?style=flat-square&logo=docker)](Dockerfile)
-[![Audit](https://img.shields.io/badge/Security%20Audit-100%25%20Certified-brightgreen.svg?style=flat-square)](production_audit_report.md)
+[![Audit](https://img.shields.io/badge/Security-Internal%20Verification%20Passed-blue.svg?style=flat-square)](production_audit_report.md)
 
 <p align="center">
   <a href="#key-features">Key Features</a> •
@@ -33,7 +33,7 @@
 
 In modern LLM infrastructure (such as `llama.cpp`, `vLLM`, or `Ollama`), model headers, metadata arrays, and tensor descriptor tables are completely **attacker-controlled**. Corrupted or weaponized model files can trigger silent 64-bit integer wraparounds, heap out-of-bounds corruption, and unconstrained memory exhaustion before inference even begins.
 
-SafeGGUF acts as an **Ingress Pre-Admission Firewall**, inspecting model topology using a constant **64 KiB sliding-window reader** with $O(1)$ memory footprint. It deterministically rejects malicious or malformed payloads in $< 10\text{ ms}$ before any weights are mapped into memory.
+SafeGGUF acts as an **Ingress Pre-Admission Firewall**, inspecting model topology using a constant **64 KiB sliding-window reader** with strictly bounded heap allocations governed by `QuotaAllocator` (128 MB default ceiling). It deterministically rejects malicious or malformed payloads in $< 10\text{ ms}$ before any tensor weights are mapped into host memory.
 
 ```
                               SAFEGGUF INGRESS PIPELINE
@@ -46,7 +46,7 @@ SafeGGUF acts as an **Ingress Pre-Admission Firewall**, inspecting model topolog
    | - 64-bit Checked Arithmetic (Prevents dimension & product overflows)  |
    | - Wrapping QuotaAllocator (128 MB cap) & WorkBudget (10M units)       |
    | - Zero-Padding Invariant Enforcement (Anti-steganography tamper check)|
-   | - Constant 64 KiB sliding buffer: RAM O(1), latency < 10ms            |
+   | - 64 KiB sliding buffer + QuotaAllocator bounds (latency < 10ms)      |
    +-----------------------------------------------------------------------+
                      /                                   \
         Exit Code 2 /                                     \ Exit Code 0
@@ -55,12 +55,12 @@ SafeGGUF acts as an **Ingress Pre-Admission Firewall**, inspecting model topolog
    +------------------------------+         +-------------------------------+
    | 🚫 HARD REJECT (DROP)        |         | TIER 2: Hybrid Triage Filter  |
    | - Blocked at cluster ingress |         | - safegguf-triage             |
-   | - Zero inference memory used |         | - Offline Bayesian Engine     |
+   | - Zero inference memory used |         | - Rule Classifier / Jev AI    |
    | - Security alert dispatched  |         +-------------------------------+
    +------------------------------+                     /       \
-                                        Score < 0.20   /         \ Score >= 0.20
-                                                      /           \ (Noul >= 0.30)
-                                                     v             v
+                                       Score < 0.20   /         \ Score >= 0.20
+                                                     /           \ (Risk >= Medium)
+                                                    v             v
                                            +-------------+  +---------------+
                                            | ✅ PROD POD |  | ⚠️ CANARY ZONE|
                                            | (Admit)     |  | (Quarantine)  |
@@ -72,11 +72,11 @@ SafeGGUF acts as an **Ingress Pre-Admission Firewall**, inspecting model topolog
 ## ✨ Key Features
 
 * **🛡️ Zero-Compromise Arithmetic Safety:** Checked operations (`checkedAdd`, `checkedMul`, `checkedAlignUp`) everywhere. Eliminates 64-bit integer wrap vulnerabilities (e.g. *CVE-2024-2182*, *CVE-2024-34062*, *CVE-2025-53630*).
-* **⚡ Constant Memory Overhead $O(1)$:** Evaluates arbitrarily large multi-gigabyte models through a lightweight 64 KiB sliding window. Tensor weight payloads are never loaded into host RAM.
-* **🔒 In-Process Anti-TOCTOU Defense:** Direct File Descriptor validation (`safegguf.validate_fd(fd)`) eliminates *Time-Of-Check to Time-Of-Use* file-swapping attacks with zero seek side-effects.
+* **⚡ Bounded Memory Architecture:** Evaluates arbitrarily large multi-gigabyte models through a 64 KiB sliding I/O window with bounded metadata allocations under `QuotaAllocator`. Tensor weight payloads are never loaded into host RAM.
+* **🔒 In-Process Anti-TOCTOU Defense:** Direct File Descriptor validation (`safegguf.validate_fd(fd)`) provides TOCTOU-resistance when downstream loaders consume the same open file descriptor or immutable Content-Addressable Storage (CAS) digest.
 * **🌐 Enterprise C-ABI & Zero-Libc:** Exported shared and static libraries (`safegguf.dll`, `libsafegguf.so`, `libsafegguf.a`) easily integrated with C, C++, Rust, Go, or Python.
 * **🔄 Endianness Auto-Detection:** Seamlessly inspects Little-Endian and Big-Endian GGUF v2/v3 models (`--endian auto`) without manual configuration.
-* **🤖 Hybrid Semantic Triage (Air-Gapped & Offline):** Built-in deterministic Bayesian Rule Engine provides sub-millisecond threat categorization and exploit probability scoring with **zero token cost and zero network requirements**, plus live TypeSafe Jev System One integration.
+* **🤖 Hybrid Semantic Triage (Air-Gapped & Offline):** Built-in deterministic Rule Classifier provides sub-millisecond threat categorization and risk scoring with **zero token cost and zero network requirements**, plus live TypeSafe Jev System One integration.
 * **🐳 Ultra-Minimal Cloud-Native Footprint:** Distroless multi-stage Docker image ($< 5\text{ MB}$) with non-root security context (`runAsUser: 65532`) and drop-in Kubernetes InitContainer manifests.
 * **🎯 Deterministic Exit Code Contract:** Fail-closed taxonomy (`0` PASS, `2` REJECT, `64` USAGE, `70` SOFTWARE, `74` IOERR) built specifically for automated CI/CD and production ingress gates.
 
@@ -84,14 +84,14 @@ SafeGGUF acts as an **Ingress Pre-Admission Firewall**, inspecting model topolog
 
 ## 📊 Defense Comparison
 
-| Threat Vector / Protection | Naive Parsers | Native Inference Loaders | SafeGGUF v0.3.6 |
+| Threat Vector / Protection | Naive Parsers | Native Inference Loaders | SafeGGUF (v0.3.7-dev) |
 | :--- | :---: | :---: | :---: |
 | **Integer Arithmetic Overflows** | ❌ Vulnerable | ⚠️ Intermittent Checks | ✅ **100% Checked Arithmetic** |
-| **Peak Memory During Validation** | $O(N)$ (File Size) | $O(N)$ (`mmap` allocation) | ✅ **Constant $O(1)$ (64 KiB)** |
-| **TOCTOU Attack Protection** | ❌ None (Path-only) | ❌ None | ✅ **Kernel FD (`validate_fd`)** |
+| **Peak Memory During Validation** | $O(N)$ (File Size) | $O(N)$ (`mmap` allocation) | ✅ **64 KiB I/O Window + Quota Cap** |
+| **TOCTOU Attack Protection** | ❌ None (Path-only) | ❌ None | ✅ **Kernel FD / CAS Digest** |
 | **Anti-Steganography Zero-Padding** | ❌ Ignored | ❌ Ignored | ✅ **Enforced (Strict Alignment)** |
 | **Resource Exhaustion (Memory DoS)** | ❌ Unbounded | ⚠️ Partial Checks | ✅ **QuotaAllocator & WorkBudget** |
-| **Air-Gapped Semantic Scoring** | ❌ None | ❌ None | ✅ **Bayesian Engine (<10ms)** |
+| **Air-Gapped Semantic Scoring** | ❌ None | ❌ None | ✅ **Rule Classifier (<10ms)** |
 | **Container Footprint** | > 100 MB | > 1 GB (CUDA / Runtimes) | ✅ **Distroless Static < 5 MB** |
 
 ---
@@ -183,25 +183,28 @@ SafeGGUF exports a pure, standard C-ABI requiring **zero external dependencies a
 
 ```c
 #include "safegguf.h"
-#include <fcntl.h>
 #include <stdio.h>
 
-int main() {
-    safegguf_options_t options = {
+int main(void) {
+    safegguf_options_v1_t options = {
+        .struct_size = sizeof(safegguf_options_v1_t),
         .profile = SAFEGGUF_PROFILE_LLAMA_CPP,
         .endian = SAFEGGUF_ENDIAN_AUTO,
-        .max_memory_mb = 128,
-        .max_work_budget = 10000000
+        .max_alloc_bytes = 128 * 1024 * 1024, /* 128 MB ceiling */
+        .max_work_units = 10000000,
+        .max_scanned_bytes = 0,               /* 0 = default limit */
+        .reserved = NULL
     };
 
-    char err_buf[512] = {0};
+    safegguf_result_t result;
 
-    // Validate directly via path
-    int rc = safegguf_validate_path("/path/to/model.gguf", &options, err_buf, sizeof(err_buf));
+    // Validate directly via path (or safegguf_validate_fd_v1 for open descriptors)
+    int rc = safegguf_validate_path_v1("/path/to/model.gguf", &options, &result);
     if (rc == SAFEGGUF_OK) {
-        printf("Model passed validation.\n");
+        printf("Model passed structural validation.\n");
     } else {
-        printf("Rejected (code %d): %s\n", rc, err_buf);
+        printf("Rejected (exit %d, [%s] %s): %s\n",
+               rc, result.category, result.error_code, result.message);
     }
     return rc;
 }

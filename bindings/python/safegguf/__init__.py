@@ -12,7 +12,7 @@ from .core import (
     Status,
 )
 
-__version__ = "0.3.6"
+__version__ = "0.3.7.dev0"
 __all__ = [
     "validate_path",
     "validate_fd",

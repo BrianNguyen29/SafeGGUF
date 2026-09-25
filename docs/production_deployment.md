@@ -19,23 +19,23 @@ SafeGGUF đóng vai trò là chốt chặn bảo mật đầu vào tại tầng 
    | - Kiểm tra Checked Arithmetic (Chống tràn số 64-bit)              |
    | - Khống chế QuotaAllocator (128 MB) & WorkBudget (10M units)      |
    | - Rà soát Alignment Padding 256-byte (Chống mã độc steganography) |
-   | - Sliding Window 64 KiB: Tiêu thụ RAM hằng số O(1), độ trễ < 10ms |
+   | - Sliding Window 64 KiB: Tiêu thụ I/O streaming có giới hạn với QuotaAllocator ceiling 128 MB, độ trễ < 10ms |
    +-------------------------------------------------------------------+
                      /                               \
         Exit Code 2 /                                 \ Exit Code 0
                    /                                   \
                   v                                     v
    +------------------------------+     +-------------------------------+
-   | 🚫 HARD REJECT (DROP)        |     | TẦNG 2: Hybrid Triage Filter  |
-   | - Chặn ngay tại cửa khẩu     |     | - safegguf-triage             |
+   | 🚫 HARD REJECT (DROP)        |     | TẦNG 2: Downstream Admission  |
+   | - Chặn ngay tại cửa khẩu     |     | - safegguf-triage / Policy    |
    | - Không cấp phát bộ nhớ      |     +-------------------------------+
    | - Bắn cảnh báo SIEM / SOC    |                 /       \
-   +------------------------------+     Score < 0.20/         \ Score >= 0.20
-                                                   /           \ (Noul >= 0.30)
-                                                  v             v
+   +------------------------------+   Risk: Low   /         \ Risk: High
+                                                 /           \
+                                                v             v
                                         +-------------+  +---------------+
-                                        | ✅ PROD POD |  | ⚠️ CANARY ZONE|
-                                        | (Admit)     |  | (Quarantine)  |
+                                        | ✅ PROD POD |  | ⚠️ QUARANTINE |
+                                        | (Admit)     |  | (Investigation)
                                         +-------------+  +---------------+
 ```
 
@@ -57,7 +57,7 @@ safegguf inspect /path/to/model.gguf --profile llama-cpp --endian auto --format 
 ### 2.2. Bảng Exit Codes Chuẩn Định
 | Mã Thoát | Ý nghĩa | Hành Động Vận Hành |
 | :---: | :--- | :--- |
-| **`0`** | **PASS** | Tệp an toàn tuyệt đối $\rightarrow$ Cấp phép nạp vào hệ thống suy luận. |
+| **`0`** | **PASS** | Tệp vượt qua thẩm định cấu trúc & số học (STRUCTURALLY_ACCEPTED) $\rightarrow$ Bàn giao cho tầng chính sách nạp (admission policy). |
 | **`2`** | **REJECT** | Phát hiện vi phạm cấu trúc, tràn số, hoặc vượt quota $\rightarrow$ Hủy tệp ngay lập tức. |
 | **`64`** | **EX_USAGE** | Sai tham số dòng lệnh $\rightarrow$ Kiểm tra lại cấu hình gọi lệnh. |
 | **`70`** | **EX_SOFTWARE** | Lỗi nội bộ hoặc host cạn kiệt RAM vật lý $\rightarrow$ Khởi động lại container. |
@@ -102,7 +102,7 @@ try:
     if not result.is_valid:
         raise SecurityError(f"Model bị từ chối bởi SafeGGUF! Exit code: {result.exit_code}")
     
-    print("Model an toàn! Bàn giao file descriptor cho inference runtime...")
+    print("Model vượt qua kiểm định cấu trúc! Bàn giao file descriptor cho downstream policy/runtime...")
     # 2. Bàn giao trực tiếp file descriptor cho C++ runtime qua mmap
     # run_inference_engine(fd)
 finally:
@@ -125,14 +125,29 @@ spec:
     - name: model-storage
       persistentVolumeClaim:
         claimName: models-pvc
+    - name: attestation-storage
+      emptyDir:
+        medium: Memory
   initContainers:
     - name: safegguf-validator
-      image: ghcr.io/briannguyen29/safegguf:v0.3.6
+      image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
       command: ["safegguf", "inspect", "/models/model.gguf", "--profile", "llama-cpp"]
       volumeMounts:
         - name: model-storage
           mountPath: /models
           readOnly: true
+        - name: attestation-storage
+          mountPath: /attestation
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65532
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
   containers:
     - name: llama-cpp-server
       image: ghcr.io/ggerganov/llama.cpp:server
@@ -156,12 +171,12 @@ export TYPESAFE_API_KEY="ts_live_..."
 python tools/safegguf-triage/safegguf_triage.py /models/model.gguf --format json
 ```
 * Engine: **Online Jev System One**
-* Trả về điểm số rủi ro ngữ nghĩa liên tục (`Score`), phân loại mối đe dọa (`Choice`), và xác suất khai thác downstream runtime (`Noul`).
+* Trả về điểm số rủi ro ngữ nghĩa (`risk_score`), phân loại mối đe dọa (`threat_category`), và phán quyết cấu trúc (`structural_verdict`).
 
 ### 5.2. Khi Chạy Trong Môi Trường Biệt Lập (Air-Gapped / Không có Jev)
 ```bash
 # Không cần thiết lập TYPESAFE_API_KEY, công cụ tự động kích hoạt Offline Engine
 python tools/safegguf-triage/safegguf_triage.py /models/model.gguf --mode offline
 ```
-* Engine: **Offline Deterministic Bayesian Rule Engine**
-* **Đặc tính**: Tiêu tốn **0 ms độ trễ mạng**, **0 chi phí token**, tự động bóc tách mã lỗi SafeGGUF để chấm điểm rủi ro và khuyến nghị hành động (`ADMIT_PRODUCTION` vs `HARD_DROP_INGRESS`).
+* Engine: **Offline Deterministic Rule Engine**
+* **Đặc tính**: Tiêu tốn **0 ms độ trễ mạng**, **0 chi phí token**, tự động bóc tách mã lỗi SafeGGUF để chấm điểm rủi ro và khuyến nghị phán quyết (`STRUCTURALLY_ACCEPTED` vs `REJECT`).

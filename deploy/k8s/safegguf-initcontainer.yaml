@@ -11,6 +11,10 @@ spec:
     - name: model-volume
       persistentVolumeClaim:
         claimName: unvalidated-models-pvc
+    - name: attestation-volume
+      emptyDir:
+        medium: Memory
+        sizeLimit: 10Mi
 
   # ============================================================================
   # SafeGGUF Pre-Admission Firewall (Init Container)
@@ -43,11 +47,28 @@ spec:
         - name: model-volume
           mountPath: /models
           readOnly: true
+        - name: attestation-volume
+          mountPath: /attestation
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
         runAsNonRoot: true
         runAsUser: 65532 # nonroot
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+
+  # ============================================================================
+  # Anti-TOCTOU & Content-Hash Handoff Architecture:
+  # To eliminate Time-Of-Check to Time-Of-Use risks across container boundaries:
+  # 1. Mount 'model-volume' strictly as 'readOnly: true' in all containers.
+  # 2. Content-Hash Handoff: The initContainer validates the model and can write
+  #    its cryptographic digest (SHA-256) to 'attestation-volume' (in-memory emptyDir).
+  # 3. Downstream serving container verifies the digest matches its admission manifest
+  #    before mapping weights into memory.
+  # ============================================================================
 
   # ============================================================================
   # Downstream Production Inference Serving Container (e.g. llama.cpp / vLLM)
