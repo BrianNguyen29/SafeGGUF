@@ -79,6 +79,28 @@ SafeGGUF enforces pre-admission defense-in-depth before untrusted model files ar
    - Verify cryptographic hashes (e.g. SHA-256) matching the validated file before admission to inference runtimes.
 5. **`PASS` Scope:** `PASS` means the file satisfies the selected SafeGGUF structural, arithmetic, and resource-policy checks. It is not a trust or malware verdict for model behavior, templates, or downstream runtime code.
 
+### Immutable CAS Example (Stage, Validate, Digest-Pin, Load)
+
+The TOCTOU controls in invariant 4 mean the digest must describe the same immutable bytes that were validated. Stage the untrusted upload once, validate that staged copy, pin the SHA-256 of exactly those bytes, and admit to the runtime by digest only:
+
+```bash
+# 1. Stage the untrusted upload once into immutable, content-addressable
+#    storage (illustrative path; substitute your CAS backend).
+install -m 0444 /uploads/model.gguf /cas/models/model.gguf
+
+# 2. Validate the staged artifact and fail closed on a non-zero exit.
+safegguf inspect /cas/models/model.gguf --profile llama-cpp --format json > verdict.json
+
+# 3. Record the SHA-256 of exactly the bytes that were just validated.
+sha256sum /cas/models/model.gguf > model.sha256
+
+# 4. The runtime loads only by digest; its loader resolves the digest to the
+#    immutable object and re-verifies the bytes before mapping them.
+load "sha256:$(cut -d' ' -f1 model.sha256)"
+```
+
+Never validate and hash a mutable path separately — for example `safegguf inspect /mnt/pvc/model.gguf && sha256sum /mnt/pvc/model.gguf`. A writer with access to that volume can replace the file between the verdict and the digest, so the runtime would load bytes SafeGGUF never inspected. On mutable storage, pin the digest obtained from the staged, validated copy (or re-run the whole stage → validate → pin sequence whenever the object changes).
+
 ### Deployment Limits (Hostile Multi-Tenant Uploads)
 
 SafeGGUF's budgets are validator-managed quotas over its own allocations and logical work; they do not cap process RSS, page cache, stack, CPU time, or allocator/kernel overhead. For untrusted multi-tenant uploads, additionally run validation under OS/container limits: a cgroup/job-object memory limit, a CPU quota plus wall-clock timeout, an input file-size limit, a read-only filesystem where possible, and a seccomp/sandbox profile.

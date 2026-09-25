@@ -147,6 +147,14 @@ def main():
         print(f"SafeGGUF binary not found at {SAFEGGUF_BIN}. Running zig build...")
         subprocess.check_call(["zig", "build", "-Doptimize=ReleaseSafe"], cwd=REPO_ROOT)
 
+    if not os.path.isdir(CORPUS_DIR):
+        print(
+            f"Error: corpus directory not found at {CORPUS_DIR}. "
+            "Run `python tests/generate_fixtures.py` first to generate the seed corpus.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     corpus_files = sorted([os.path.join(CORPUS_DIR, f) for f in os.listdir(CORPUS_DIR) if f.endswith(".gguf")])
     if not corpus_files:
         print("Error: No corpus files found. Run generate_fixtures.py first.")

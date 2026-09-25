@@ -174,6 +174,23 @@ fn run() anyerror!void {
         std.process.exit(74); // EX_IOERR
     };
 
+    // Non-regular path targets (directories, FIFOs, devices, sockets) have no
+    // meaningful size for the sliding-window reader and would otherwise surface
+    // as an opaque mid-parse I/O error; reject them up front on the existing
+    // stat-failure path (exit 74, E_FILE_STAT_FAILED).
+    if (stat.kind != .file) {
+        const kind_error = "NotRegularFile";
+        if (format == .json) {
+            try stdout.print(
+                \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","message":"Not a regular file"}}
+                \\
+            , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, kind_error });
+        } else {
+            try stderr.print("Error: Not a regular file '{s}': {s}\n", .{ file_path, kind_error });
+        }
+        std.process.exit(74); // EX_IOERR
+    }
+
     // Sliding-window buffered reader to mitigate syscall-heavy DoS attacks
     var buffered_reader = reader_mod.BufferedReader.init(file, stat.size);
     const r = buffered_reader.reader();
