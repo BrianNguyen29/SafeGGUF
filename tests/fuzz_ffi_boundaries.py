@@ -11,6 +11,8 @@ Fuzzes and stress-tests:
 6. Diagnostic result buffer boundaries (NULL result vs non-NULL struct).
 7. High-concurrency multi-threaded stress across FFI boundaries.
 8. Non-regular target matrix (dir/FIFO/socket/char/block) on path and fd entries.
+9. Appended v1.1 options controls: max_file_size_bytes admission boundaries and
+   require_stable_file opt-in, including struct_size gating for legacy callers.
 """
 
 import os
@@ -271,6 +273,203 @@ def fuzz_null_and_buffer_diagnostics():
         f"err={err_code}, cat={cat}, stage={stg}, msg={msg}"
     )
 
+
+class SafeggufOptionsV11(ctypes.Structure):
+    """Local mirror of the current C-ABI options layout (v1.0 prefix plus the
+    appended v1.1 input controls). The shipped Python binding intentionally
+    stays on the v1.0 layout, so the FFI boundary suite defines the extended
+    layout here to exercise struct_size gating without changing binding
+    behavior."""
+
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("profile", ctypes.c_int32),
+        ("endian", ctypes.c_int32),
+        ("max_alloc_bytes", ctypes.c_uint64),
+        ("max_work_units", ctypes.c_uint64),
+        ("max_scanned_bytes", ctypes.c_uint64),
+        ("reserved", ctypes.c_void_p),
+        ("max_file_size_bytes", ctypes.c_uint64),
+        ("require_stable_file", ctypes.c_uint32),
+    ]
+
+
+def _extended_options(**overrides) -> SafeggufOptionsV11:
+    fields = dict(
+        struct_size=ctypes.sizeof(SafeggufOptionsV11),
+        profile=0,
+        endian=0,
+        max_alloc_bytes=0,
+        max_work_units=0,
+        max_scanned_bytes=0,
+        reserved=None,
+        max_file_size_bytes=0,
+        require_stable_file=0,
+    )
+    fields.update(overrides)
+    return SafeggufOptionsV11(**fields)
+
+
+def _as_options_v1(opts):
+    """ctype-pun a locally defined options layout to the v1 pointer type the
+    library entry points declare; the memory layout is the contract, not the
+    ctypes class identity."""
+    return ctypes.cast(ctypes.byref(opts), ctypes.POINTER(SafeggufOptionsV1))
+
+
+def _raw_fd(fileobj):
+    if sys.platform == "win32":
+        import msvcrt
+        return msvcrt.get_osfhandle(fileobj.fileno())
+    return fileobj.fileno()
+
+
+def fuzz_appended_options_controls():
+    print("\n--- Fuzzing 8: Appended v1.1 options controls (max_file_size_bytes / require_stable_file) ---")
+    path = str(VALID_FIXTURE).encode("utf-8")
+    file_size = VALID_FIXTURE.stat().st_size
+    assert file_size > 1
+
+    record(
+        "extended_layout_is_64_bytes",
+        ctypes.sizeof(SafeggufOptionsV11) == 64,
+        f"expected 64, got {ctypes.sizeof(SafeggufOptionsV11)}",
+    )
+
+    # --- struct_size gating: a legacy v1.0 caller stays on legacy defaults ---
+    # The buffer is larger than the v1.0 prefix but is filled with 0xFF past it:
+    # if the library read the appended fields despite struct_size, the garbage
+    # require_stable_file would be rejected as a usage error (or the garbage
+    # size limit would reject the file). Correct gating must ignore them.
+    legacy_buf = ctypes.create_string_buffer(ctypes.sizeof(SafeggufOptionsV11))
+    ctypes.memset(legacy_buf, 0xFF, ctypes.sizeof(SafeggufOptionsV11))
+    legacy_view = ctypes.cast(legacy_buf, ctypes.POINTER(SafeggufOptionsV1)).contents
+    legacy_view.struct_size = ctypes.sizeof(SafeggufOptionsV1)
+    legacy_view.profile = 0
+    legacy_view.endian = 0
+    legacy_view.max_alloc_bytes = 0
+    legacy_view.max_work_units = 0
+    legacy_view.max_scanned_bytes = 0
+    legacy_view.reserved = None
+    res = SafeggufResult()
+    rc = lib.safegguf_validate_path_v1(path, ctypes.cast(legacy_buf, ctypes.POINTER(SafeggufOptionsV1)), ctypes.byref(res))
+    err = res.error_code.decode("utf-8", errors="replace")
+    record(
+        "legacy_struct_size_ignores_appended_bytes",
+        rc == Status.PASS,
+        f"expected PASS (0) on legacy defaults, got rc={rc} error={err}",
+    )
+
+    # --- max_file_size_bytes admission boundaries (path entry point) ---
+    # Inclusive ceiling: size == limit PASSes, size == limit - 1 rejects with
+    # the documented resource code. 0 is the default (unlimited), max uint is
+    # effectively unlimited too.
+    boundary_cases = [
+        (0, Status.PASS, None),               # 0 = default (unlimited)
+        (1, Status.REJECT, "E_FileTooLarge"),
+        (file_size - 1, Status.REJECT, "E_FileTooLarge"),
+        (file_size, Status.PASS, None),       # inclusive: limit == size admits
+        (file_size + 1, Status.PASS, None),
+        (2**64 - 1, Status.PASS, None),
+    ]
+    for limit, expected_rc, expected_err in boundary_cases:
+        opts = _extended_options(max_file_size_bytes=limit)
+        res = SafeggufResult()
+        rc = lib.safegguf_validate_path_v1(path, _as_options_v1(opts), ctypes.byref(res))
+        err = res.error_code.decode("utf-8", errors="replace")
+        cat = res.category.decode("utf-8", errors="replace")
+        if expected_rc == Status.REJECT:
+            record(
+                f"path_v1 max_file_size_bytes={limit}",
+                rc == Status.REJECT and err == expected_err and cat == "resource",
+                f"expected 2 + {expected_err}/resource, got rc={rc} error={err} category={cat}",
+            )
+        else:
+            record(
+                f"path_v1 max_file_size_bytes={limit}",
+                rc == expected_rc,
+                f"expected {expected_rc}, got rc={rc} error={err}",
+            )
+
+    # --- the same admission ceiling is honored on the descriptor entry point ---
+    with open(VALID_FIXTURE, "rb") as f:
+        raw_h = _raw_fd(f)
+        for limit, expected_rc, expected_err in [
+            (file_size - 1, Status.REJECT, "E_FileTooLarge"),
+            (file_size, Status.PASS, None),
+        ]:
+            opts = _extended_options(max_file_size_bytes=limit)
+            res = SafeggufResult()
+            rc = lib.safegguf_validate_fd_v1(raw_h, _as_options_v1(opts), ctypes.byref(res))
+            err = res.error_code.decode("utf-8", errors="replace")
+            if expected_rc == Status.REJECT:
+                record(
+                    f"fd_v1 max_file_size_bytes={limit}",
+                    rc == Status.REJECT and err == expected_err,
+                    f"expected 2 + {expected_err}, got rc={rc} error={err}",
+                )
+            else:
+                record(
+                    f"fd_v1 max_file_size_bytes={limit}",
+                    rc == Status.PASS,
+                    f"expected 0, got rc={rc} error={err}",
+                )
+
+    # --- require_stable_file: 1 = on, 0 = off, anything else fails closed ---
+    # The unmodified fixture cannot fail the identity re-check, so detection of
+    # an actual mutation is covered deterministically by the core tests
+    # (tests/validator_test.zig: FileIdentity + mid-read mutation); the FFI
+    # boundary here proves the control is plumbed and validated.
+    for flag, expected_rc, expected_err in [
+        (0, Status.PASS, None),
+        (1, Status.PASS, None),
+        (2, Status.USAGE_ERROR, "E_USAGE_INVALID_OPTIONS"),
+        (0xFFFFFFFF, Status.USAGE_ERROR, "E_USAGE_INVALID_OPTIONS"),
+    ]:
+        opts = _extended_options(require_stable_file=flag)
+        res = SafeggufResult()
+        rc = lib.safegguf_validate_path_v1(path, _as_options_v1(opts), ctypes.byref(res))
+        err = res.error_code.decode("utf-8", errors="replace")
+        if expected_err:
+            record(
+                f"path_v1 require_stable_file={flag}",
+                rc == Status.USAGE_ERROR and err == expected_err,
+                f"expected 64 + {expected_err}, got rc={rc} error={err}",
+            )
+        else:
+            record(
+                f"path_v1 require_stable_file={flag}",
+                rc == Status.PASS,
+                f"expected 0, got rc={rc} error={err}",
+            )
+
+    # Descriptor entry point honors the opt-in too (and keeps its fd position).
+    with open(VALID_FIXTURE, "rb") as f:
+        raw_h = _raw_fd(f)
+        f.seek(16)
+        opts = _extended_options(require_stable_file=1)
+        res = SafeggufResult()
+        rc = lib.safegguf_validate_fd_v1(raw_h, _as_options_v1(opts), ctypes.byref(res))
+        err = res.error_code.decode("utf-8", errors="replace")
+        record(
+            "fd_v1 require_stable_file=1 passes and preserves seek",
+            rc == Status.PASS and f.tell() == 16,
+            f"expected 0 + tell=16, got rc={rc} error={err} tell={f.tell()}",
+        )
+
+    # A rejection verdict never runs the stability re-check, so it must not
+    # change the rejection code for an oversized/malformed input.
+    opts = _extended_options(max_file_size_bytes=1, require_stable_file=1)
+    res = SafeggufResult()
+    rc = lib.safegguf_validate_path_v1(path, _as_options_v1(opts), ctypes.byref(res))
+    err = res.error_code.decode("utf-8", errors="replace")
+    record(
+        "admission_reject_wins_over_stability_check",
+        rc == Status.REJECT and err == "E_FileTooLarge",
+        f"expected 2 + E_FileTooLarge, got rc={rc} error={err}",
+    )
+
+
 def fuzz_multithreaded_concurrency():
     print("\n--- Fuzzing 6: Multi-Threaded FFI Boundary Stress ---")
     threads = []
@@ -477,6 +676,7 @@ def main():
     fuzz_null_and_buffer_diagnostics()
     fuzz_multithreaded_concurrency()
     fuzz_non_regular_targets()
+    fuzz_appended_options_controls()
 
     print("\n" + "=" * 70)
     print(f"Total FFI Checks : {passed_checks + failed_checks}")
