@@ -248,6 +248,18 @@ def fuzz_fd_handles():
             f"expected {'/'.join(str(int(code)) for code in allowed)}, got {rc}",
         )
 
+    # A closed but in-range descriptor is the macOS abort regression: poll()
+    # does not reliably report POLLNVAL for it, so it used to reach
+    # std.posix.fstat's EBADF `unreachable` and abort the host process. It must
+    # report IO_ERROR (74) like any other invalid handle on both fd entries.
+    if os.name != "nt":
+        stale_fd = os.open(str(VALID_FIXTURE), os.O_RDONLY)
+        os.close(stale_fd)
+        rc = lib.safegguf_validate_fd_v1(stale_fd, None, ctypes.byref(res))
+        record("fd=closed_in_range", rc == Status.IO_ERROR, f"expected 74, got {rc}")
+        rc = lib.safegguf_validate_fd(stale_fd, 0, 0)
+        record("fd_legacy=closed_in_range", rc == Status.IO_ERROR, f"expected 74, got {rc}")
+
     # Valid file descriptor seek preservation fuzzing
     with open(VALID_FIXTURE, "rb") as f:
         if sys.platform == "win32":

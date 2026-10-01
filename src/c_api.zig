@@ -321,19 +321,33 @@ fn openRegularFile(path: []const u8) OpenRegularFileError!OpenedRegularFile {
 
 /// Fstats a descriptor supplied by a foreign C caller. `std.posix.fstat`
 /// treats EBADF as `unreachable` (a process abort), so an untrusted descriptor
-/// must be proven open first: POSIX poll() reports POLLNVAL for closed or
-/// out-of-range descriptors without touching them. Returns null when the
-/// descriptor is invalid or the stat itself fails. Closing a descriptor
-/// concurrently with the call remains the caller's contract violation; fd
-/// ownership stays with the caller for the duration of the call.
+/// must not be handed to the wrapper: the raw fstat call is issued here and
+/// every failure, EBADF included, maps to null instead of trapping. Returns
+/// null when the descriptor is invalid or the stat itself fails. Closing a
+/// descriptor concurrently with the call remains the caller's contract
+/// violation; fd ownership stays with the caller for the duration of the call.
+///
+/// The previous implementation gated `file.stat()` with poll()/POLLNVAL, but
+/// that gate is not portable: on macOS 14 a closed descriptor passes it (poll
+/// does not reliably report POLLNVAL for it) and then reaches the wrapper's
+/// EBADF `unreachable`, aborting the host process (observed in CI on the
+/// fd-v1-closed probe while Linux returned 74). A direct fstat has no
+/// platform-dependent readiness semantics and removes the probe-to-stat race
+/// window as well.
 fn fstatForeign(file: std.fs.File) ?std.fs.File.Stat {
     const builtin = @import("builtin");
-    if (builtin.os.tag != .windows) {
-        var fds = [1]std.posix.pollfd{.{ .fd = file.handle, .events = 0, .revents = 0 }};
-        const ready = std.posix.poll(&fds, 0) catch return null;
-        if (ready > 0 and (fds[0].revents & std.posix.POLL.NVAL) != 0) return null;
+    if (builtin.os.tag == .windows) {
+        return file.stat() catch null;
     }
-    return file.stat() catch null;
+    var st = std.mem.zeroes(std.posix.Stat);
+    // Mirrors the large-file ABI selection std.posix.fstat performs internally
+    // (that constant is private to std); both symbols fill `std.posix.Stat`.
+    const lfs64_abi = builtin.os.tag == .linux and builtin.link_libc and builtin.abi.isGnu();
+    const fstat_sym = if (lfs64_abi) std.posix.system.fstat64 else std.posix.system.fstat;
+    switch (std.posix.errno(fstat_sym(file.handle, &st))) {
+        .SUCCESS => return std.fs.File.Stat.fromSystem(st),
+        else => return null,
+    }
 }
 
 pub export fn safegguf_validate_path_v1(
