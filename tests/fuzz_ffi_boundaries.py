@@ -20,6 +20,7 @@ import sys
 import ctypes
 import random
 import socket
+import stat
 import string
 import tempfile
 import threading
@@ -29,7 +30,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "bindings" / "python"))
 
 import safegguf
-from safegguf.core import _find_library, SafeggufOptionsV1, SafeggufResult, Status
+from safegguf.core import (
+    _find_library,
+    SafeggufOptionsV1,
+    SafeggufOptionsV1Legacy,
+    SafeggufResult,
+    Status,
+)
 
 DLL_PATH = _find_library()
 print(f"[*] Testing SafeGGUF FFI boundaries via: {DLL_PATH}")
@@ -215,9 +222,31 @@ def fuzz_fd_handles():
         1, 2, 42, 100, 99999, 2147483647, 2**63 - 1
     ]
 
+    # fds 0/1/2 are the process stdio descriptors: they are open by
+    # definition, and their kind follows how the harness redirected stdio. A
+    # regular-file redirect (e.g. `> log.txt`) makes them regular files, which
+    # are legitimate non-GGUF validation targets and reject with 2 (or with 74
+    # when the redirect is write-only and the read fails); non-regular kinds
+    # (tty, pipe, /dev/null) and closed handles must reject with 74. Windows
+    # entry points take OS handles, not C fd numbers, so raw 0/1/2 never
+    # resolve there and always report 74.
+    stdio_regular = set()
+    if os.name != "nt":
+        for h in (0, 1, 2):
+            try:
+                if stat.S_ISREG(os.fstat(h).st_mode):
+                    stdio_regular.add(h)
+            except OSError:
+                pass
+
     for h in adversarial_handles:
         rc = lib.safegguf_validate_fd_v1(h, None, ctypes.byref(res))
-        record(f"fd={h}", rc == Status.IO_ERROR, f"expected 74, got {rc}")
+        allowed = (Status.REJECT, Status.IO_ERROR) if h in stdio_regular else (Status.IO_ERROR,)
+        record(
+            f"fd={h}",
+            rc in allowed,
+            f"expected {'/'.join(str(int(code)) for code in allowed)}, got {rc}",
+        )
 
     # Valid file descriptor seek preservation fuzzing
     with open(VALID_FIXTURE, "rb") as f:
@@ -344,7 +373,7 @@ def fuzz_appended_options_controls():
     legacy_buf = ctypes.create_string_buffer(ctypes.sizeof(SafeggufOptionsV11))
     ctypes.memset(legacy_buf, 0xFF, ctypes.sizeof(SafeggufOptionsV11))
     legacy_view = ctypes.cast(legacy_buf, ctypes.POINTER(SafeggufOptionsV1)).contents
-    legacy_view.struct_size = ctypes.sizeof(SafeggufOptionsV1)
+    legacy_view.struct_size = ctypes.sizeof(SafeggufOptionsV1Legacy)
     legacy_view.profile = 0
     legacy_view.endian = 0
     legacy_view.max_alloc_bytes = 0
