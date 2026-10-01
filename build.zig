@@ -99,6 +99,19 @@ pub fn build(b: *std.Build) void {
     const run_contract = b.addRunArtifact(contract_tests);
     test_step.dependOn(&run_contract.step);
 
+    // Observability unit/contract tests: metrics counters (bounded labels) and
+    // structured-log field set/redaction. Separate root so the existing test
+    // roots stay untouched.
+    const observability_tests = b.addTest(.{
+        .root_source_file = b.path("tests/observability_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    observability_tests.root_module.addImport("safegguf", safegguf_mod);
+
+    const run_observability = b.addRunArtifact(observability_tests);
+    test_step.dependOn(&run_observability.step);
+
     const fuzz_step = b.step("fuzz", "Run corpus through fuzz harness");
     fuzz_step.dependOn(&run_fuzz.step);
 

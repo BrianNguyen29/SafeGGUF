@@ -6,6 +6,8 @@ const types = safegguf.types;
 const err_types = safegguf.error_types;
 const reader_mod = safegguf.reader;
 const limits = safegguf.limits;
+const metrics_mod = safegguf.metrics;
+const log_mod = safegguf.log;
 const Validator = safegguf.Validator;
 
 const OutputFormat = enum {
@@ -73,6 +75,10 @@ fn run() anyerror!void {
     var profile: types.Profile = .gguf_spec;
     var limit = limits.Limits.initFromEnv();
     var require_stable_file: bool = false;
+    var emit_metrics: bool = false;
+    var emit_log: bool = false;
+    var request_id_arg: ?[]const u8 = null;
+    var tenant_id_arg: ?[]const u8 = null;
 
     // The variable-array cap is a sub-limit: max_array_elements is checked
     // first, so an override above it could never take effect (contradictory).
@@ -185,6 +191,20 @@ fn run() anyerror!void {
             limit.max_file_size_bytes = parsed;
         } else if (std.mem.eql(u8, arg, "--require-stable-file")) {
             require_stable_file = true;
+        } else if (std.mem.eql(u8, arg, "--emit-metrics")) {
+            emit_metrics = true;
+        } else if (std.mem.eql(u8, arg, "--log-json")) {
+            emit_log = true;
+        } else if (std.mem.eql(u8, arg, "--request-id")) {
+            request_id_arg = args.next() orelse {
+                try stderr.print("Error: --request-id requires a value\n", .{});
+                std.process.exit(64);
+            };
+        } else if (std.mem.eql(u8, arg, "--tenant-id")) {
+            tenant_id_arg = args.next() orelse {
+                try stderr.print("Error: --tenant-id requires a value\n", .{});
+                std.process.exit(64);
+            };
         } else {
             // Fail closed: reject unknown arguments immediately
             try stderr.print("Error: unknown argument '{s}'\n\n", .{arg});
@@ -193,6 +213,11 @@ fn run() anyerror!void {
         }
     }
 
+    const profile_str = switch (profile) {
+        .gguf_spec => "gguf-spec",
+        .llama_cpp => "llama-cpp",
+    };
+
     // Provenance object emitted in every JSON output (PASS/REJECT/ERROR):
     // the pinned ggml type-table source this profile's layout rules derive
     // from. Field name follows the profile (see roadmap issue #12, option B).
@@ -200,6 +225,21 @@ fn run() anyerror!void {
         .llama_cpp => "compatibility_target",
         .gguf_spec => "type_layout_source",
     };
+
+    // Observability (metrics + structured log): additive, opt-in, and
+    // stderr-only, so stdout stays reserved for the result document. Counters
+    // are recorded on every run; JSON is emitted only when requested.
+    var obs = RunObservability{
+        .emit_metrics = emit_metrics,
+        .emit_log = emit_log,
+        .profile_str = profile_str,
+        .request_start_ns = std.time.nanoTimestamp(),
+    };
+    obs.metrics.recordRequest();
+    if (emit_log) {
+        obs.setRequestId(request_id_arg);
+        if (tenant_id_arg) |tenant_id| obs.setTenantId(tenant_id);
+    }
 
     const file = std.fs.cwd().openFile(file_path, .{}) catch |e| {
         if (format == .json) {
@@ -210,7 +250,7 @@ fn run() anyerror!void {
         } else {
             try stderr.print("Error: Failed to open file '{s}': {s}\n", .{ file_path, @errorName(e) });
         }
-        std.process.exit(74); // EX_IOERR
+        obs.finish(74, .err, "E_FILE_OPEN_FAILED", "io"); // EX_IOERR
     };
     defer file.close();
 
@@ -223,8 +263,10 @@ fn run() anyerror!void {
         } else {
             try stderr.print("Error: Failed to stat file '{s}': {s}\n", .{ file_path, @errorName(e) });
         }
-        std.process.exit(74); // EX_IOERR
+        obs.finish(74, .err, "E_FILE_STAT_FAILED", "io"); // EX_IOERR
     };
+
+    obs.file_size = stat.size;
 
     // Non-regular path targets (directories, FIFOs, devices, sockets) have no
     // meaningful size for the sliding-window reader and would otherwise surface
@@ -240,8 +282,14 @@ fn run() anyerror!void {
         } else {
             try stderr.print("Error: Not a regular file '{s}': {s}\n", .{ file_path, kind_error });
         }
-        std.process.exit(74); // EX_IOERR
+        obs.finish(74, .err, "E_FILE_STAT_FAILED", "io"); // EX_IOERR
     }
+
+    // Structured logging wants a content digest; computed here (opt-in only)
+    // with an independent pread loop, so it cannot disturb the validation
+    // reader. Failure leaves the digest empty - the log is diagnostic and must
+    // never change the verdict.
+    if (emit_log) obs.setDigest(file);
 
     // Optional stable-file check (--require-stable-file): snapshot the open
     // handle's identity before validation so it can be re-verified afterwards.
@@ -260,7 +308,7 @@ fn run() anyerror!void {
             } else {
                 try stderr.print("Error: Failed to stat file '{s}': {s}\n", .{ file_path, @errorName(e) });
             }
-            std.process.exit(74); // EX_IOERR
+            obs.finish(74, .err, "E_FILE_STAT_FAILED", "io"); // EX_IOERR
         };
     }
 
@@ -268,13 +316,9 @@ fn run() anyerror!void {
     var buffered_reader = reader_mod.BufferedReader.init(file, stat.size);
     const r = buffered_reader.reader();
 
-    const profile_str = switch (profile) {
-        .gguf_spec => "gguf-spec",
-        .llama_cpp => "llama-cpp",
-    };
-
     // High-level Validator automatically manages QuotaAllocator and WorkBudget
     var val = Validator.init(gpa.allocator(), limit, profile);
+    obs.val = &val;
     if (auto_endian) {
         val.endian = safegguf.parser.detectEndianness(r) orelse .little;
     } else {
@@ -287,6 +331,7 @@ fn run() anyerror!void {
     var parse_ctx = err_types.ParseContext{};
     val.work_budget.ctx = &parse_ctx;
 
+    obs.validation_start_ns = std.time.nanoTimestamp();
     var doc = val.validate(r) catch |e| {
         if (e == error.IoError) {
             if (format == .json) {
@@ -297,7 +342,7 @@ fn run() anyerror!void {
             } else {
                 try stderr.print("Error: I/O error reading file stream: {s}\n", .{@errorName(e)});
             }
-            std.process.exit(74); // EX_IOERR
+            obs.finish(74, .err, "E_IoError", "parser"); // EX_IOERR
         }
 
         if (e == error.OutOfMemory) {
@@ -310,7 +355,7 @@ fn run() anyerror!void {
                 } else {
                     try stderr.print("REJECT [E_TotalAllocationLimitExceeded] Error: Allocation quota exceeded ({d} bytes)\n", .{limit.max_total_alloc_bytes});
                 }
-                std.process.exit(2);
+                obs.finish(2, .reject, "E_TotalAllocationLimitExceeded", "validator");
             } else {
                 if (format == .json) {
                     try stdout.print(
@@ -320,12 +365,18 @@ fn run() anyerror!void {
                 } else {
                     try stderr.print("FATAL: Host system out of memory\n", .{});
                 }
-                std.process.exit(70); // EX_SOFTWARE
+                obs.finish(70, .err, "E_OUT_OF_MEMORY", if (parse_ctx.stage.len > 0) parse_ctx.stage else "validator"); // EX_SOFTWARE
             }
         }
 
+        // Rejection code for observability: same legacy spelling the JSON/text
+        // finding carries (`E_<ZigName>`); the bounded metric label is derived
+        // from it by the metrics sink.
+        var code_buf: [64]u8 = undefined;
+        const legacy_code = std.fmt.bufPrint(&code_buf, "E_{s}", .{@errorName(e)}) catch @errorName(e);
+        const stage = if (parse_ctx.stage.len > 0) parse_ctx.stage else "validator";
         try emitRejection(profile_str, target_field_name, e, &parse_ctx, format, stdout, stderr);
-        std.process.exit(2);
+        obs.finish(2, .reject, legacy_code, stage);
     };
     defer val.deinitDocument(&doc);
 
@@ -347,7 +398,7 @@ fn run() anyerror!void {
                     .json => try writeRejectionJson(stdout, profile_str, target_field_name, "FileChangedDuringValidation", &finding),
                     .text => try writeRejectionText(stderr, &finding),
                 }
-                std.process.exit(2); // REJECT
+                obs.finish(2, .reject, "E_FileChangedDuringValidation", "stability"); // REJECT
             },
             error.FileStatFailed => {
                 if (format == .json) {
@@ -358,7 +409,7 @@ fn run() anyerror!void {
                 } else {
                     try stderr.print("Error: Failed to stat file '{s}': FileStatFailed\n", .{file_path});
                 }
-                std.process.exit(74); // EX_IOERR
+                obs.finish(74, .err, "E_FILE_STAT_FAILED", "stability"); // EX_IOERR
             },
         };
     }
@@ -395,6 +446,129 @@ fn run() anyerror!void {
         try stdout.print("  overlap: PASS\n", .{});
         try stdout.print("Result: PASS\n", .{});
     }
+
+    // PASS is the only terminal path where run() returns normally, so record
+    // and emit here; deferred cleanup below still runs.
+    obs.conclude(.pass, "", "");
+}
+
+/// Per-run observability state: lock-free metrics counters, validation timing,
+/// and the stderr-only structured log context. Recording happens on every run;
+/// JSON emission is opt-in (`--emit-metrics` / `--log-json`) and always goes to
+/// stderr, so stdout stays reserved for the result document. Emission failures
+/// are ignored: observability must never change a verdict or exit code.
+const RunObservability = struct {
+    metrics: metrics_mod.Metrics = .{},
+    emit_metrics: bool = false,
+    emit_log: bool = false,
+    profile_str: []const u8 = "gguf-spec",
+    request_id: []const u8 = "",
+    tenant_id_hash: []const u8 = "",
+    file_size: u64 = 0,
+    digest_hex: []const u8 = "",
+    request_start_ns: i128 = 0,
+    validation_start_ns: i128 = 0,
+    val: ?*Validator = null,
+    request_id_buf: [32]u8 = undefined,
+    request_id_hex: [64]u8 = undefined,
+    tenant_hash_buf: [log_mod.tenant_hash_hex_len]u8 = undefined,
+    digest_buf: [64]u8 = undefined,
+
+    /// Records the verdict, validation duration, and run budgets, then renders
+    /// the requested JSON documents on stderr.
+    fn conclude(self: *RunObservability, verdict: metrics_mod.Verdict, error_code: []const u8, stage: []const u8) void {
+        const now = std.time.nanoTimestamp();
+        self.metrics.recordVerdict(verdict);
+        if (verdict == .reject and error_code.len > 0) self.metrics.recordRejectCode(error_code);
+        if (self.validation_start_ns != 0 and now > self.validation_start_ns) {
+            self.metrics.recordValidationNanos(@intCast(now - self.validation_start_ns));
+        }
+        if (self.val) |v| {
+            self.metrics.recordBudgets(self.file_size, v.quota_alloc.peak_bytes, v.work_budget.consumed_units, v.work_budget.consumed_scanned_bytes);
+        } else {
+            self.metrics.recordBudgets(self.file_size, 0, 0, 0);
+        }
+
+        const stderr_writer = std.io.getStdErr().writer();
+        if (self.emit_metrics) self.metrics.writeJson(stderr_writer) catch {};
+        if (self.emit_log) {
+            const record = log_mod.LogRecord{
+                .request_id = self.request_id,
+                .tenant_id_hash = self.tenant_id_hash,
+                .digest = self.digest_hex,
+                .file_size = self.file_size,
+                .profile = self.profile_str,
+                .duration_ms = elapsedMs(self.request_start_ns, now),
+                .verdict = verdictLabel(verdict),
+                .error_code = error_code,
+                .stage = stage,
+                .version = build_info.version,
+                .commit = build_info.source_commit,
+            };
+            log_mod.writeJson(record, stderr_writer) catch {};
+        }
+    }
+
+    /// `conclude` followed by process exit with the contract exit code.
+    fn finish(self: *RunObservability, rc: u8, verdict: metrics_mod.Verdict, error_code: []const u8, stage: []const u8) noreturn {
+        self.conclude(verdict, error_code, stage);
+        std.process.exit(rc);
+    }
+
+    /// Uses the supplied correlation id, or generates a 128-bit random one so
+    /// every `--log-json` line still carries a stable per-run identifier.
+    fn setRequestId(self: *RunObservability, supplied: ?[]const u8) void {
+        if (supplied) |value| {
+            self.request_id = value;
+        } else {
+            std.crypto.random.bytes(&self.request_id_buf);
+            self.request_id_hex = std.fmt.bytesToHex(self.request_id_buf, .lower);
+            self.request_id = &self.request_id_hex;
+        }
+    }
+
+    /// Stores only the pseudonym; the raw tenant id is never logged.
+    fn setTenantId(self: *RunObservability, tenant_id: []const u8) void {
+        self.tenant_id_hash = log_mod.pseudonymizeTenant(tenant_id, &self.tenant_hash_buf);
+    }
+
+    fn setDigest(self: *RunObservability, file: std.fs.File) void {
+        self.digest_hex = computeFileDigest(file, self.file_size, &self.digest_buf) orelse "";
+    }
+};
+
+/// Best-effort SHA-256 of the open file, read through an independent pread
+/// loop so it cannot disturb the validation reader. Returns null on any read
+/// failure, leaving the log's digest empty.
+fn computeFileDigest(file: std.fs.File, size: u64, out: *[64]u8) ?[]const u8 {
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [64 * 1024]u8 = undefined;
+    var offset: u64 = 0;
+    while (offset < size) {
+        const want: usize = @intCast(@min(@as(u64, buf.len), size - offset));
+        const n = file.preadAll(buf[0..want], offset) catch return null;
+        if (n == 0) return null;
+        hasher.update(buf[0..n]);
+        offset += n;
+    }
+    var digest: [32]u8 = undefined;
+    hasher.final(&digest);
+    out.* = std.fmt.bytesToHex(digest, .lower);
+    return out;
+}
+
+fn elapsedMs(start_ns: i128, end_ns: i128) u64 {
+    if (end_ns <= start_ns) return 0;
+    const delta: u128 = @intCast(end_ns - start_ns);
+    return @intCast(@min(delta / std.time.ns_per_ms, std.math.maxInt(u64)));
+}
+
+fn verdictLabel(verdict: metrics_mod.Verdict) []const u8 {
+    return switch (verdict) {
+        .pass => "PASS",
+        .reject => "REJECT",
+        .err => "ERROR",
+    };
 }
 
 /// Builds the rejection Finding from the caught error plus the ParseContext
@@ -574,6 +748,10 @@ fn printUsage(writer: anytype) !void {
     try writer.print("  --require-stable-file           Reject the PASS verdict if the open file's dev/inode/size/mtime/ctime change during validation\n", .{});
     try writer.print("  --max-memory-mb <N>             Maximum allocation quota in MiB (default: 128)\n", .{});
     try writer.print("  --max-work-budget <N>           Maximum logical work units budget (default: 10000000)\n", .{});
+    try writer.print("  --emit-metrics                  Emit per-run metrics JSON to stderr (stdout keeps the result document)\n", .{});
+    try writer.print("  --log-json                      Emit one structured JSON log record to stderr (adds a SHA-256 file digest)\n", .{});
+    try writer.print("  --request-id <id>               Request correlation id for --log-json (default: random per run)\n", .{});
+    try writer.print("  --tenant-id <id>                Tenant id for --log-json; logged only as a SHA-256 pseudonym\n", .{});
     try writer.print("  --help, -h                      Display this help message and exit\n", .{});
     try writer.print("  --version                       Print version and build provenance and exit\n", .{});
 }
