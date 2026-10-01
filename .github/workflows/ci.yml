@@ -36,11 +36,33 @@ jobs:
       - name: Generate Fixtures and Seed Corpus
         run: python tests/generate_fixtures.py
 
-      - name: Run Exhaustive Unit, Fuzz, & Regression Tests
-        run: zig build test --summary all
+      # `zig build test` aggregates four test roots: validator, fuzz corpus,
+      # C-ABI/CLI contract, and observability. The verbose command log is
+      # asserted below so an unwiring of tests/contract_test.zig fails CI
+      # instead of silently dropping the canonical error-code namespace and
+      # JSON schema-version contract checks.
+      - name: Run Exhaustive Unit, Fuzz, Regression & Contract Tests
+        run: |
+          set -euo pipefail
+          log="${RUNNER_TEMP:-/tmp}/zig-test-summary.log"
+          zig build test --summary all --verbose 2>&1 | tee "$log"
+          if ! grep -Eq -- '-Mroot=[^ ]*/tests/contract_test\.zig' "$log"; then
+            echo "::error::tests/contract_test.zig is not part of the executed zig build test graph"
+            exit 1
+          fi
 
       - name: Build Binary (ReleaseSafe)
         run: zig build -Doptimize=ReleaseSafe
+
+      # The self-contained wheel bundles the native library built above and
+      # derives its version/provenance from it. The packaging test builds with
+      # --no-build-isolation, so setuptools/packaging must already be
+      # importable; a stale or broken bundle turns this step red post-build.
+      - name: Install Wheel-Build Tooling (setuptools>=77, packaging>=24)
+        run: python -m pip install --disable-pip-version-check "setuptools>=77" "packaging>=24"
+
+      - name: Run Python Wheel Packaging Test (Fresh Native Bundle & Clean-Venv Import)
+        run: python bindings/python/tests/test_wheel_packaging.py
 
       - name: Run End-to-End CLI Integration Tests (Exact Exit Codes & Invariants)
         run: python tests/cli_test.py
