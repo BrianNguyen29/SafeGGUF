@@ -227,3 +227,25 @@ test "ffi: C ABI codes map to canonical codes through the exported surface" {
     try std.testing.expectEqualStrings(err.public_codes.unknown, std.mem.span(cabi.safegguf_canonical_error_code("Bogus")));
     try std.testing.expectEqualStrings(err.public_codes.unknown, std.mem.span(cabi.safegguf_canonical_error_code(null)));
 }
+
+test "ffi: closed descriptor returns an io error instead of trapping" {
+    // Regression for the macOS CI abort on fd-v1-closed: std.posix.fstat maps
+    // EBADF to `unreachable` (a process abort) and macOS poll() does not
+    // report POLLNVAL for a closed descriptor, so a regression here aborts the
+    // whole test process on macOS instead of failing an assertion. Both fd
+    // entry points must report 74 (E_FD_STAT_FAILED) for a closed in-range
+    // descriptor on every POSIX platform.
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    if (builtin.os.tag != .windows) {
+        const stale_fd = std.posix.open("/dev/null", .{}, 0) catch return error.SkipZigTest;
+        std.posix.close(stale_fd);
+
+        var res: cabi.Result = undefined;
+        try std.testing.expectEqual(@as(c_int, 74), cabi.safegguf_validate_fd_v1(stale_fd, null, &res));
+        try std.testing.expectEqualStrings("E_FD_STAT_FAILED", resultCode(&res));
+        try std.testing.expectEqualStrings(err.public_codes.fd_stat_failed, resultCanonical(&res));
+        try std.testing.expectEqual(@as(c_int, 74), cabi.safegguf_validate_fd(stale_fd, 0, 0));
+    }
+}
