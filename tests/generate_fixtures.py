@@ -625,5 +625,13 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"Warning: could not run generate_security_fixtures: {e}")
 
+    # Populate seed corpus directory for fuzzing
+    corpus_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus")
+    os.makedirs(corpus_dir, exist_ok=True)
+    import shutil
+    for fname in os.listdir(DIR):
+        if fname.endswith(".gguf"):
+            shutil.copyfile(os.path.join(DIR, fname), os.path.join(corpus_dir, fname))
+
     print("All fixtures and seed corpus generated successfully.")
 

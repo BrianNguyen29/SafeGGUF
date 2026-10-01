@@ -252,6 +252,24 @@ jobs:
       contents: read
     uses: ./.github/workflows/windows.yml
 
+  # Container image release for the tagged commit: calls the reusable
+  # container-release.yml (build, SBOM/provenance, cosign sign, verify) only
+  # after every gate above passed on that exact commit. The called workflow has
+  # no standalone tag or manual trigger, so a v* tag publishes the image exactly
+  # once, through this job, and a failed or skipped gate can never publish it.
+  # `packages: write` and `id-token: write` are the permissions the called
+  # workflow needs for the GHCR push and keyless OIDC signing; a called workflow
+  # cannot exceed its caller's permissions.
+  container-release:
+    name: Container image release (reusable container-release.yml)
+    needs: [core, version-consistency, oracle, fuzz, bench, real-corpus, windows-gate]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    uses: ./.github/workflows/container-release.yml
+
   release:
     name: Build & Publish Release Artifacts
     # real-corpus runs fail-closed on v* tags (no --tolerate-download-errors):
