@@ -8,17 +8,36 @@ from pathlib import Path
 # Add bindings/python to sys.path
 repo_root = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(repo_root / "bindings" / "python"))
+# The fork-isolated diagnostic probe lives next to this test file.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import safegguf
 from safegguf import Status, Profile, Endian
+from native_entry_probe import run_native_entry_probe
 
 def main():
+    # The native library can abort the interpreter with a bare Zig
+    # "reached unreachable code" panic and no stack trace (a ctypes-loaded
+    # shared library loses the trace dump). Under CI stdout is a pipe, so
+    # Python block-buffers it and every progress line is discarded by abort();
+    # line buffering keeps the last completed suite visible in the log.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
+
     print(f"Testing SafeGGUF Python Binding (Engine version: {safegguf.version()})...")
     assert safegguf.version().startswith("0.3."), f"Unexpected version: {safegguf.version()}"
 
     valid_file = repo_root / "tests" / "fixtures" / "valid.gguf"
     cve_file = repo_root / "tests" / "fixtures" / "negative" / "cve-2025-53630-cumulative-overflow.gguf"
     kv_dos_file = repo_root / "tests" / "fixtures" / "negative" / "synthetic-alloc-kv-count-dos.gguf"
+
+    # Diagnostic: probe every native entry point in a forked child so a native
+    # abort is attributed to the exact C-ABI entry point in this same run. It
+    # never fails the suite (no-op where os.fork is unavailable).
+    print("  [native-probe] Probing C-ABI entry points in forked children (diagnostic)...")
+    run_native_entry_probe(valid_file, cve_file)
 
     # 1. Path-based validation on valid fixture
     print("  1. Testing validate_path on valid model...")
