@@ -1,5 +1,10 @@
 # SafeGGUF Production Readiness & Security Audit Report
 
+> **Archived historical document.** This is a point-in-time snapshot kept for provenance;
+> it is not the current security contract. Current guarantees live in
+> [`SECURITY.md`](../../SECURITY.md); current operations docs are
+> [`docs/runbooks/`](../runbooks/) and [`docs/production_deployment.md`](../production_deployment.md).
+
 **Trạng thái Phán quyết**: **INTERNAL SECURITY VERIFICATION PASSED** (Internal Security Verification Matrix)  
 **Phiên bản Phần mềm**: SafeGGUF v0.3.7-dev (Tracking Release v0.3.6)  
 **Git Commit SHA**: `dea2e24` (Enterprise Hardening Complete)  
@@ -10,14 +15,14 @@
 
 ## 1. Tóm Tắt Điều Hành (Executive Summary)
 
-Đợt kiểm toán an ninh đối kháng và đánh giá nội bộ mức độ sẵn sàng Production cho toàn bộ hệ sinh thái **SafeGGUF** đã được hoàn tất với 100% test suites vượt qua mà không có bất kỳ ngoại lệ hay lỗi hồi quy nào.
+Đợt kiểm toán an ninh đối kháng và đánh giá nội bộ mức độ sẵn sàng Production cho toàn bộ hệ sinh thái **SafeGGUF** đã được hoàn tất tại thời điểm kiểm toán (commit `dea2e24`) với toàn bộ test suite khi đó vượt qua và không phát hiện hồi quy trong phạm vi đã chạy. Đây là kết quả snapshot tại một commit, không phải cam kết miễn nhiễm rủi ro cho mọi phiên bản sau đó.
 
 Toàn bộ các yêu cầu kỹ thuật trọng yếu và tiêu chí chấp thuận (Acceptance Criteria) đã được kiểm chứng qua các bộ thử nghiệm tự động:
 1. **Khôi phục tính toàn vẹn CI**: Khắc phục định dạng mã nguồn `zig fmt`, phát triển generator tất định cho 26 fixtures an ninh (`tests/generate_security_testbed.py`), bảo đảm checkout sạch chạy pass 100% không thiếu tệp.
 2. **Khóa chặt hợp đồng an ninh & logic phán quyết**: Khóa chặt `structural_verdict` trong hybrid triage chỉ dựa trên SafeGGUF exit code (`0 -> STRUCTURALLY_ACCEPTED`, `2 -> REJECT`, `64/70/74 -> ERROR`); loại bỏ các trường xác suất giả mạo; đổi tên bộ phân loại luật thành `offline_rule_triage`.
 3. **C-ABI Pre-Validation**: Kiểm tra cấu trúc `struct_size`, con trỏ `reserved == NULL`, và giới hạn enum `profile`/`endian` **trước khi** mở tệp hoặc kiểm tra descriptor (trả về `64` độc lập với trạng thái hệ thống tệp).
 4. **Đồng bộ hóa phiên bản (Source-of-Truth)**: Truyền trực tiếp `build_options.version` vào thư viện động và tĩnh C-ABI từ `build.zig`; thiết lập cơ chế kiểm tra tiến trình semver nghiêm ngặt trong `scripts/version_consistency.py` (loại bỏ các phiên bản `-dev` tùy tiện như `99.99.99-dev`).
-5. **Anti-TOCTOU Content-Hash Handoff**: Thiết lập quy trình chuyển giao mật mã 2 giai đoạn (`safegguf inspect -> sha256sum -> in-memory CAS -> sha256sum -c`) trong Kubernetes manifest và tập lệnh [`deploy/k8s/attestation_handoff.sh`](deploy/k8s/attestation_handoff.sh).
+5. **Anti-TOCTOU Content-Hash Handoff**: Thiết lập quy trình chuyển giao mật mã 2 giai đoạn (`safegguf inspect -> sha256sum -> in-memory CAS -> sha256sum -c`) trong Kubernetes manifest và tập lệnh [`deploy/k8s/attestation_handoff.sh`](../../deploy/k8s/attestation_handoff.sh).
 6. **Container Release Pipeline**: Xây dựng quy trình tự động hóa đóng gói multi-arch, tạo SBOM, SLSA provenance, và ký số keyless Cosign qua OIDC (`.github/workflows/container-release.yml`).
 
 ---
@@ -28,7 +33,7 @@ Toàn bộ các yêu cầu kỹ thuật trọng yếu và tiêu chí chấp thu�
 | :--- | :--- | :---: | :---: | :---: |
 | **Zig Unit & Fuzz Sweep** | Type table 35 GGML types, QuotaAllocator, WorkBudget, sliding-window reader, checked arithmetic, fuzz corpus. | 78 / 78 tests | **100.0%** | **PASS** |
 | **CLI E2E Contract Suites** | Exit codes `0`, `2`, `64`, `70`, `74`, JSON formatting, rich diagnostics, provenance injection. | 10 / 10 suites | **100.0%** | **PASS** |
-| **Negative Corpus Suite** | 6 lớp lỗi định dạng và 3 CVE trọng yếu (CVE-2024-2182, CVE-2024-34062, CVE-2025-53630). | 15 / 15 cases | **100.0%** | **REJECT (Exit 2)** |
+| **Negative Corpus Suite** | 6 lớp lỗi định dạng (fixture `synthetic-class-exemplar`, không mang danh tính CVE/advisory); 3 CVE placeholder provenance `TRIAGE-PENDING` (manifest-only). | 15 / 15 cases | **100.0%** | **REJECT (Exit 2)** |
 | **BigInt Arithmetic Oracle** | Quét toàn bộ 74,626 bộ số nguyên (alignUp, product, tensorBytes) đối chiếu với Python BigInt. | 74,626 ops | **100.0%** | **PASS** |
 | **Advanced Security Testbed** | 5 kịch bản bảo mật chuyên sâu: tràn nhân số chiều, vi phạm zero-padding, quota DoS, profile decoupling. | 62 / 62 tests | **100.0%** | **PASS** |
 | **Adversarial Endianness** | Đột biến byte, lật 32 bit magic, version biên, tệp rác, auto-detect trên Big-Endian. | 577 / 577 tests | **100.0%** | **PASS** |
@@ -77,8 +82,8 @@ Trong suốt chu trình kiểm toán đa tác tử, các chuyên gia phản bi�
 - Hỗ trợ ghi đè hạn mức linh hoạt qua dòng lệnh và biến môi trường (`SAFEGGUF_MAX_ALLOC_BYTES`, `SAFEGGUF_MAX_WORK_UNITS`, `SAFEGGUF_MAX_SCANNED_BYTES`).
 
 ### 4.2. Thư Viện C-ABI & Python Bindings (`safegguf-py`)
-- C Header [`include/safegguf.h`](include/safegguf.h) và thư viện động/tĩnh (`safegguf.dll`, `libsafegguf.so`) sẵn sàng tích hợp trực tiếp vào các hệ thống backend C/C++, Go, Rust, Python.
-- Pre-validation tuyệt đối: Mọi cấu trúc options sai kích thước hoặc con trỏ `reserved != NULL` đều bị chặn ngay tại biên FFI với exit `64`.
+- Header C [`include/safegguf.h`](../../include/safegguf.h) và thư viện động/tĩnh (`safegguf.dll`, `libsafegguf.so`) sẵn sàng tích hợp trực tiếp vào các hệ thống backend C/C++, Go, Rust, Python.
+- Pre-validation nghiêm ngặt: Mọi cấu trúc options sai kích thước hoặc con trỏ `reserved != NULL` đều bị chặn ngay tại biên FFI với exit `64`.
 - Module Python cung cấp phương thức `safegguf.validate_fd(fd)`, phòng ngừa rủi ro tấn công tráo đổi file **TOCTOU** (Time-Of-Check to Time-Of-Use) khi downstream loader sử dụng chung file descriptor mở chế độ `O_RDONLY`.
 
 ### 4.3. Công Cụ Hybrid Triage (`safegguf-triage`)
@@ -88,8 +93,8 @@ Trong suốt chu trình kiểm toán đa tác tử, các chuyên gia phản bi�
 - Phán đoán typed judgments: Thang điểm `risk_score` (0.00 - 0.98), phân loại rủi ro cấu trúc, và phân định rõ ràng giữa `STRUCTURALLY_ACCEPTED` và quyết định semantic admission downstream.
 
 ### 4.4. Đóng Gói Cloud-Native & Kubernetes
-- Container image tối giản xây dựng qua [`Dockerfile`](Dockerfile) với dung lượng siêu nhẹ $< 5\text{ MB}$ trên nền tảng Distroless non-root (UID 65532).
-- Mẫu Kubernetes manifest [`deploy/k8s/safegguf-initcontainer.yaml`](deploy/k8s/safegguf-initcontainer.yaml) và script [`deploy/k8s/attestation_handoff.sh`](deploy/k8s/attestation_handoff.sh) hiện thực hóa mô hình InitContainer 2 giai đoạn kèm cryptographic content-hash handoff, bảo đảm tính fail-closed cách ly rủi ro hoàn toàn khỏi cụm máy chủ suy luận.
+- Container image tối giản xây dựng qua [`Dockerfile`](../../Dockerfile) với dung lượng siêu nhẹ $< 5\text{ MB}$ trên nền tảng Distroless non-root (UID 65532).
+- Mẫu Kubernetes manifest [`deploy/k8s/safegguf-initcontainer.yaml`](../../deploy/k8s/safegguf-initcontainer.yaml) và script [`deploy/k8s/attestation_handoff.sh`](../../deploy/k8s/attestation_handoff.sh) hiện thực hóa mô hình InitContainer 2 giai đoạn kèm cryptographic content-hash handoff: fail-closed ở mức "byte chưa vượt thẩm định không được runtime nạp" — runtime chỉ nạp bản CAS đã ghim digest và từ chối nếu byte sai lệch (không phải cam kết loại bỏ mọi rủi ro).
 
 ---
 

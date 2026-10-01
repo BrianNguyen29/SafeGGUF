@@ -1,5 +1,10 @@
 # Assurance Roadmap — Issues Breakdown (review nội bộ)
 
+> **Archived historical document.** This is a point-in-time snapshot kept for provenance;
+> it is not the current security contract. Current guarantees live in
+> [`SECURITY.md`](../../SECURITY.md); current operations docs are
+> [`docs/runbooks/`](../runbooks/) and [`docs/production_deployment.md`](../production_deployment.md).
+
 Nguồn: đề xuất 15 mục assurance (không mở rộng tính năng). Mỗi slice là vertical khép kín, demo/verify độc lập. Chưa publish lên GitHub.
 
 Quy ước Type: **AFK** = đủ rõ để làm ngay trong quyền hiện tại; **HITL** = cần quyết định/phê duyệt của người.

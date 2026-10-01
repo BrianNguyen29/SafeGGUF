@@ -1,5 +1,10 @@
 # SafeGGUF Security Review Package
 
+> **Archived historical document.** This is a point-in-time snapshot kept for provenance;
+> it is not the current security contract. Current guarantees live in
+> [`SECURITY.md`](../../SECURITY.md); current operations docs are
+> [`docs/runbooks/`](../runbooks/) and [`docs/production_deployment.md`](../production_deployment.md).
+
 Purpose: let an external engineer build, test, and audit SafeGGUF without reverse-engineering the
 repository. Every behavioral claim below is linked to the file and line range it was read from in
 this working tree. Claims that could not be confirmed from the tree are explicitly marked

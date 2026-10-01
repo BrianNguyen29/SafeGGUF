@@ -1,6 +1,13 @@
 # SafeGGUF Comprehensive Security Evaluation Report
 ## Architecture Review, Adversarial Stress Testing, Profile Decoupling, and TypeSafe Jev Semantic Risk Triage
 
+> **Archived historical document.** This is a point-in-time snapshot kept for provenance;
+> it is not the current security contract. Current guarantees live in
+> [`SECURITY.md`](../../SECURITY.md); current operations docs are
+> [`docs/runbooks/`](../runbooks/) and [`docs/production_deployment.md`](../production_deployment.md).
+> Evaluation figures in this report describe its internal fixture set only — they are
+> not calibrated probabilities and not general accuracy claims.
+
 **Document Reference:** `SAFEGGUF-SEC-EVAL-2026`  
 **Target Repository:** [SafeGGUF (GitHub: BrianNguyen29/SafeGGUF)](https://github.com/BrianNguyen29/SafeGGUF)  
 **Evaluation Target Version:** v0.3.6 (Zig 0.13.0, Pinned GGML 0.23.0 commit `e91ded11bdcd78c42f9c8d3978ff6686eb4c1226`)  
@@ -14,12 +21,12 @@
 
 ## Báo Cáo Tổng Quan (Vietnamese Executive Summary)
 
-Tài liệu này là Báo cáo Đánh giá An ninh Toàn diện (Comprehensive Security Evaluation Report) cho dự án **SafeGGUF**, một bộ phân tích cú pháp (parser) và thẩm định cấu trúc / số học (validator) viết bằng ngôn ngữ Zig dành cho định dạng mô hình AI GGUF v3. Mục tiêu cốt lõi của SafeGGUF là thiết lập một "tường lửa phân tích" (pre-admission parsing firewall) không thể vượt qua, loại bỏ tận gốc các nguy cơ tấn công thực thi mã từ xa, tràn bộ đệm heap, tấn công từ chối dịch vụ (DoS), và tráo đổi trọng số trong các runtime C/C++ hạ tầng (tiêu biểu như `llama.cpp` và `ggml`).
+Tài liệu này là Báo cáo Đánh giá An ninh Toàn diện (Comprehensive Security Evaluation Report) cho dự án **SafeGGUF**, một bộ phân tích cú pháp (parser) và thẩm định cấu trúc / số học (validator) viết bằng ngôn ngữ Zig dành cho định dạng mô hình AI GGUF v3. Mục tiêu cốt lõi của SafeGGUF là một lớp chốt chặn pre-admission fail-closed: mọi mẫu vi phạm các invariant cấu trúc/số học/tài nguyên đã công bố đều bị từ chối (exit 2) trước khi mmap/parse, qua đó giảm thiểu — không phải vô hiệu hóa tuyệt đối — các nguy cơ tràn số, đọc/ghi ngoài biên và DoS tài nguyên trong các runtime C/C++ hạ tầng (tiêu biểu như `llama.cpp` và `ggml`). `PASS` không phải là phán quyết tin cậy về model (xem `SECURITY.md`).
 
 Báo cáo tổng hợp và đối soát thực nghiệm độc lập trên toàn bộ 4 yêu cầu nghiệp vụ:
 1. **R1 (Kiểm toán Kiến trúc & Xác minh Test Suite Hiện hữu):** Toàn bộ 78/78 bài test Zig (77 unit tests và 1 fuzz corpus sweep) đạt kết quả 100% PASS; 15/15 mẫu negative corpus độc hại bị từ chối chính xác theo hợp đồng mã thoát (exit code 2); 26 fixture chuẩn được sinh và xác minh mã băm SHA256 động theo chương trình bởi `tests/generate_fixtures.py` (trong khi negative corpus và security testbed được lập chỉ mục qua các file `manifest.json` tĩnh tường minh); BigInt Arithmetic Oracle đối chiếu 35 kiểu dữ liệu GGML và hàng chục nghìn bộ kiểm thử số học với độ sai lệch 0%.
-2. **R2 (Hệ thống Kiểm thử Bảo mật Nâng cao - Advanced Testbed):** Thiết kế và triển khai 5 kịch bản tấn công tinh vi (Tràn số nguyên 64-bit, Thao túng padding căn lề chống giả mạo, Cạn kiệt tài nguyên bộ nhớ 128 MB QuotaAllocator, Phân ly profile `gguf-spec` vs `llama-cpp`, và Tấn công Steganography UTF-8 non-canonical). Đã sinh 26 fixture nhị phân độc hại mới, chạy 62 lượt hoán vị kiểm thử với tỷ lệ Fail-Closed đạt tuyệt đối 100.0% và 0% crash/panic.
-3. **R3 (Tích hợp TypeSafe Jev Semantic Risk Scoring):** Xây dựng module đánh giá rủi ro ngữ nghĩa dựa trên mô hình Jev (System One model) trả về 3 phán đoán định kiểu chuẩn: `Score` (điểm rủi ro liên tục 0.0 - 1.0), `Choice` (5 nhóm phân loại mối đe dọa), và `Noul` (xác suất khai thác downstream loader). Thẩm định trên tập dữ liệu đầy đủ 67 file GGUF đạt độ chính xác tương quan 100.00% (Accuracy 100%, Precision 100%, Recall 100%, F1 1.0000, Separation Gap +0.290).
+2. **R2 (Hệ thống Kiểm thử Bảo mật Nâng cao - Advanced Testbed):** Thiết kế và triển khai 5 kịch bản tấn công tinh vi (Tràn số nguyên 64-bit, Thao túng padding căn lề chống giả mạo, Cạn kiệt tài nguyên bộ nhớ 128 MB QuotaAllocator, Phân ly profile `gguf-spec` vs `llama-cpp`, và Tấn công Steganography UTF-8 non-canonical). Đã sinh 26 fixture nhị phân độc hại mới, chạy 62 lượt hoán vị kiểm thử: 100.0% fail-closed và 0% crash/panic trên tập hoán vị này (số liệu nội bộ, không phải cam kết cho mọi input).
+3. **R3 (Tích hợp TypeSafe Jev Semantic Risk Scoring):** Xây dựng module đánh giá rủi ro ngữ nghĩa dựa trên mô hình Jev (System One model) trả về 3 phán đoán định kiểu chuẩn: `Score` (điểm rủi ro liên tục 0.0 - 1.0), `Choice` (5 nhóm phân loại mối đe dọa), và `Noul` (tín hiệu heuristic về mức độ ảnh hưởng downstream loader — không phải xác suất đã hiệu chuẩn). Trên tập thẩm định nội bộ 67 file GGUF, các phán đoán khớp với kết quả SafeGGUF ở mức 100.00% (Accuracy 100%, Precision 100%, Recall 100%, F1 1.0000, Separation Gap +0.290); đây là số liệu trên tập nội bộ, không phải độ chính xác tổng quát hay xác suất khai thác đã hiệu chuẩn.
 4. **R4 (Tổng hợp Báo cáo & Khuyến nghị Vận hành):** Đóng gói toàn diện ma trận kiểm thử, phát hiện an ninh, đánh giá giới hạn biên và bộ khuyến nghị tích hợp thực tiễn cho các cổng tiếp nhận mô hình AI (Model Gateways/Registries).
 
 ---
@@ -75,7 +82,7 @@ Historical security audits have demonstrated that parsing complex binary file fo
 - **Parser Differentials:** Semantic divergences between the abstract GGUF format specification and runtime C implementation assumptions allow crafted models to bypass validation filters yet crash or compromise target runtime workers.
 
 ### SafeGGUF Project Overview
-**SafeGGUF** is an unbypassable, zero-dependency, memory-safe GGUF v3 validator and pre-admission inspection filter implemented in Zig 0.13.0. It operates with a strict fail-closed security posture: any model deviating from specification invariants or resource budgets is immediately rejected prior to memory mapping or tensor allocation.
+**SafeGGUF** is a zero-dependency, memory-safe GGUF v3 validator and fail-closed pre-admission inspection filter implemented in Zig 0.13.0. Any model that deviates from the documented structural invariants or resource budgets is rejected (exit 2) prior to memory mapping or tensor allocation. This is structural admission control: it is not a claim that the validator is unbypassable, nor that `PASS` is a trust verdict (see `SECURITY.md`).
 
 ```
                                 INGESTION PIPELINE OVERVIEW
@@ -102,7 +109,7 @@ Historical security audits have demonstrated that parsing complex binary file fo
 Across an exhaustive evaluation involving hundreds of tests, 67 evaluated GGUF files, dual-engine semantic risk scoring, and adversarial stress suites:
 - **Requirement R1 (Architecture & Existing Test Suites):** **100% VERIFIED**. 78/78 Zig unit and fuzz tests passed; 15/15 negative corpus cases rejected; 26 positive fixtures programmatically generated and dynamically verified by `tests/generate_fixtures.py` (with dynamic in-memory SHA256 verification, while negative corpus and security testbed suites are indexed via explicit `manifest.json` files: `tests/fixtures/negative/manifest.json` and `tests/fixtures/security_testbed/manifest.json`); all 5 exit codes verified against POSIX/BSD sysexits contracts.
 - **Requirement R2 (Advanced Security Testbed):** **100% VERIFIED**. 5 comprehensive attack scenarios developed; 26 new binary fixtures generated; 62 permutations executed; 100.0% fail-closed rate on malicious inputs; 0.0% panic or host OOM crash rate.
-- **Requirement R3 (TypeSafe Jev Semantic Risk Scoring):** **100% VERIFIED**. System One model integration implemented via `tests/jev_semantic_triage.py`; continuous `Score`, categorical `Choice`, and probabilistic `Noul` judgments validated across all 67 files; 100.00% classification alignment (Accuracy 1.0, Precision 1.0, Recall 1.0, F1 1.0) with a robust separation gap of `+0.290`.
+- **Requirement R3 (TypeSafe Jev Semantic Risk Scoring):** **VERIFIED (scope: the internal 67-file evaluation set)**. System One model integration implemented via `tests/jev_semantic_triage.py`; continuous `Score`, categorical `Choice`, and model-estimated `Noul` (a heuristic severity signal, not a calibrated probability) judgments validated across all 67 files; 100.00% classification alignment on that internal set (Accuracy 1.0, Precision 1.0, Recall 1.0, F1 1.0) with a separation gap of `+0.290` - an internal evaluation figure, not general accuracy or a calibrated exploit probability.
 - **Requirement R4 (Comprehensive Audit Report):** **100% COMPLETED** in this publication-grade document.
 
 ---
@@ -575,8 +582,8 @@ Implemented in `tests/jev_semantic_triage.py`, the integration module follows Ty
                      |                                   |
                      v                                   v
     +----------------------------------+       +------------------------------------+
-    | Remote API: api.typesafe.ai/v1/  |       | Offline Bayesian Decision Engine   |
-    | Model: jev-latest (~200-500ms)   |       | Calibrated distributions (<10ms)   |
+    | Remote API: api.typesafe.ai/v1/  |       | Offline Deterministic Rule Engine  |
+    | Model: jev-latest (~200-500ms)   |       | Heuristic rule scores (<10ms)      |
     +----------------------------------+       +------------------------------------+
                      \                                   /
                       \                                 /
@@ -591,8 +598,8 @@ Implemented in `tests/jev_semantic_triage.py`, the integration module follows Ty
 
 - **Dual-Mode Engine:**
   - *Live API Mode (`call_typesafe_jev_api`):* Calls `https://api.typesafe.ai/v1/systemone` using model `jev-latest`. Dispatches structured questions for `security_risk`, `risk_category`, and `downstream_exploitability`.
-  - *High-Fidelity Deterministic Offline Engine (`offline_jev_engine`):* Used in air-gapped CI/CD environments or when `TYPESAFE_API_KEY` is not provisioned. Executes identical Bayesian probability logic and calibrated response schemas.
-- **Dynamic Confidence Calibration:** Conforms to normalized peak formula:
+  - *High-Fidelity Deterministic Offline Engine (`offline_jev_engine`):* Used in air-gapped CI/CD environments or when `TYPESAFE_API_KEY` is not provisioned. Executes deterministic rule logic with the same response schema; its scores are heuristic severity signals, not calibrated probabilities.
+- **Heuristic Score Normalization:** Maps scores through the normalized peak formula (a heuristic rescaling, not statistical calibration):
   $$\text{confidence} = \max\left(0.0, \, \min\left(1.0, \, \frac{N \cdot \max(P) - 1}{N - 1}\right)\right)$$
   mapping a uniform distribution to $0.0$ and certainty to $1.0$.
 
@@ -616,8 +623,8 @@ Triages every file into exactly one of five standardized categories:
 4. `Resource-Exhaustion`: DoS payloads attempting memory allocation bombs (>128 MB) or exceeding WorkBudget caps.
 5. `Alignment-Tamper`: Non-zero descriptor padding injection, misaligned offsets, or overlapping tensor byte spans.
 
-### 3. `Noul`: Downstream Loader Exploitability Probability
-Estimates probability $[0.000, 1.000]$ of causing memory corruption or crash in downstream C/C++ runtimes:
+### 3. `Noul`: Downstream Loader Exploitability Signal (Heuristic)
+Heuristic estimate $[0.000, 1.000]$ of downstream loader impact; a model-generated severity signal, not a calibrated probability of exploitation:
 - $\text{Noul} = 0.9800$: Extreme risk (integer overflows causing heap corruption in `llama.cpp`).
 - $\text{Noul} = 0.9200$: Critical risk (tensor payload overlaps or out-of-bounds memory reads).
 - $\text{Noul} = 0.8800$: High risk (memory exhaustion DoS crashing host inference services).
@@ -732,6 +739,10 @@ Using a standard decision threshold of $\text{Score} \ge 0.50$ (Predicted Malici
 | **False Positive Rate (FPR)** | $\text{FP} / (\text{FP} + \text{TN})$ | $0 / 10$ | **0.00%** |
 | **False Negative Rate (FNR)** | $\text{FN} / (\text{TP} + \text{FN})$ | $0 / 57$ | **0.00%** |
 | **Separation Gap** | $\min(\text{Score}_{\text{Malicious}}) - \max(\text{Score}_{\text{Benign}})$ | $0.520 - 0.230$ | **+0.290** |
+
+> **Scope note:** every figure in this section describes the 67-file internal evaluation
+> set only. They are alignment measurements against SafeGGUF's own structural verdicts —
+> not calibrated probabilities, and not general accuracy on unknown models.
 
 ---
 

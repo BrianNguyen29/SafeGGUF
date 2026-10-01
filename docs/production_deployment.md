@@ -219,7 +219,9 @@ spec:
 
 ## 5. Vận Hành Triage: Online Jev vs Offline Air-Gapped Fallback
 
-Sử dụng công cụ `safegguf-triage` ([`tools/safegguf-triage/safegguf_triage.py`](file:///C:/Users/Duong%20Nguyen/.gemini/antigravity/scratch/safegguf_test/tools/safegguf-triage/safegguf_triage.py)):
+Sử dụng công cụ `safegguf-triage` ([`tools/safegguf-triage/safegguf_triage.py`](../tools/safegguf-triage/safegguf_triage.py)).
+
+`risk_score` / `threat_category` / `severity` là **tín hiệu heuristic** (thang điểm phân loại của rule engine, hoặc đầu ra model ở chế độ online): chúng không phải xác suất đã hiệu chuẩn và không phải phán quyết admission. Phán quyết cấu trúc (`structural_verdict`) suy ra trực tiếp từ exit code SafeGGUF (`0 -> STRUCTURALLY_ACCEPTED`, `2 -> REJECT`, `64/70/74 -> ERROR`) và không bao giờ bị ghi đè bởi điểm số heuristic.
 
 ### 5.1. Khi Có Kết Nối Mạng & TypeSafe API Key
 ```bash
@@ -227,7 +229,7 @@ export TYPESAFE_API_KEY="ts_live_..."
 python tools/safegguf-triage/safegguf_triage.py /models/model.gguf --format json
 ```
 * Engine: **Online Jev System One**
-* Trả về điểm số rủi ro ngữ nghĩa (`risk_score`), phân loại mối đe dọa (`threat_category`), và phán quyết cấu trúc (`structural_verdict`).
+* Trả về điểm số rủi ro ngữ nghĩa (`risk_score` — thang điểm heuristic, không phải xác suất đã hiệu chuẩn), phân loại mối đe dọa (`threat_category`), và phán quyết cấu trúc (`structural_verdict`).
 
 ### 5.2. Khi Chạy Trong Môi Trường Biệt Lập (Air-Gapped / Không có Jev)
 ```bash
@@ -235,4 +237,15 @@ python tools/safegguf-triage/safegguf_triage.py /models/model.gguf --format json
 python tools/safegguf-triage/safegguf_triage.py /models/model.gguf --mode offline
 ```
 * Engine: **Offline Deterministic Rule Engine**
-* **Đặc tính**: Tiêu tốn **0 ms độ trễ mạng**, **0 chi phí token**, tự động bóc tách mã lỗi SafeGGUF để chấm điểm rủi ro và khuyến nghị phán quyết (`STRUCTURALLY_ACCEPTED` vs `REJECT`).
+* **Đặc tính**: Tiêu tốn **0 ms độ trễ mạng**, **0 chi phí token**, tự động bóc tách mã lỗi SafeGGUF để chấm điểm rủi ro (điểm heuristic phân loại, không phải xác suất hiệu chuẩn) và khuyến nghị phán quyết (`STRUCTURALLY_ACCEPTED` vs `REJECT`).
+
+---
+
+## 6. Xử Lý Sự Cố (Incident Runbooks)
+
+Khi xảy ra sự cố vận hành, dùng bộ runbook tại [`docs/runbooks/`](runbooks/):
+
+- **Runbook A — Validator crash:** quarantine input, lưu digest, bảo toàn artifact, thu thập version/commit, vô hiệu hóa release bị ảnh hưởng, reproduce.
+- **Runbook B — False reject:** bắt corpus entry, đối chiếu pinned oracle + rolling oracle, phân loại intentional vs regression.
+- **Runbook C — False accept / downstream crash (critical):** cô lập model, dừng admission, reproduce downstream, promote fixture, phát hành bản vá.
+- **Runbook D — Fuzz nightly red:** phân biệt harness / infrastructure / validator trước khi kết luận.

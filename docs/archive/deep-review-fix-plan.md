@@ -1,5 +1,10 @@
 # SafeGGUF — Deep-Review Fix Plan (F-01…F-13)
 
+> **Archived historical document.** This is a point-in-time snapshot kept for provenance;
+> it is not the current security contract. Current guarantees live in
+> [`SECURITY.md`](../../SECURITY.md); current operations docs are
+> [`docs/runbooks/`](../runbooks/) and [`docs/production_deployment.md`](../production_deployment.md).
+
 Source: `SafeGGUF_Deep_Security_Review_and_Remediation_Plan.md`, reviewed HEAD `158308e` (2026-09-11).
 Tracking: this file only — no GitHub issues. Work already owned by `docs/assurance-roadmap-issues.md` is listed under **Already tracked** and is not re-planned.
 Sizes: S ≈ <½ day, M ≈ 1–2 days. `[ ]` = acceptance checkbox.

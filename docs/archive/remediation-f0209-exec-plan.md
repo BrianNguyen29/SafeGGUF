@@ -1,5 +1,10 @@
 # SafeGGUF — F-02/04/05/06/07/09 Execution Plan (EXEC-NOW vs NEEDS-INPUT)
 
+> **Archived historical document.** This is a point-in-time snapshot kept for provenance;
+> it is not the current security contract. Current guarantees live in
+> [`SECURITY.md`](../../SECURITY.md); current operations docs are
+> [`docs/runbooks/`](../runbooks/) and [`docs/production_deployment.md`](../production_deployment.md).
+
 Source: `SafeGGUF_Remediation_Plan_F02_F04_F05_F06_F07_F09.md` (baseline HEAD `1036a27`). Planning only — no src/tests/workflow edits. Sizes: S ≤ ½ day, M 1–2 days. Already-done slices (#7 matrix, #9 synthetic/CVE split, #11 diagnostics, #12 provenance field, #6 lifetime contract) are not re-planned. Every source ask appears exactly once below.
 
 ## Phase A — EXEC-NOW (no external data)

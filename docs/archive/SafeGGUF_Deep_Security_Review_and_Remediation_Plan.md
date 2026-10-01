@@ -1,5 +1,10 @@
 # SafeGGUF — Deep Security Review, Findings & Remediation Plan
 
+> **Archived historical document.** This is a point-in-time snapshot kept for provenance;
+> it is not the current security contract. Current guarantees live in
+> [`SECURITY.md`](../../SECURITY.md); current operations docs are
+> [`docs/runbooks/`](../runbooks/) and [`docs/production_deployment.md`](../production_deployment.md).
+
 > **Repository:** `BrianNguyen29/SafeGGUF`  
 > **Repository URL:** https://github.com/BrianNguyen29/SafeGGUF  
 > **Review snapshot:** `main` at commit `158308eee14fe767a45bd60a7ffe8d731941665c`  

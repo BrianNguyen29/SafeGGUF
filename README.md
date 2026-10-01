@@ -10,7 +10,7 @@
 [![Release](https://img.shields.io/badge/Release-v0.3.7--dev-blue.svg?style=flat-square)](https://github.com/BrianNguyen29/SafeGGUF)
 [![Upstream ggml](https://img.shields.io/badge/ggml-0.23.0%20(e91ded11)-blueviolet.svg?style=flat-square)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
 [![Docker](https://img.shields.io/badge/Docker-Distroless%20%3C%205MB-2496ED.svg?style=flat-square&logo=docker)](Dockerfile)
-[![Audit](https://img.shields.io/badge/Security-Internal%20Verification%20Passed-blue.svg?style=flat-square)](production_audit_report.md)
+[![Audit](https://img.shields.io/badge/Security-Internal%20Verification%20Passed-blue.svg?style=flat-square)](docs/archive/production_audit_report.md)
 
 <p align="center">
   <a href="#key-features">Key Features</a> •
@@ -397,7 +397,7 @@ python tools/safegguf-triage/safegguf_triage.py /path/to/model.gguf --mode offli
 
 ## 🧪 Comprehensive Security Audit & Verification
 
-SafeGGUF has been subjected to continuous multi-agent adversarial auditing and empirical stress testing across **16 test suites and over 76,000 operations**:
+SafeGGUF has been subjected to multi-agent adversarial auditing and empirical stress testing across **16 test suites and over 76,000 operations**. The matrix below is a historical snapshot of that campaign, retained for provenance; see the archived audit report for the full record:
 
 ```
 +----------------------------------------------------------------------------------------------------------------+
@@ -407,7 +407,7 @@ SafeGGUF has been subjected to continuous multi-agent adversarial auditing and e
 +----+---------------------------------------+-----------------------------+-------------------+-----------------+
 | 01 | Zig Unit & Fuzz Sweep                 | 35 GGML types, limits, mem  | 78 / 78 tests     | PASS (100.0%)   |
 | 02 | CLI E2E Contract Suites               | Exit codes 0, 2, 64, 70, 74 | 10 / 10 suites    | PASS (100.0%)   |
-| 03 | Negative Corpus Suite                 | 6 error classes & 3 CVEs    | 15 / 15 cases     | REJECT (Exit 2) |
+| 03 | Negative Corpus Suite                 | 6 synthetic bug classes     | 15 / 15 cases     | REJECT (Exit 2) |
 | 04 | BigInt Arithmetic Oracle              | Python BigInt cross-oracle  | 74,626 ops        | PASS (100.0%)   |
 | 05 | Advanced Security Testbed             | Wraparounds, padding, DoS   | 62 / 62 tests     | PASS (100.0%)   |
 | 06 | Adversarial Endianness Sweep          | Big-Endian v2/v3 detection  | 577 / 577 tests   | PASS (100.0%)   |
@@ -426,7 +426,7 @@ SafeGGUF has been subjected to continuous multi-agent adversarial auditing and e
 +----------------------------------------------------------------------------------------------------------------+
 ```
 
-For full forensic details, audit logs, and signatures, see [`production_audit_report.md`](production_audit_report.md).
+For full forensic details, audit logs, and signatures, see the archived audit report [`production_audit_report.md`](docs/archive/production_audit_report.md).
 
 ---
 
