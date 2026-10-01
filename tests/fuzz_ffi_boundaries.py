@@ -10,12 +10,14 @@ Fuzzes and stress-tests:
 5. Closed, negative, and invalid raw OS file handles.
 6. Diagnostic result buffer boundaries (NULL result vs non-NULL struct).
 7. High-concurrency multi-threaded stress across FFI boundaries.
+8. Non-regular target matrix (dir/FIFO/socket/char/block) on path and fd entries.
 """
 
 import os
 import sys
 import ctypes
 import random
+import socket
 import string
 import tempfile
 import threading
@@ -47,6 +49,13 @@ lib.safegguf_validate_fd_v1.argtypes = [
     ctypes.POINTER(SafeggufResult),
 ]
 lib.safegguf_validate_fd_v1.restype = ctypes.c_int
+
+# Legacy (pre-v1) entry points: same regular-file target policy.
+lib.safegguf_validate_path.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
+lib.safegguf_validate_path.restype = ctypes.c_int
+
+lib.safegguf_validate_fd.argtypes = [ctypes.c_ssize_t, ctypes.c_int, ctypes.c_int]
+lib.safegguf_validate_fd.restype = ctypes.c_int
 
 VALID_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "valid.gguf"
 CVE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "negative" / "cve-2025-53630-cumulative-overflow.gguf"
@@ -303,6 +312,159 @@ def fuzz_multithreaded_concurrency():
         f"Encountered {len(thread_errors)} concurrency errors: {thread_errors[:3]}"
     )
 
+def fuzz_non_regular_targets():
+    print("\n--- Fuzzing 7: Non-Regular Target Matrix (dir / FIFO / socket / char / block) ---")
+    if os.name == "nt":
+        print("[skip] POSIX target kinds (FIFO/socket/char/block devices) are not exercised on Windows")
+        return
+
+    def deadline_call(fn, timeout=5.0):
+        """Run fn() on a daemon thread; returns (finished, rc). A blocking open
+        (policy regression) surfaces as finished=None instead of hanging."""
+        box = {}
+
+        def target():
+            try:
+                box["rc"] = fn()
+            except BaseException as exc:  # pragma: no cover - defensive
+                box["exc"] = exc
+
+        th = threading.Thread(target=target, daemon=True)
+        th.start()
+        th.join(timeout)
+        if th.is_alive():
+            return None, None
+        if "exc" in box:
+            raise box["exc"]
+        return True, box["rc"]
+
+    def check_path(name, target, expect_pass=False):
+        # v1 entry point must reject the non-regular target immediately with the
+        # CLI's stat-failure mapping: 74 + E_FILE_STAT_FAILED + "Not a regular
+        # file" when the open succeeded, or E_FILE_OPEN_FAILED when the OS
+        # refuses the open (e.g. socket nodes). MUST NOT block on open.
+        res = SafeggufResult()
+        finished, rc = deadline_call(
+            lambda: lib.safegguf_validate_path_v1(os.fsencode(target), None, ctypes.byref(res))
+        )
+        if finished is None:
+            record(f"path_v1({name})_immediate", False, "blocked longer than the deadline (no immediate error)")
+        elif expect_pass:
+            record(f"path_v1({name})", rc == Status.PASS, f"expected PASS (0), got {rc}")
+        else:
+            err = res.error_code.decode("utf-8", errors="replace")
+            msg = res.message.decode("utf-8", errors="replace")
+            if err == "E_FILE_STAT_FAILED":
+                ok = rc == Status.IO_ERROR and msg == "Not a regular file"
+            else:
+                ok = rc == Status.IO_ERROR and err == "E_FILE_OPEN_FAILED"
+            record(f"path_v1({name})", ok, f"rc={rc} error={err} msg={msg}")
+
+        finished, rc = deadline_call(lambda: lib.safegguf_validate_path(os.fsencode(target), 0, 0))
+        if finished is None:
+            record(f"path_legacy({name})_immediate", False, "blocked longer than the deadline (no immediate error)")
+        elif expect_pass:
+            record(f"path_legacy({name})", rc == Status.PASS, f"expected PASS (0), got {rc}")
+        else:
+            record(f"path_legacy({name})", rc == Status.IO_ERROR, f"expected 74, got {rc}")
+
+    def check_fd(name, fd):
+        # fd entry points must fstat and require the S_ISREG equivalent.
+        res = SafeggufResult()
+        rc = lib.safegguf_validate_fd_v1(fd, None, ctypes.byref(res))
+        err = res.error_code.decode("utf-8", errors="replace")
+        msg = res.message.decode("utf-8", errors="replace")
+        record(
+            f"fd_v1({name})",
+            rc == Status.IO_ERROR and err == "E_FD_STAT_FAILED" and msg == "Not a regular file",
+            f"rc={rc} error={err} msg={msg}",
+        )
+        rc = lib.safegguf_validate_fd(fd, 0, 0)
+        record(f"fd_legacy({name})", rc == Status.IO_ERROR, f"expected 74, got {rc}")
+
+    with tempfile.TemporaryDirectory(prefix="safegguf-kinds-") as td:
+        fifo_path = os.path.join(td, "target.fifo")
+        os.mkfifo(fifo_path)
+
+        # Symlink policy: symlinks are followed; the resolved target's kind
+        # decides. A symlink to a regular model stays valid, a symlink to a
+        # FIFO is rejected without blocking.
+        symlink_regular = os.path.join(td, "symlink-regular.gguf")
+        os.symlink(VALID_FIXTURE, symlink_regular)
+        symlink_fifo = os.path.join(td, "symlink-fifo.gguf")
+        os.symlink(fifo_path, symlink_fifo)
+
+        socket_obj = None
+        sock_path = os.path.join(td, "target.sock")
+        try:
+            socket_obj = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            socket_obj.bind(sock_path)
+        except OSError:
+            socket_obj = None
+
+        open_fds = []
+        socket_fd = None
+        try:
+            # --- path entry points: immediate error, no blocking open ---
+            check_path("dir", td)
+            check_path("fifo", fifo_path)
+            if socket_obj is not None:
+                check_path("socket", sock_path)
+            check_path("char_device", "/dev/null")
+            for block_candidate in ("/dev/loop0", "/dev/sda", "/dev/vda", "/dev/nvme0n1"):
+                try:
+                    probe_fd = os.open(block_candidate, os.O_RDONLY | os.O_NONBLOCK)
+                except OSError:
+                    continue
+                os.close(probe_fd)
+                check_path("block_device", block_candidate)
+                break
+            check_path("symlink_to_regular", symlink_regular, expect_pass=True)
+            check_path("symlink_to_fifo", symlink_fifo)
+
+            # --- descriptor entry points: fstat kind must be regular ---
+            open_fds.append(("dir", os.open(td, os.O_RDONLY)))
+            open_fds.append(("fifo", os.open(fifo_path, os.O_RDONLY | os.O_NONBLOCK)))
+            if socket_obj is not None:
+                socket_fd = socket_obj.fileno()
+                open_fds.append(("socket", socket_fd))
+            open_fds.append(("char_device", os.open("/dev/null", os.O_RDONLY)))
+            for block_candidate in ("/dev/loop0", "/dev/sda", "/dev/vda", "/dev/nvme0n1"):
+                try:
+                    probe_fd = os.open(block_candidate, os.O_RDONLY | os.O_NONBLOCK)
+                except OSError:
+                    continue
+                open_fds.append(("block_device", probe_fd))
+                break
+
+            for name, fd in open_fds:
+                check_fd(name, fd)
+
+            # Regular files must stay unaffected on both entries.
+            res = SafeggufResult()
+            with open(VALID_FIXTURE, "rb") as f:
+                raw_h = f.fileno()
+                rc_v1 = lib.safegguf_validate_fd_v1(raw_h, None, ctypes.byref(res))
+                rc_legacy = lib.safegguf_validate_fd(raw_h, 0, 0)
+            record("fd_v1(regular_valid)", rc_v1 == Status.PASS, f"expected 0, got {rc_v1}")
+            record("fd_legacy(regular_valid)", rc_legacy == Status.PASS, f"expected 0, got {rc_legacy}")
+
+            with open(CVE_FIXTURE, "rb") as f:
+                rc_v1 = lib.safegguf_validate_fd_v1(f.fileno(), None, ctypes.byref(res))
+            record("fd_v1(regular_reject)", rc_v1 == Status.REJECT, f"expected 2, got {rc_v1}")
+        finally:
+            for _, fd in open_fds:
+                # The socket fd is owned by socket_obj; closing it here would
+                # make the object's own close() fail on an already-closed fd.
+                if fd == socket_fd:
+                    continue
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if socket_obj is not None:
+                socket_obj.close()
+
 def main():
     print("======================================================================")
     print("       SAFEGGUF ENTERPRISE FFI BOUNDARIES & ROBUSTNESS FUZZER         ")
@@ -314,6 +476,7 @@ def main():
     fuzz_fd_handles()
     fuzz_null_and_buffer_diagnostics()
     fuzz_multithreaded_concurrency()
+    fuzz_non_regular_targets()
 
     print("\n" + "=" * 70)
     print(f"Total FFI Checks : {passed_checks + failed_checks}")

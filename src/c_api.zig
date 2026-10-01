@@ -151,6 +151,75 @@ fn validateInternal(
     return 0; // PASS
 }
 
+/// Result of opening a path whose resolved target is a regular file.
+const OpenedRegularFile = struct {
+    file: std.fs.File,
+    size: u64,
+};
+
+const OpenRegularFileError = error{
+    /// open(2) / CreateFile failed (missing path, permissions, socket node, ...).
+    OpenFailed,
+    /// The opened descriptor could not be queried.
+    StatFailed,
+    /// The resolved target is not a regular file (directory, FIFO, socket,
+    /// character/block device, ...).
+    NotRegularFile,
+};
+
+/// Opens `path` and returns it only when the resolved target is a regular
+/// file, mirroring the CLI's `stat.kind != .file` policy (src/main.zig).
+///
+/// Symlink policy: symlinks are followed, matching both the previous C ABI
+/// behavior and the CLI (`std.fs.Dir.openFile` resolves links). The kind
+/// decision applies to the resolved target, so a symlink to a regular model
+/// is accepted while a symlink to a directory/FIFO/device is rejected.
+/// O_NOFOLLOW is deliberately not used: CLI parity is defined on the resolved
+/// target, and the non-blocking kind check makes the follow safe.
+///
+/// Blocking policy: on POSIX the open uses O_NONBLOCK so a FIFO with no
+/// writer (or any target whose open would otherwise wait) returns immediately
+/// and is then rejected by the kind check; O_NONBLOCK has no effect on
+/// regular-file reads, so validation semantics are unchanged. O_NOCTTY avoids
+/// acquiring a controlling terminal. The kind is taken from fstat on the
+/// just-opened descriptor, so a concurrent path swap cannot bypass the policy.
+fn openRegularFile(path: []const u8) OpenRegularFileError!OpenedRegularFile {
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) {
+        // Windows has no O_NONBLOCK equivalent for path opens; stat.kind is
+        // still the regular-file decision (CLI parity; main.zig uses the same
+        // kind check).
+        const file = std.fs.cwd().openFile(path, .{}) catch return error.OpenFailed;
+        errdefer file.close();
+        const stat = file.stat() catch return error.StatFailed;
+        if (stat.kind != .file) return error.NotRegularFile;
+        return .{ .file = file, .size = stat.size };
+    }
+    const fd = std.posix.open(path, .{ .NONBLOCK = true, .NOCTTY = true, .CLOEXEC = true }, 0) catch return error.OpenFailed;
+    const file = std.fs.File{ .handle = fd };
+    errdefer file.close();
+    const stat = file.stat() catch return error.StatFailed;
+    if (stat.kind != .file) return error.NotRegularFile;
+    return .{ .file = file, .size = stat.size };
+}
+
+/// Fstats a descriptor supplied by a foreign C caller. `std.posix.fstat`
+/// treats EBADF as `unreachable` (a process abort), so an untrusted descriptor
+/// must be proven open first: POSIX poll() reports POLLNVAL for closed or
+/// out-of-range descriptors without touching them. Returns null when the
+/// descriptor is invalid or the stat itself fails. Closing a descriptor
+/// concurrently with the call remains the caller's contract violation; fd
+/// ownership stays with the caller for the duration of the call.
+fn fstatForeign(file: std.fs.File) ?std.fs.File.Stat {
+    const builtin = @import("builtin");
+    if (builtin.os.tag != .windows) {
+        var fds = [1]std.posix.pollfd{.{ .fd = file.handle, .events = 0, .revents = 0 }};
+        const ready = std.posix.poll(&fds, 0) catch return null;
+        if (ready > 0 and (fds[0].revents & std.posix.POLL.NVAL) != 0) return null;
+    }
+    return file.stat() catch null;
+}
+
 pub export fn safegguf_validate_path_v1(
     path_ptr: ?[*:0]const u8,
     options: ?*const OptionsV1,
@@ -172,18 +241,21 @@ pub export fn safegguf_validate_path_v1(
     const profile_id = if (options) |o| o.profile else 1; // default llama-cpp
     const endian_id = if (options) |o| o.endian else 2; // default auto
 
-    const file = std.fs.cwd().openFile(path_slice, .{}) catch {
-        populateResult(out_result, 74, "E_FILE_OPEN_FAILED", "io", "filesystem", "Failed to open file on disk");
+    // Regular-file target policy (CLI parity, src/main.zig): non-regular path
+    // targets have no meaningful size for the sliding-window reader and would
+    // otherwise surface as an opaque mid-parse I/O error; reject them up front
+    // on the stat-failure path (exit 74, E_FILE_STAT_FAILED).
+    const opened = openRegularFile(path_slice) catch |e| {
+        switch (e) {
+            error.OpenFailed => populateResult(out_result, 74, "E_FILE_OPEN_FAILED", "io", "filesystem", "Failed to open file on disk"),
+            error.StatFailed => populateResult(out_result, 74, "E_FILE_STAT_FAILED", "io", "filesystem", "Failed to query file metadata / stat"),
+            error.NotRegularFile => populateResult(out_result, 74, "E_FILE_STAT_FAILED", "io", "filesystem", "Not a regular file"),
+        }
         return 74;
     };
-    defer file.close();
+    defer opened.file.close();
 
-    const stat = file.stat() catch {
-        populateResult(out_result, 74, "E_FILE_STAT_FAILED", "io", "filesystem", "Failed to query file metadata / stat");
-        return 74;
-    };
-
-    return validateInternal(file, stat.size, options, profile_id, endian_id, out_result);
+    return validateInternal(opened.file, opened.size, options, profile_id, endian_id, out_result);
 }
 
 pub export fn safegguf_validate_fd_v1(
@@ -201,7 +273,9 @@ pub export fn safegguf_validate_fd_v1(
             return 74;
         }
     } else {
-        if (handle_int < 0) {
+        // Descriptors are c_int-sized; out-of-range values cannot be open fds
+        // and must not reach the handle conversion (which would trap).
+        if (handle_int < 0 or handle_int > std.math.maxInt(std.fs.File.Handle)) {
             populateResult(out_result, 74, "E_INVALID_FD", "io", "descriptor", "Invalid POSIX file descriptor");
             return 74;
         }
@@ -213,10 +287,19 @@ pub export fn safegguf_validate_fd_v1(
         @as(std.fs.File.Handle, @intCast(handle_int));
 
     const file = std.fs.File{ .handle = handle };
-    const stat = file.stat() catch {
+    const stat = fstatForeign(file) orelse {
         populateResult(out_result, 74, "E_FD_STAT_FAILED", "io", "descriptor", "Failed to fstat file descriptor");
         return 74;
     };
+
+    // Regular-file target policy (CLI parity): fstat kind is the cross-platform
+    // S_ISREG equivalent. Descriptors cannot name a symlink once opened with a
+    // normal open; an O_PATH|O_NOFOLLOW fd that still resolves to one reports
+    // .sym_link here and is rejected like any other non-regular target.
+    if (stat.kind != .file) {
+        populateResult(out_result, 74, "E_FD_STAT_FAILED", "io", "descriptor", "Not a regular file");
+        return 74;
+    }
 
     const orig_pos = file.getPos() catch null;
     defer {
@@ -243,11 +326,10 @@ pub export fn safegguf_validate_path(
     const path_slice = std.mem.span(ptr);
     if (path_slice.len == 0 or path_slice.len > 4096) return 74;
 
-    const file = std.fs.cwd().openFile(path_slice, .{}) catch return 74;
-    defer file.close();
-
-    const stat = file.stat() catch return 74;
-    return validateInternal(file, stat.size, null, profile_id, endian_id, null);
+    // Same regular-file target policy as the v1 entry point (CLI parity).
+    const opened = openRegularFile(path_slice) catch return 74;
+    defer opened.file.close();
+    return validateInternal(opened.file, opened.size, null, profile_id, endian_id, null);
 }
 
 pub export fn safegguf_validate_fd(
@@ -262,7 +344,7 @@ pub export fn safegguf_validate_fd(
     if (builtin.os.tag == .windows) {
         if (handle_int <= 0) return 74;
     } else {
-        if (handle_int < 0) return 74;
+        if (handle_int < 0 or handle_int > std.math.maxInt(std.fs.File.Handle)) return 74;
     }
 
     const handle: std.fs.File.Handle = if (builtin.os.tag == .windows)
@@ -271,7 +353,10 @@ pub export fn safegguf_validate_fd(
         @as(std.fs.File.Handle, @intCast(handle_int));
 
     const file = std.fs.File{ .handle = handle };
-    const stat = file.stat() catch return 74;
+    const stat = fstatForeign(file) orelse return 74;
+
+    // Same regular-file target policy as the v1 entry point (CLI parity).
+    if (stat.kind != .file) return 74;
 
     const orig_pos = file.getPos() catch null;
     defer {

@@ -1,6 +1,7 @@
 import os
 import sys
 import ctypes
+import ctypes.util
 import threading
 from enum import IntEnum
 from typing import Union, Optional
@@ -92,9 +93,16 @@ class SafeggufResult(ctypes.Structure):
     ]
 
 def _find_library() -> str:
-    # 1. Environment variable override
+    # 1. Explicit trusted path: must be absolute and point at a regular file.
+    #    Fail closed so a misconfigured override never silently falls through
+    #    to a less trusted candidate.
     env_lib = os.environ.get("SAFEGGUF_LIB_PATH")
-    if env_lib and os.path.exists(env_lib):
+    if env_lib:
+        if not os.path.isabs(env_lib) or not os.path.isfile(env_lib):
+            raise FileNotFoundError(
+                "SAFEGGUF_LIB_PATH must be an absolute path to a regular file "
+                f"(got: {env_lib!r})"
+            )
         return env_lib
 
     # 2. Candidate names based on platform
@@ -105,7 +113,10 @@ def _find_library() -> str:
     else:
         lib_names = ["libsafegguf.so", "safegguf.so"]
 
-    # 3. Search directories relative to this file and workspace
+    # 3. Packaged / source-tree locations, anchored to this file: wheel layout
+    #    first, then a source checkout's zig-out. Never os.getcwd(): an
+    #    attacker-controlled working directory must not be able to inject a
+    #    shared library.
     curr = Path(__file__).resolve().parent
     repo_root = curr.parents[2] # bindings/python/safegguf -> repo root
 
@@ -113,23 +124,37 @@ def _find_library() -> str:
         curr,
         repo_root / "zig-out" / "bin",
         repo_root / "zig-out" / "lib",
-        Path.cwd() / "zig-out" / "bin",
-        Path.cwd() / "zig-out" / "lib",
     ]
 
     for d in search_dirs:
         for name in lib_names:
             candidate = d / name
-            if candidate.exists():
+            if candidate.is_file():
                 return str(candidate)
 
-    # 4. Fallback to system search
-    for name in lib_names:
-        try:
-            ctypes.CDLL(name)
-            return name
-        except OSError:
-            pass
+    # 4. Admin-managed system install path, resolved through the platform
+    #    library search (ldconfig/dyld/PATH). A bare-name dlopen is
+    #    deliberately not used here because the loader may consult the process
+    #    CWD for leaf names on Windows/macOS.
+    system_names = ["safegguf.dll", "libsafegguf.dll"] if sys.platform == "win32" else ["safegguf"]
+    for name in system_names:
+        resolved = ctypes.util.find_library(name)
+        if resolved:
+            try:
+                ctypes.CDLL(resolved)
+                return resolved
+            except OSError:
+                pass
+
+    # Linux leaf-name resolution goes through ld.so (system directories and
+    # LD_LIBRARY_PATH as configured by the administrator), never the CWD.
+    if sys.platform.startswith("linux"):
+        for name in lib_names:
+            try:
+                ctypes.CDLL(name)
+                return name
+            except OSError:
+                pass
 
     raise FileNotFoundError(
         "Could not find safegguf dynamic library. Ensure 'zig build' has run or set SAFEGGUF_LIB_PATH."
@@ -202,6 +227,40 @@ def _parse_endian(endian: Union[str, Endian, int]) -> int:
         return int(Endian.LITTLE)
     raise ValueError(f"Invalid endian: '{endian}' (choose 'little', 'big', or 'auto')")
 
+_UINT64_MAX = (1 << 64) - 1
+
+def _parse_u64_limit(name: str, value: int) -> int:
+    """Validate a resource limit destined for a ``c_uint64`` option field.
+
+    ``0`` keeps the engine-configured default. Any other value must be a
+    non-bool integer in ``[1, UINT64_MAX]``. Booleans, non-integers, negative
+    values, and values above ``UINT64_MAX`` are rejected instead of being
+    silently wrapped by ``ctypes`` (e.g. ``-1`` -> ``UINT64_MAX``,
+    ``2**64`` -> ``0``), which would weaken the configured quota.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{name} must be an integer (0 = use engine default), "
+            f"got {type(value).__name__}: {value!r}"
+        )
+    if value < 0:
+        raise ValueError(
+            f"{name} must be non-negative (0 = use engine default), got {value}"
+        )
+    if value > _UINT64_MAX:
+        raise ValueError(
+            f"{name} must be <= UINT64_MAX ({_UINT64_MAX}), got {value}"
+        )
+    return value
+
+def _parse_limits(max_alloc_bytes: int, max_work_units: int, max_scanned_bytes: int):
+    """Validate all per-call resource limits before any native call is made."""
+    return (
+        _parse_u64_limit("max_alloc_bytes", max_alloc_bytes),
+        _parse_u64_limit("max_work_units", max_work_units),
+        _parse_u64_limit("max_scanned_bytes", max_scanned_bytes),
+    )
+
 def validate_path(
     path: Optional[Union[str, bytes, os.PathLike]],
     profile: Union[str, Profile, int] = Profile.LLAMA_CPP,
@@ -212,6 +271,9 @@ def validate_path(
 ) -> ValidationResult:
     """
     Validate a GGUF model file on disk by path with structured diagnostics.
+
+    Resource limits accept 0 (= engine default) or an integer in
+    [1, UINT64_MAX]; anything else returns USAGE_ERROR (64).
     """
     if path is None or not isinstance(path, (str, bytes, os.PathLike)):
         return ValidationResult(
@@ -229,6 +291,19 @@ def validate_path(
         return ValidationResult(
             exit_code=Status.USAGE_ERROR,
             error_code="E_USAGE_INVALID_PROFILE",
+            category="usage",
+            stage="options",
+            message=str(exc),
+        )
+
+    try:
+        max_alloc_bytes, max_work_units, max_scanned_bytes = _parse_limits(
+            max_alloc_bytes, max_work_units, max_scanned_bytes
+        )
+    except ValueError as exc:
+        return ValidationResult(
+            exit_code=Status.USAGE_ERROR,
+            error_code="E_USAGE_INVALID_LIMIT",
             category="usage",
             stage="options",
             message=str(exc),
@@ -294,6 +369,9 @@ def validate_fd(
     """
     Validate an open GGUF file descriptor directly with structured diagnostics.
     Immune to Time-Of-Check to Time-Of-Use (TOCTOU) file race conditions.
+
+    Resource limits accept 0 (= engine default) or an integer in
+    [1, UINT64_MAX]; anything else returns USAGE_ERROR (64).
     """
     if not isinstance(fd, int) or isinstance(fd, bool):
         return ValidationResult(
@@ -311,6 +389,19 @@ def validate_fd(
         return ValidationResult(
             exit_code=Status.USAGE_ERROR,
             error_code="E_USAGE_INVALID_PROFILE",
+            category="usage",
+            stage="options",
+            message=str(exc),
+        )
+
+    try:
+        max_alloc_bytes, max_work_units, max_scanned_bytes = _parse_limits(
+            max_alloc_bytes, max_work_units, max_scanned_bytes
+        )
+    except ValueError as exc:
+        return ValidationResult(
+            exit_code=Status.USAGE_ERROR,
+            error_code="E_USAGE_INVALID_LIMIT",
             category="usage",
             stage="options",
             message=str(exc),
