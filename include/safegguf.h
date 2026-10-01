@@ -26,16 +26,28 @@ extern "C" {
 
 /**
  * Versioned options structure for extensible per-call resource limits and configuration.
- * The caller MUST set struct_size = sizeof(safegguf_options_v1_t).
+ *
+ * The caller MUST set struct_size to sizeof() of the layout it was compiled
+ * against: either the previous v1.0 layout or the current one. struct_size
+ * gates the appended fields, so a caller compiled against v1.0 keeps the
+ * legacy defaults (max_file_size_bytes = 0 -> unlimited, require_stable_file
+ * = 0 -> off). Unknown sizes are rejected (64, E_USAGE_INVALID_OPTIONS).
+ *
+ * Ownership and threading: the struct is caller-owned and read only for the
+ * duration of the call - the library neither retains nor frees it (or the
+ * reserved pointer). Calls are independent and safe to make concurrently;
+ * a single options struct must not be mutated while a call using it runs.
  */
 typedef struct safegguf_options_v1 {
-    uint32_t struct_size;          /* Must be sizeof(safegguf_options_v1_t) */
+    uint32_t struct_size;          /* sizeof() of the layout the caller compiled against; must remain valid during the call */
     int32_t  profile;              /* 0 = gguf-spec, 1 = llama-cpp */
     int32_t  endian;               /* 0 = little, 1 = big, 2 = auto */
     uint64_t max_alloc_bytes;      /* Per-call memory ceiling (0 = use env/default) */
     uint64_t max_work_units;       /* Per-call work unit budget (0 = use env/default) */
     uint64_t max_scanned_bytes;    /* Per-call byte scan limit (0 = use env/default) */
     void*    reserved;             /* Reserved for future expansion, must be NULL */
+    uint64_t max_file_size_bytes;  /* Appended (v1.1): input admission ceiling in bytes, checked before the first read (0 = unlimited, default) */
+    uint32_t require_stable_file;  /* Appended (v1.1): 0 = off (default), 1 = REJECT (2, E_FileChangedDuringValidation) if the open file's identity changes during validation */
 } safegguf_options_v1_t;
 
 /**

@@ -13,6 +13,27 @@ pub export fn safegguf_version() [*:0]const u8 {
     return version_z.ptr;
 }
 
+/// Options layout as first shipped in v1 (48 bytes on LP64): the unchanged
+/// prefix of the current `OptionsV1`. It exists only as the `struct_size`
+/// contract old callers still satisfy; it is never dereferenced as a whole.
+pub const OptionsV1Legacy = extern struct {
+    struct_size: u32,
+    profile: c_int,
+    endian: c_int,
+    max_alloc_bytes: u64,
+    max_work_units: u64,
+    max_scanned_bytes: u64,
+    reserved: ?*anyopaque,
+};
+
+/// Current v1 options layout: the v1.0 prefix plus appended input-size and
+/// stability controls. Appending fields keeps the ABI backward compatible:
+/// callers pass the `struct_size` of the layout they were compiled against,
+/// access to the appended fields is gated on that size, and a v1.0-size
+/// (legacy) caller keeps the old defaults (unlimited input, stability off).
+/// The caller owns the struct and must keep it, and any `reserved` pointer it
+/// contains, valid only for the duration of the call; the library neither
+/// retains nor frees it. Calls are independent and thread-safe.
 pub const OptionsV1 = extern struct {
     struct_size: u32,
     profile: c_int,
@@ -21,6 +42,14 @@ pub const OptionsV1 = extern struct {
     max_work_units: u64,
     max_scanned_bytes: u64,
     reserved: ?*anyopaque,
+    /// Admission ceiling in bytes for the input stream, checked before the
+    /// first read. 0 = use the default (`Limits.max_file_size_bytes`,
+    /// unlimited), preserving v1.0 behavior.
+    max_file_size_bytes: u64,
+    /// Input-stability control: 0 = off (default), 1 = require the opened
+    /// file's identity (device/inode/size/mtime/ctime) to be unchanged across
+    /// validation, otherwise REJECT (2) with E_FileChangedDuringValidation.
+    require_stable_file: u32,
 };
 
 pub const Result = extern struct {
@@ -57,7 +86,10 @@ fn populateResult(
 
 fn validateOptions(options: ?*const OptionsV1, out_result: ?*Result) ?c_int {
     if (options) |opts| {
-        if (opts.struct_size != @sizeOf(OptionsV1)) {
+        // struct_size gating: accept the v1.0 (legacy) layout as well as the
+        // current one. Unknown sizes stay fail-closed.
+        const struct_size = opts.struct_size;
+        if (struct_size != @sizeOf(OptionsV1Legacy) and struct_size != @sizeOf(OptionsV1)) {
             populateResult(out_result, 64, "E_USAGE_INVALID_OPTIONS", "usage", "options", "Invalid struct_size in safegguf_options_v1_t");
             return 64;
         }
@@ -73,8 +105,24 @@ fn validateOptions(options: ?*const OptionsV1, out_result: ?*Result) ?c_int {
             populateResult(out_result, 64, "E_USAGE_INVALID_ENDIAN", "usage", "options", "Invalid endian_id: must be 0 (little), 1 (big), or 2 (auto)");
             return 64;
         }
+        // Appended fields are readable only when struct_size covers them; a
+        // legacy caller has no such storage (validated above, so this is
+        // exactly `struct_size == @sizeOf(OptionsV1)` today).
+        if (hasAppendedControls(opts)) {
+            if (opts.require_stable_file > 1) {
+                populateResult(out_result, 64, "E_USAGE_INVALID_OPTIONS", "usage", "options", "Invalid require_stable_file: must be 0 (off) or 1 (require stable file)");
+                return 64;
+            }
+        }
     }
     return null;
+}
+
+/// True when `opts.struct_size` covers the fields appended after the v1.0
+/// prefix. All other sizes are rejected by `validateOptions` first, so this
+/// only distinguishes legacy callers from current-layout callers.
+fn hasAppendedControls(opts: *const OptionsV1) bool {
+    return opts.struct_size >= @sizeOf(OptionsV1);
 }
 
 fn validateEnums(profile_id: c_int, endian_id: c_int, out_result: ?*Result) ?c_int {
@@ -102,6 +150,35 @@ fn validateInternal(
         else => .gguf_spec,
     };
 
+    // Resource limits: start from env / defaults, then override with options if specified
+    var lim = limits.Limits.initFromEnv();
+    var require_stable_file = false;
+    if (options) |opts| {
+        if (opts.max_alloc_bytes > 0) lim.max_total_alloc_bytes = opts.max_alloc_bytes;
+        if (opts.max_work_units > 0) lim.max_work_units = opts.max_work_units;
+        if (opts.max_scanned_bytes > 0) lim.max_scanned_bytes = opts.max_scanned_bytes;
+        if (hasAppendedControls(opts)) {
+            // 0 = use the default (unlimited), matching Limits' default and
+            // preserving v1.0 behavior for callers that zero the field.
+            if (opts.max_file_size_bytes > 0) lim.max_file_size_bytes = opts.max_file_size_bytes;
+            require_stable_file = opts.require_stable_file != 0;
+        }
+    }
+
+    // Opt-in stable-file check (require_stable_file): snapshot the open
+    // handle's identity before the first read so it can be re-verified after a
+    // PASS, mirroring the CLI's --require-stable-file. Off by default, so
+    // legacy callers are unchanged. It fstats the already-open handle (never
+    // re-opens by path) and bounds device/inode/size/mtime/ctime mutation; it
+    // is not cryptographic immutability (see reader.FileIdentity).
+    var stable_identity: ?reader_mod.FileIdentity = null;
+    if (require_stable_file) {
+        stable_identity = reader_mod.FileIdentity.capture(file) catch {
+            populateResult(out_result, 74, "E_FILE_STAT_FAILED", "io", "filesystem", "Failed to query file metadata / stat");
+            return 74;
+        };
+    }
+
     var buffered_reader = reader_mod.BufferedReader.init(file, file_size);
     const r = buffered_reader.reader();
 
@@ -110,14 +187,6 @@ fn validateInternal(
         2 => safegguf.parser.detectEndianness(r) orelse .little,
         else => .little,
     };
-
-    // Resource limits: start from env / defaults, then override with options if specified
-    var lim = limits.Limits.initFromEnv();
-    if (options) |opts| {
-        if (opts.max_alloc_bytes > 0) lim.max_total_alloc_bytes = opts.max_alloc_bytes;
-        if (opts.max_work_units > 0) lim.max_work_units = opts.max_work_units;
-        if (opts.max_scanned_bytes > 0) lim.max_scanned_bytes = opts.max_scanned_bytes;
-    }
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -133,7 +202,14 @@ fn validateInternal(
             else => 2,
         };
         const cat = if (quota_hit) "resource" else @tagName(safegguf.error_types.categoryOf(e));
-        const err_name = if (quota_hit) "TotalAllocationLimitExceeded" else @errorName(e);
+        // Admission rejections surface the documented E_FileTooLarge code
+        // (CLI taxonomy); other validator errors keep their bare @errorName.
+        const err_name = if (quota_hit)
+            "TotalAllocationLimitExceeded"
+        else if (e == error.FileTooLarge)
+            "E_FileTooLarge"
+        else
+            @errorName(e);
         const msg = if (quota_hit) "Configured memory allocation quota exceeded" else safegguf.error_types.messageOf(e);
         populateResult(
             out_result,
@@ -146,6 +222,31 @@ fn validateInternal(
         return exit_code;
     };
     defer val.deinitDocument(&doc);
+
+    // Stable-file mode: a PASS verdict must describe the bytes actually read,
+    // so re-fstat the same handle and reject when any identity field moved
+    // while the file was being validated, mirroring the CLI. Only the PASS
+    // path needs the check: every failure path already exits non-zero for
+    // this file.
+    if (stable_identity) |before| {
+        before.verifyUnchanged(file) catch |e| switch (e) {
+            error.FileChanged => {
+                populateResult(
+                    out_result,
+                    2,
+                    "E_FileChangedDuringValidation",
+                    "io",
+                    "stability",
+                    "File identity changed while it was being validated (device, inode, size, or timestamps differ)",
+                );
+                return 2; // REJECT
+            },
+            error.FileStatFailed => {
+                populateResult(out_result, 74, "E_FILE_STAT_FAILED", "io", "filesystem", "Failed to query file metadata / stat");
+                return 74; // EX_IOERR
+            },
+        };
+    }
 
     populateResult(out_result, 0, "", "", "", "Model strictly satisfies structural, arithmetic, and resource limits");
     return 0; // PASS

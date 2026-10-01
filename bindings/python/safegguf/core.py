@@ -81,7 +81,28 @@ class SafeggufOptionsV1(ctypes.Structure):
         ("max_work_units", ctypes.c_uint64),
         ("max_scanned_bytes", ctypes.c_uint64),
         ("reserved", ctypes.c_void_p),
+        ("max_file_size_bytes", ctypes.c_uint64),
+        ("require_stable_file", ctypes.c_uint32),
     ]
+
+class SafeggufOptionsV1Legacy(ctypes.Structure):
+    """v1.0 options prefix, before the appended v1.1 controls.
+
+    Only its ``sizeof`` is used: calls that set neither appended control send
+    this legacy ``struct_size`` value so native libraries built before v1.1
+    keep validating with their old defaults.
+    """
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("profile", ctypes.c_int32),
+        ("endian", ctypes.c_int32),
+        ("max_alloc_bytes", ctypes.c_uint64),
+        ("max_work_units", ctypes.c_uint64),
+        ("max_scanned_bytes", ctypes.c_uint64),
+        ("reserved", ctypes.c_void_p),
+    ]
+
+_LEGACY_OPTIONS_SIZE = ctypes.sizeof(SafeggufOptionsV1Legacy)
 
 class SafeggufResult(ctypes.Structure):
     _fields_ = [
@@ -253,12 +274,97 @@ def _parse_u64_limit(name: str, value: int) -> int:
         )
     return value
 
-def _parse_limits(max_alloc_bytes: int, max_work_units: int, max_scanned_bytes: int):
-    """Validate all per-call resource limits before any native call is made."""
+def _parse_flag(name: str, value: Union[bool, int]) -> int:
+    """Validate a 0/1 option flag destined for a ``uint32`` option field.
+
+    Accepts ``bool`` and the integers ``0`` / ``1``; any other value is
+    rejected before the native call so a typo cannot silently enable or
+    disable a security control.
+    """
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int) and value in (0, 1):
+        return value
+    raise ValueError(
+        f"{name} must be a bool or the integer 0/1, got {type(value).__name__}: {value!r}"
+    )
+
+def _parse_limits(
+    max_alloc_bytes: int,
+    max_work_units: int,
+    max_scanned_bytes: int,
+    max_file_size_bytes: int,
+    require_stable_file: Union[bool, int],
+):
+    """Validate all per-call resource limits and controls before any native call."""
     return (
         _parse_u64_limit("max_alloc_bytes", max_alloc_bytes),
         _parse_u64_limit("max_work_units", max_work_units),
         _parse_u64_limit("max_scanned_bytes", max_scanned_bytes),
+        _parse_u64_limit("max_file_size_bytes", max_file_size_bytes),
+        _parse_flag("require_stable_file", require_stable_file),
+    )
+
+_extended_options_supported: Optional[bool] = None
+
+def _native_supports_extended_options(lib: ctypes.CDLL) -> bool:
+    """Detect whether the loaded native library understands the v1.1 options.
+
+    The appended controls are gated natively on ``struct_size``: a legacy
+    library rejects the extended size with ``E_USAGE_INVALID_OPTIONS``, while
+    the current library accepts it and fails the NULL-path probe with
+    ``E_USAGE_NULL_PATH`` instead. The probe touches no filesystem state and
+    the answer is cached for the process; any other outcome is treated as
+    unsupported so set controls fail closed rather than being dropped.
+    """
+    global _extended_options_supported
+    if _extended_options_supported is None:
+        probe_opts = SafeggufOptionsV1(
+            struct_size=ctypes.sizeof(SafeggufOptionsV1),
+            profile=int(Profile.GGUF_SPEC),
+            endian=int(Endian.AUTO),
+            max_alloc_bytes=0,
+            max_work_units=0,
+            max_scanned_bytes=0,
+            reserved=None,
+            max_file_size_bytes=0,
+            require_stable_file=0,
+        )
+        probe_result = SafeggufResult()
+        lib.safegguf_validate_path_v1(None, ctypes.byref(probe_opts), ctypes.byref(probe_result))
+        _extended_options_supported = (
+            probe_result.error_code.decode("utf-8", errors="replace") == "E_USAGE_NULL_PATH"
+        )
+    return _extended_options_supported
+
+def _options_struct_size(
+    lib: ctypes.CDLL, max_file_size_bytes: int, require_stable_file: int
+) -> Optional[int]:
+    """Pick the native options ``struct_size`` for this call.
+
+    Calls without appended controls send the v1.0 size so legacy libraries
+    stay fully usable. Calls that set a control send the current size only
+    when the native library supports the extended layout; ``None`` means the
+    request cannot be enforced and the caller must fail closed.
+    """
+    if max_file_size_bytes == 0 and require_stable_file == 0:
+        return _LEGACY_OPTIONS_SIZE
+    if not _native_supports_extended_options(lib):
+        return None
+    return ctypes.sizeof(SafeggufOptionsV1)
+
+def _unsupported_extended_options() -> ValidationResult:
+    """Fail-closed result for appended controls a legacy native library cannot enforce."""
+    return ValidationResult(
+        exit_code=Status.USAGE_ERROR,
+        error_code="E_USAGE_UNSUPPORTED_OPTIONS",
+        category="usage",
+        stage="options",
+        message=(
+            "Loaded native library does not support max_file_size_bytes / "
+            "require_stable_file (legacy safegguf_options_v1 layout); refusing "
+            "to run with the requested controls silently dropped"
+        ),
     )
 
 def validate_path(
@@ -268,12 +374,23 @@ def validate_path(
     max_alloc_bytes: int = 0,
     max_work_units: int = 0,
     max_scanned_bytes: int = 0,
+    max_file_size_bytes: int = 0,
+    require_stable_file: Union[bool, int] = False,
 ) -> ValidationResult:
     """
     Validate a GGUF model file on disk by path with structured diagnostics.
 
     Resource limits accept 0 (= engine default) or an integer in
     [1, UINT64_MAX]; anything else returns USAGE_ERROR (64).
+
+    ``max_file_size_bytes`` is an inclusive input admission ceiling
+    (0 = unlimited engine default): larger files are rejected with
+    E_FileTooLarge (2, resource). ``require_stable_file`` accepts a bool or
+    0/1 and, when enabled, rejects with E_FileChangedDuringValidation (2) if
+    the file's identity changes while it is being validated. Both controls
+    require a native library with the extended v1 options layout; on a legacy
+    library they fail closed with E_USAGE_UNSUPPORTED_OPTIONS (64) instead of
+    being silently ignored.
     """
     if path is None or not isinstance(path, (str, bytes, os.PathLike)):
         return ValidationResult(
@@ -297,8 +414,18 @@ def validate_path(
         )
 
     try:
-        max_alloc_bytes, max_work_units, max_scanned_bytes = _parse_limits(
-            max_alloc_bytes, max_work_units, max_scanned_bytes
+        (
+            max_alloc_bytes,
+            max_work_units,
+            max_scanned_bytes,
+            max_file_size_bytes,
+            require_stable_file,
+        ) = _parse_limits(
+            max_alloc_bytes,
+            max_work_units,
+            max_scanned_bytes,
+            max_file_size_bytes,
+            require_stable_file,
         )
     except ValueError as exc:
         return ValidationResult(
@@ -334,14 +461,19 @@ def validate_path(
 
     lib = _get_lib()
     if hasattr(lib, "safegguf_validate_path_v1"):
+        struct_size = _options_struct_size(lib, max_file_size_bytes, require_stable_file)
+        if struct_size is None:
+            return _unsupported_extended_options()
         opts = SafeggufOptionsV1(
-            struct_size=ctypes.sizeof(SafeggufOptionsV1),
+            struct_size=struct_size,
             profile=prof_id,
             endian=end_id,
             max_alloc_bytes=max_alloc_bytes,
             max_work_units=max_work_units,
             max_scanned_bytes=max_scanned_bytes,
             reserved=None,
+            max_file_size_bytes=max_file_size_bytes,
+            require_stable_file=require_stable_file,
         )
         res = SafeggufResult()
         rc = lib.safegguf_validate_path_v1(path_bytes, ctypes.byref(opts), ctypes.byref(res))
@@ -353,6 +485,8 @@ def validate_path(
             message=res.message.decode("utf-8", errors="replace"),
         )
     else:
+        if max_file_size_bytes != 0 or require_stable_file != 0:
+            return _unsupported_extended_options()
         rc = lib.safegguf_validate_path(path_bytes, prof_id, end_id)
         return ValidationResult(rc)
 
@@ -365,6 +499,8 @@ def validate_fd(
     max_alloc_bytes: int = 0,
     max_work_units: int = 0,
     max_scanned_bytes: int = 0,
+    max_file_size_bytes: int = 0,
+    require_stable_file: Union[bool, int] = False,
 ) -> ValidationResult:
     """
     Validate an open GGUF file descriptor directly with structured diagnostics.
@@ -372,6 +508,15 @@ def validate_fd(
 
     Resource limits accept 0 (= engine default) or an integer in
     [1, UINT64_MAX]; anything else returns USAGE_ERROR (64).
+
+    ``max_file_size_bytes`` is an inclusive input admission ceiling
+    (0 = unlimited engine default): larger inputs are rejected with
+    E_FileTooLarge (2, resource). ``require_stable_file`` accepts a bool or
+    0/1 and, when enabled, rejects with E_FileChangedDuringValidation (2) if
+    the open file's identity changes while it is being validated. Both
+    controls require a native library with the extended v1 options layout; on
+    a legacy library they fail closed with E_USAGE_UNSUPPORTED_OPTIONS (64)
+    instead of being silently ignored.
     """
     if not isinstance(fd, int) or isinstance(fd, bool):
         return ValidationResult(
@@ -395,8 +540,18 @@ def validate_fd(
         )
 
     try:
-        max_alloc_bytes, max_work_units, max_scanned_bytes = _parse_limits(
-            max_alloc_bytes, max_work_units, max_scanned_bytes
+        (
+            max_alloc_bytes,
+            max_work_units,
+            max_scanned_bytes,
+            max_file_size_bytes,
+            require_stable_file,
+        ) = _parse_limits(
+            max_alloc_bytes,
+            max_work_units,
+            max_scanned_bytes,
+            max_file_size_bytes,
+            require_stable_file,
         )
     except ValueError as exc:
         return ValidationResult(
@@ -440,14 +595,19 @@ def validate_fd(
 
         try:
             if hasattr(lib, "safegguf_validate_fd_v1"):
+                struct_size = _options_struct_size(lib, max_file_size_bytes, require_stable_file)
+                if struct_size is None:
+                    return _unsupported_extended_options()
                 opts = SafeggufOptionsV1(
-                    struct_size=ctypes.sizeof(SafeggufOptionsV1),
+                    struct_size=struct_size,
                     profile=prof_id,
                     endian=end_id,
                     max_alloc_bytes=max_alloc_bytes,
                     max_work_units=max_work_units,
                     max_scanned_bytes=max_scanned_bytes,
                     reserved=None,
+                    max_file_size_bytes=max_file_size_bytes,
+                    require_stable_file=require_stable_file,
                 )
                 res = SafeggufResult()
                 rc = lib.safegguf_validate_fd_v1(raw_handle, ctypes.byref(opts), ctypes.byref(res))
@@ -459,6 +619,8 @@ def validate_fd(
                     message=res.message.decode("utf-8", errors="replace"),
                 )
             else:
+                if max_file_size_bytes != 0 or require_stable_file != 0:
+                    return _unsupported_extended_options()
                 rc = lib.safegguf_validate_fd(raw_handle, prof_id, end_id)
                 return ValidationResult(rc)
         except (OSError, ValueError, TypeError, OverflowError) as exc:

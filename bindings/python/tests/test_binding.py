@@ -191,9 +191,15 @@ def main():
     print("      [PASS] Non-existent file handled cleanly with exit code 74.")
 
     # 14. Integer limit hardening: invalid values fail before any native call
-    print("  14. Testing resource-limit integer validation (no ctypes wrapping)...")
+    print("  14. Testing resource-limit and control validation (no ctypes wrapping)...")
     invalid_limits = [-1, -2, 2**64, 2**65, 2**200, True, False, 1.0, "128"]
-    limit_params = ("max_alloc_bytes", "max_work_units", "max_scanned_bytes")
+    limit_params = (
+        "max_alloc_bytes",
+        "max_work_units",
+        "max_scanned_bytes",
+        "max_file_size_bytes",
+    )
+    invalid_flags = [-1, 2, 3, 2**64, 1.0, 0.0, "1", b"1", None, [], ()]
 
     for bad in invalid_limits:
         try:
@@ -205,6 +211,17 @@ def main():
 
     for good in (0, 1, 128, 2**64 - 1):
         assert safegguf.core._parse_u64_limit("max_alloc_bytes", good) == good
+
+    for bad in invalid_flags:
+        try:
+            safegguf.core._parse_flag("require_stable_file", bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"_parse_flag accepted invalid value: {bad!r}")
+
+    for good in (True, False, 0, 1):
+        assert safegguf.core._parse_flag("require_stable_file", good) == int(good)
 
     native_calls = []
     original_get_lib = safegguf.core._get_lib
@@ -230,14 +247,39 @@ def main():
                     f"Diagnostic message should name {param}: {res_bad.message!r}"
                 )
 
+        for bad in invalid_flags:
+            res_bad_flag = safegguf.validate_path(str(valid_file), require_stable_file=bad)
+            assert res_bad_flag.exit_code == 64, (
+                f"Expected 64 for require_stable_file={bad!r}, got {res_bad_flag.exit_code}"
+            )
+            assert res_bad_flag.status == "USAGE_ERROR", f"Expected USAGE_ERROR for {bad!r}"
+            assert res_bad_flag.category == "usage", f"Expected usage category for {bad!r}"
+            assert res_bad_flag.error_code == "E_USAGE_INVALID_LIMIT", (
+                f"Expected E_USAGE_INVALID_LIMIT for require_stable_file={bad!r}, "
+                f"got {res_bad_flag.error_code}"
+            )
+            assert "require_stable_file" in res_bad_flag.message, (
+                f"Diagnostic message should name require_stable_file: {res_bad_flag.message!r}"
+            )
+
         fd_limits = os.open(str(valid_file), os.O_RDONLY)
         try:
             for bad in invalid_limits:
-                res_bad_fd = safegguf.validate_fd(fd_limits, max_scanned_bytes=bad)
-                assert res_bad_fd.exit_code == 64, (
-                    f"Expected 64 for validate_fd max_scanned_bytes={bad!r}, got {res_bad_fd.exit_code}"
+                for param in limit_params:
+                    res_bad_fd = safegguf.validate_fd(fd_limits, **{param: bad})
+                    assert res_bad_fd.exit_code == 64, (
+                        f"Expected 64 for validate_fd {param}={bad!r}, got {res_bad_fd.exit_code}"
+                    )
+                    assert res_bad_fd.error_code == "E_USAGE_INVALID_LIMIT"
+                    assert param in res_bad_fd.message
+
+            for bad in invalid_flags:
+                res_bad_fd_flag = safegguf.validate_fd(fd_limits, require_stable_file=bad)
+                assert res_bad_fd_flag.exit_code == 64, (
+                    f"Expected 64 for validate_fd require_stable_file={bad!r}, "
+                    f"got {res_bad_fd_flag.exit_code}"
                 )
-                assert res_bad_fd.error_code == "E_USAGE_INVALID_LIMIT"
+                assert res_bad_fd_flag.error_code == "E_USAGE_INVALID_LIMIT"
         finally:
             os.close(fd_limits)
     finally:
@@ -351,7 +393,173 @@ def main():
     )
     print("     [PASS] CWD decoys never loaded; explicit/system discovery still works.")
 
-    print("\nAll Python binding tests passed successfully! (15/15 suites passed)")
+    # 16. Extended control: inclusive max_file_size_bytes admission ceiling
+    print("  16. Testing max_file_size_bytes admission ceiling (path + fd)...")
+    valid_size = os.path.getsize(valid_file)
+    assert valid_size > 1, f"Fixture too small for boundary tests: {valid_size} bytes"
+
+    res_unlimited = safegguf.validate_path(
+        str(valid_file), profile="gguf-spec", max_file_size_bytes=0
+    )
+    assert res_unlimited.is_valid is True, (
+        f"max_file_size_bytes=0 must keep the engine default, got {res_unlimited}"
+    )
+
+    res_exact = safegguf.validate_path(
+        str(valid_file), profile="gguf-spec", max_file_size_bytes=valid_size
+    )
+    assert res_exact.is_valid is True, (
+        f"Inclusive ceiling must admit a file exactly at the limit, got {res_exact}"
+    )
+
+    res_max = safegguf.validate_path(
+        str(valid_file), profile="gguf-spec", max_file_size_bytes=2**64 - 1
+    )
+    assert res_max.is_valid is True, f"UINT64_MAX ceiling must admit the fixture, got {res_max}"
+
+    res_under = safegguf.validate_path(
+        str(valid_file), profile="gguf-spec", max_file_size_bytes=valid_size - 1
+    )
+    assert res_under.exit_code == 2, f"Ceiling below file size must REJECT, got {res_under}"
+    assert res_under.status == "REJECT", f"Expected REJECT status, got {res_under.status}"
+    assert res_under.error_code == "E_FileTooLarge", (
+        f"Expected E_FileTooLarge, got {res_under.error_code}"
+    )
+    assert res_under.category == "resource", f"Expected resource category, got {res_under.category}"
+
+    fd_admission = os.open(str(valid_file), os.O_RDONLY)
+    try:
+        res_fd_exact = safegguf.validate_fd(
+            fd_admission, profile="gguf-spec", max_file_size_bytes=valid_size
+        )
+        assert res_fd_exact.is_valid is True, (
+            f"fd inclusive ceiling must admit the file, got {res_fd_exact}"
+        )
+
+        res_fd_under = safegguf.validate_fd(
+            fd_admission, profile="gguf-spec", max_file_size_bytes=valid_size - 1
+        )
+        assert res_fd_under.exit_code == 2, f"fd ceiling below file size must REJECT, got {res_fd_under}"
+        assert res_fd_under.error_code == "E_FileTooLarge", (
+            f"Expected E_FileTooLarge via fd, got {res_fd_under.error_code}"
+        )
+        assert res_fd_under.category == "resource"
+    finally:
+        os.close(fd_admission)
+    print("     [PASS] Inclusive size ceiling enforced via path and fd; too-small ceilings reject with E_FileTooLarge.")
+
+    # 17. Extended control: require_stable_file opt-in
+    print("  17. Testing require_stable_file opt-in (bool / int 0/1)...")
+    for flag in (True, 1):
+        res_stable = safegguf.validate_path(
+            str(valid_file), profile="gguf-spec", require_stable_file=flag
+        )
+        assert res_stable.is_valid is True, (
+            f"Stable file must pass with require_stable_file={flag!r}, got {res_stable}"
+        )
+
+    for flag in (False, 0):
+        res_off = safegguf.validate_path(
+            str(valid_file), profile="gguf-spec", require_stable_file=flag
+        )
+        assert res_off.is_valid is True, f"Stability off must pass, got {res_off}"
+
+    fd_stable = os.open(str(valid_file), os.O_RDONLY)
+    try:
+        res_fd_stable = safegguf.validate_fd(
+            fd_stable, profile="gguf-spec", require_stable_file=True
+        )
+        assert res_fd_stable.is_valid is True, f"fd stable validation must pass, got {res_fd_stable}"
+    finally:
+        os.close(fd_stable)
+
+    res_combined = safegguf.validate_path(
+        str(valid_file),
+        profile="gguf-spec",
+        max_file_size_bytes=valid_size,
+        require_stable_file=True,
+    )
+    assert res_combined.is_valid is True, (
+        f"Combined controls must pass on the valid fixture, got {res_combined}"
+    )
+    print("     [PASS] require_stable_file accepts bool/0/1, validates a stable file, and composes with the ceiling.")
+
+    # 18. Legacy native library: runtime detection and fail-closed controls
+    print("  18. Testing runtime extended-ABI detection and legacy-library fail-closed behavior...")
+    assert safegguf.core._native_supports_extended_options(lib) is True, (
+        "Loaded native library does not expose the extended v1 options layout; rebuild the v1.1 C ABI"
+    )
+
+    original_supports_extended = safegguf.core._native_supports_extended_options
+    safegguf.core._native_supports_extended_options = lambda _lib: False
+    try:
+        # Without appended controls the v1.0 struct_size keeps a legacy library usable.
+        res_legacy_plain = safegguf.validate_path(str(valid_file), profile="gguf-spec")
+        assert res_legacy_plain.is_valid is True, (
+            f"Legacy-layout call without controls must still pass, got {res_legacy_plain}"
+        )
+
+        fd_legacy_plain = os.open(str(valid_file), os.O_RDONLY)
+        try:
+            res_legacy_fd_plain = safegguf.validate_fd(fd_legacy_plain, profile="gguf-spec")
+            assert res_legacy_fd_plain.is_valid is True, (
+                f"Legacy-layout fd call without controls must still pass, got {res_legacy_fd_plain}"
+            )
+        finally:
+            os.close(fd_legacy_plain)
+
+        legacy_requests = (
+            {"max_file_size_bytes": valid_size},
+            {"require_stable_file": True},
+            {"max_file_size_bytes": 1, "require_stable_file": 1},
+        )
+        for kwargs in legacy_requests:
+            res_legacy = safegguf.validate_path(str(valid_file), profile="gguf-spec", **kwargs)
+            assert res_legacy.is_valid is False, (
+                f"Set controls must never silently PASS on a legacy library: {kwargs!r} -> {res_legacy}"
+            )
+            assert res_legacy.exit_code == 64, (
+                f"Expected USAGE_ERROR (64) for {kwargs!r} on a legacy library, "
+                f"got {res_legacy.exit_code}"
+            )
+            assert res_legacy.status == "USAGE_ERROR", f"Expected USAGE_ERROR, got {res_legacy.status}"
+            assert res_legacy.error_code == "E_USAGE_UNSUPPORTED_OPTIONS", (
+                f"Expected E_USAGE_UNSUPPORTED_OPTIONS, got {res_legacy.error_code}"
+            )
+            assert res_legacy.category == "usage", f"Expected usage category, got {res_legacy.category}"
+            assert res_legacy.stage == "options", f"Expected options stage, got {res_legacy.stage}"
+            assert "legacy" in res_legacy.message, (
+                f"Diagnostic must explain the legacy native library: {res_legacy.message!r}"
+            )
+
+        fd_legacy_controls = os.open(str(valid_file), os.O_RDONLY)
+        try:
+            res_legacy_fd = safegguf.validate_fd(
+                fd_legacy_controls, profile="gguf-spec", max_file_size_bytes=valid_size
+            )
+            assert res_legacy_fd.exit_code == 64, (
+                f"fd controls must fail closed on a legacy library, got {res_legacy_fd}"
+            )
+            assert res_legacy_fd.error_code == "E_USAGE_UNSUPPORTED_OPTIONS"
+        finally:
+            os.close(fd_legacy_controls)
+    finally:
+        safegguf.core._native_supports_extended_options = original_supports_extended
+
+    # The cache was never invalidated, so the real library stays recognized.
+    assert safegguf.core._native_supports_extended_options(lib) is True
+    res_after_restore = safegguf.validate_path(
+        str(valid_file),
+        profile="gguf-spec",
+        max_file_size_bytes=valid_size,
+        require_stable_file=True,
+    )
+    assert res_after_restore.is_valid is True, (
+        f"Controls must work after the legacy simulation, got {res_after_restore}"
+    )
+    print("     [PASS] Legacy libraries fail closed on set controls, no-control calls stay usable, detection restores.")
+
+    print("\nAll Python binding tests passed successfully! (18/18 suites passed)")
 
 if __name__ == "__main__":
     main()
