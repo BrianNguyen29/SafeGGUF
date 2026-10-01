@@ -83,9 +83,17 @@ export SAFEGGUF_MAX_SCANNED_BYTES=536870912 # 512 MiB
 Để loại bỏ hoàn toàn độ trễ khởi động tiến trình con (fork-exec) và ngăn chặn tấn công tráo đổi tệp giữa thời điểm kiểm tra và nạp (**Time-Of-Check to Time-Of-Use**), hãy sử dụng thư viện Python Binding chính thức:
 
 ### 3.1. Cài đặt Python Binding
+
+Wheel bundle thư viện native build từ cùng commit; build thư viện native
+trước khi cài (từ repo root):
+
 ```bash
-cd bindings/python
-pip install .
+zig build -Doptimize=ReleaseSafe
+pip install ./bindings/python
+
+# Hoặc build wheel platform-specific (bundle chính thư viện native đó):
+python -m pip wheel ./bindings/python --no-deps -w dist
+pip install dist/safegguf-*.whl
 ```
 
 ### 3.2. Mẫu Code Xác Thực An Toàn qua File Descriptor

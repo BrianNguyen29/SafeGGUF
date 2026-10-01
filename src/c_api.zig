@@ -1,6 +1,6 @@
 const std = @import("std");
 const build_options = @import("build_options");
-const safegguf = @import("root.zig");
+const safegguf = @import("safegguf");
 
 const types = safegguf.types;
 const reader_mod = safegguf.reader;
@@ -11,6 +11,21 @@ const version_z: [:0]const u8 = std.fmt.comptimePrint("{s}", .{build_options.ver
 
 pub export fn safegguf_version() [*:0]const u8 {
     return version_z.ptr;
+}
+
+/// Maps a result `error_code` (the implementation identifier emitted by this
+/// ABI, e.g. "ArithmeticOverflow", or a compatibility code such as
+/// "E_FILE_OPEN_FAILED") to its canonical `SGGUF_E_*` public code. Canonical
+/// codes already in the namespace are returned unchanged. The returned pointer
+/// is a static string and must not be freed; NULL and unmapped identifiers
+/// return SGGUF_E_UNKNOWN.
+pub export fn safegguf_canonical_error_code(error_code: ?[*:0]const u8) [*:0]const u8 {
+    const unknown = safegguf.error_types.public_codes.unknown;
+    const ptr = error_code orelse return unknown.ptr;
+    const span = std.mem.span(ptr);
+    if (safegguf.error_types.isPublicCode(span)) return ptr;
+    const canonical = safegguf.error_types.canonicalFromLegacy(span) orelse return unknown.ptr;
+    return canonical.ptr;
 }
 
 /// Options layout as first shipped in v1 (48 bytes on LP64): the unchanged

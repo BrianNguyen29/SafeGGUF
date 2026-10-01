@@ -10,3 +10,9 @@ pub const validator = @import("validate/validator.zig");
 pub const Validator = validator.Validator;
 pub const Result = validator.Result;
 pub const OwnedValidationState = validator.OwnedValidationState;
+
+/// Schema version carried by CLI `--format json` output (`schema_version`).
+/// Backward-compatible additive fields keep the current version; a breaking
+/// change increments it. Mirrored by `SAFEGGUF_SCHEMA_VERSION` in
+/// include/safegguf.h.
+pub const json_schema_version: u32 = 1;

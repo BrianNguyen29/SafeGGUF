@@ -78,6 +78,27 @@ pub fn build(b: *std.Build) void {
     const run_fuzz = b.addRunArtifact(fuzz_tests);
     test_step.dependOn(&run_fuzz.step);
 
+    // C-ABI + CLI contract tests: canonical error-code namespace, the C header
+    // namespace sync, JSON schema_version coverage, and the exported mapping
+    // function (the C ABI is compiled as its own module so the test can call
+    // the exported functions directly).
+    const cabi_mod = b.createModule(.{
+        .root_source_file = b.path("src/c_api.zig"),
+    });
+    cabi_mod.addImport("safegguf", safegguf_mod);
+    cabi_mod.addOptions("build_options", build_options);
+
+    const contract_tests = b.addTest(.{
+        .root_source_file = b.path("tests/contract_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    contract_tests.root_module.addImport("safegguf", safegguf_mod);
+    contract_tests.root_module.addImport("cabi", cabi_mod);
+
+    const run_contract = b.addRunArtifact(contract_tests);
+    test_step.dependOn(&run_contract.step);
+
     const fuzz_step = b.step("fuzz", "Run corpus through fuzz harness");
     fuzz_step.dependOn(&run_fuzz.step);
 

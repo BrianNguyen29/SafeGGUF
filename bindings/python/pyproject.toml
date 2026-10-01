@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77", "packaging>=24"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "safegguf"
+description = "Memory-Safe GGUF v3 Structural & Arithmetic Validator Python Bindings"
+requires-python = ">=3.8"
+license = "MIT"
+license-files = []
+authors = [{ name = "SafeGGUF Contributors" }]
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Security",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# The wheel bundles a platform-specific native library; setup.py resolves the
+# library (and the version it reports) before metadata is generated.
+[tool.setuptools]
+packages = ["safegguf"]

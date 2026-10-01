@@ -136,6 +136,28 @@ SafeGGUF implements a deterministic, fail-closed exit taxonomy:
 | **`70`** | `EX_SOFTWARE` | **SOFTWARE**: Internal invariant error or host OOM | Alert operations / retry |
 | **`74`** | `EX_IOERR` | **IOERR**: File missing, unreadable, or storage failure | Check volume mount / disk |
 
+### 3.1 Canonical Error Codes & JSON Schema Version
+
+CLI JSON diagnostics are versioned and carry a stable, canonical error code:
+
+```json
+{
+  "schema_version": 1,
+  "status": "REJECT",
+  "error_code": "E_ArithmeticOverflow",
+  "canonical_error_code": "SGGUF_E_ARITHMETIC_OVERFLOW",
+  "category": "arithmetic",
+  "stage": "structural"
+}
+```
+
+Key policy decisions on `canonical_error_code` (or, over the C ABI,
+`safegguf_canonical_error_code(result.error_code)`); the legacy `error_code`
+value is kept unchanged for backward compatibility. Additive fields keep the
+current `schema_version`; a breaking change increments it. The full namespace
+mapping and versioning policy are in
+[`docs/error-codes.md`](docs/error-codes.md).
+
 ---
 
 ## 🐍 Python Bindings & Anti-TOCTOU Defense
@@ -144,8 +166,18 @@ SafeGGUF provides in-process Python bindings (`safegguf-py`) designed to elimina
 
 ### Installation
 
+The wheel bundles the native library built from the same commit, and the
+package version is the version that library reports. Build the native library
+first, then install:
+
 ```bash
+# From the repository root
+zig build -Doptimize=ReleaseSafe
 pip install ./bindings/python
+
+# Or build a platform-specific wheel (bundles the same native library):
+python -m pip wheel ./bindings/python --no-deps -w dist
+pip install dist/safegguf-*.whl
 ```
 
 ### Usage
