@@ -35,6 +35,118 @@ pub const ParseError = error{
     IoError,
 };
 
+/// Canonical public error-code namespace (`SGGUF_E_*`): the stable contract for
+/// policy engines and downstream consumers. Internal `ParseError` names and the
+/// legacy `E_*` codes emitted for compatibility are implementation details -
+/// use `publicCodeOf` / `canonicalFromLegacy` (CLI JSON `canonical_error_code`,
+/// or the C ABI's `safegguf_canonical_error_code`) to obtain the canonical
+/// code. Canonical codes are only ever added, never renamed.
+pub const public_codes = struct {
+    pub const unknown: [:0]const u8 = "SGGUF_E_UNKNOWN";
+    pub const file_open_failed: [:0]const u8 = "SGGUF_E_FILE_OPEN_FAILED";
+    pub const file_stat_failed: [:0]const u8 = "SGGUF_E_FILE_STAT_FAILED";
+    pub const file_changed_during_validation: [:0]const u8 = "SGGUF_E_FILE_CHANGED_DURING_VALIDATION";
+    pub const usage_invalid_options: [:0]const u8 = "SGGUF_E_USAGE_INVALID_OPTIONS";
+    pub const usage_invalid_profile: [:0]const u8 = "SGGUF_E_USAGE_INVALID_PROFILE";
+    pub const usage_invalid_endian: [:0]const u8 = "SGGUF_E_USAGE_INVALID_ENDIAN";
+    pub const usage_null_path: [:0]const u8 = "SGGUF_E_USAGE_NULL_PATH";
+    pub const io_invalid_path: [:0]const u8 = "SGGUF_E_IO_INVALID_PATH";
+    pub const invalid_fd: [:0]const u8 = "SGGUF_E_INVALID_FD";
+    pub const invalid_handle: [:0]const u8 = "SGGUF_E_INVALID_HANDLE";
+    pub const fd_stat_failed: [:0]const u8 = "SGGUF_E_FD_STAT_FAILED";
+};
+
+pub const LegacyPublicCode = struct {
+    legacy: []const u8,
+    canonical: [:0]const u8,
+};
+
+/// Legacy codes emitted by the CLI/C ABI that do not correspond 1:1 to a
+/// `ParseError` variant, mapped to their canonical public codes.
+pub const legacy_public_codes = [_]LegacyPublicCode{
+    .{ .legacy = "E_FILE_OPEN_FAILED", .canonical = public_codes.file_open_failed },
+    .{ .legacy = "E_FILE_STAT_FAILED", .canonical = public_codes.file_stat_failed },
+    .{ .legacy = "E_FileChangedDuringValidation", .canonical = public_codes.file_changed_during_validation },
+    .{ .legacy = "E_OUT_OF_MEMORY", .canonical = "SGGUF_E_OUT_OF_MEMORY" },
+    .{ .legacy = "E_USAGE_INVALID_OPTIONS", .canonical = public_codes.usage_invalid_options },
+    .{ .legacy = "E_USAGE_INVALID_PROFILE", .canonical = public_codes.usage_invalid_profile },
+    .{ .legacy = "E_USAGE_INVALID_ENDIAN", .canonical = public_codes.usage_invalid_endian },
+    .{ .legacy = "E_USAGE_NULL_PATH", .canonical = public_codes.usage_null_path },
+    .{ .legacy = "E_IO_INVALID_PATH", .canonical = public_codes.io_invalid_path },
+    .{ .legacy = "E_INVALID_FD", .canonical = public_codes.invalid_fd },
+    .{ .legacy = "E_INVALID_HANDLE", .canonical = public_codes.invalid_handle },
+    .{ .legacy = "E_FD_STAT_FAILED", .canonical = public_codes.fd_stat_failed },
+};
+
+/// Canonical public code for an internal parse/validation error. Exhaustive: a
+/// new `ParseError` variant without a row fails compilation.
+pub fn publicCodeOf(e: ParseError) [:0]const u8 {
+    return switch (e) {
+        error.UnexpectedEof => "SGGUF_E_UNEXPECTED_EOF",
+        error.InvalidMagic => "SGGUF_E_INVALID_MAGIC",
+        error.UnsupportedVersion => "SGGUF_E_UNSUPPORTED_VERSION",
+        error.InvalidMetadataType => "SGGUF_E_INVALID_METADATA_TYPE",
+        error.InvalidTensorType => "SGGUF_E_INVALID_TENSOR_TYPE",
+        error.InvalidDimensionCount => "SGGUF_E_INVALID_DIMENSION_COUNT",
+        error.InvalidStringLength => "SGGUF_E_INVALID_STRING_LENGTH",
+        error.InvalidTensorName => "SGGUF_E_INVALID_TENSOR_NAME",
+        error.TensorNameTooLong => "SGGUF_E_TENSOR_NAME_TOO_LONG",
+        error.InvalidKeyFormat => "SGGUF_E_INVALID_KEY_FORMAT",
+        error.InvalidBoolean => "SGGUF_E_INVALID_BOOLEAN",
+        error.InvalidUtf8 => "SGGUF_E_INVALID_UTF8",
+        error.InvalidArrayLength => "SGGUF_E_INVALID_ARRAY_LENGTH",
+        error.ArithmeticOverflow => "SGGUF_E_ARITHMETIC_OVERFLOW",
+        error.BlockDivisibilityViolation => "SGGUF_E_BLOCK_DIVISIBILITY_VIOLATION",
+        error.InvalidAlignment => "SGGUF_E_INVALID_ALIGNMENT",
+        error.MisalignedTensor => "SGGUF_E_MISALIGNED_TENSOR",
+        error.InvalidAlignmentPadding => "SGGUF_E_INVALID_ALIGNMENT_PADDING",
+        error.TensorOutOfBounds => "SGGUF_E_TENSOR_OUT_OF_BOUNDS",
+        error.TensorOverlap => "SGGUF_E_TENSOR_OVERLAP",
+        error.NonContiguousTensorOffset => "SGGUF_E_NON_CONTIGUOUS_TENSOR_OFFSET",
+        error.NestedArrayNotSupported => "SGGUF_E_NESTED_ARRAY_NOT_SUPPORTED",
+        error.DuplicateTensorName => "SGGUF_E_DUPLICATE_TENSOR_NAME",
+        error.DuplicateMetadataKey => "SGGUF_E_DUPLICATE_METADATA_KEY",
+        error.RecursionDepthExceeded => "SGGUF_E_RECURSION_DEPTH_EXCEEDED",
+        error.ResourceLimitExceeded => "SGGUF_E_RESOURCE_LIMIT",
+        error.TotalAllocationLimitExceeded => "SGGUF_E_TOTAL_ALLOCATION_LIMIT_EXCEEDED",
+        error.FileTooLarge => "SGGUF_E_FILE_TOO_LARGE",
+        error.CompatibilityViolation => "SGGUF_E_COMPATIBILITY_VIOLATION",
+        error.ZeroDimensionNotAllowed => "SGGUF_E_ZERO_DIMENSION_NOT_ALLOWED",
+        error.OutOfMemory => "SGGUF_E_OUT_OF_MEMORY",
+        error.IoError => "SGGUF_E_IO_ERROR",
+    };
+}
+
+/// True when `code` is a canonical public code in the `SGGUF_E_*` namespace.
+pub fn isPublicCode(code: []const u8) bool {
+    if (std.mem.eql(u8, code, public_codes.unknown)) return true;
+    for (legacy_public_codes) |entry| {
+        if (std.mem.eql(u8, code, entry.canonical)) return true;
+    }
+    inline for (@typeInfo(ParseError).ErrorSet.?) |variant| {
+        const e: ParseError = @field(ParseError, variant.name);
+        if (std.mem.eql(u8, code, publicCodeOf(e))) return true;
+    }
+    return false;
+}
+
+/// Maps a legacy/internal identifier to its canonical public code. Accepts the
+/// CLI's `E_*` codes and the C ABI's bare Zig error names; returns null when
+/// the identifier is outside the canonical namespace.
+pub fn canonicalFromLegacy(code: []const u8) ?[:0]const u8 {
+    for (legacy_public_codes) |entry| {
+        if (std.mem.eql(u8, code, entry.legacy)) return entry.canonical;
+    }
+    const bare = if (std.mem.startsWith(u8, code, "E_")) code[2..] else code;
+    inline for (@typeInfo(ParseError).ErrorSet.?) |variant| {
+        if (std.mem.eql(u8, bare, variant.name)) {
+            const e: ParseError = @field(ParseError, variant.name);
+            return publicCodeOf(e);
+        }
+    }
+    return null;
+}
+
 pub const FindingSeverity = enum {
     info,
     warning,

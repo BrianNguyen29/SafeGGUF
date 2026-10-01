@@ -204,9 +204,9 @@ fn run() anyerror!void {
     const file = std.fs.cwd().openFile(file_path, .{}) catch |e| {
         if (format == .json) {
             try stdout.print(
-                \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_OPEN_FAILED","message":"Failed to open file"}}
+                \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_OPEN_FAILED","canonical_error_code":"{s}","message":"Failed to open file"}}
                 \\
-            , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e) });
+            , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e), err_types.public_codes.file_open_failed });
         } else {
             try stderr.print("Error: Failed to open file '{s}': {s}\n", .{ file_path, @errorName(e) });
         }
@@ -217,9 +217,9 @@ fn run() anyerror!void {
     const stat = file.stat() catch |e| {
         if (format == .json) {
             try stdout.print(
-                \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","message":"Failed to stat file"}}
+                \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","canonical_error_code":"{s}","message":"Failed to stat file"}}
                 \\
-            , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e) });
+            , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e), err_types.public_codes.file_stat_failed });
         } else {
             try stderr.print("Error: Failed to stat file '{s}': {s}\n", .{ file_path, @errorName(e) });
         }
@@ -234,9 +234,9 @@ fn run() anyerror!void {
         const kind_error = "NotRegularFile";
         if (format == .json) {
             try stdout.print(
-                \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","message":"Not a regular file"}}
+                \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","canonical_error_code":"{s}","message":"Not a regular file"}}
                 \\
-            , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, kind_error });
+            , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, kind_error, err_types.public_codes.file_stat_failed });
         } else {
             try stderr.print("Error: Not a regular file '{s}': {s}\n", .{ file_path, kind_error });
         }
@@ -254,9 +254,9 @@ fn run() anyerror!void {
         stable_identity = reader_mod.FileIdentity.capture(file) catch |e| {
             if (format == .json) {
                 try stdout.print(
-                    \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","message":"Failed to stat file"}}
+                    \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","canonical_error_code":"{s}","message":"Failed to stat file"}}
                     \\
-                , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e) });
+                , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e), err_types.public_codes.file_stat_failed });
             } else {
                 try stderr.print("Error: Failed to stat file '{s}': {s}\n", .{ file_path, @errorName(e) });
             }
@@ -291,9 +291,9 @@ fn run() anyerror!void {
         if (e == error.IoError) {
             if (format == .json) {
                 try stdout.print(
-                    \\{{"status":"ERROR","profile":"{s}","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"IoError","error_code":"E_IoError","stage":"parser","message":"I/O error reading file stream"}}
+                    \\{{"schema_version":{d},"status":"ERROR","profile":"{s}","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"IoError","error_code":"E_IoError","canonical_error_code":"{s}","stage":"parser","message":"I/O error reading file stream"}}
                     \\
-                , .{ profile_str, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT });
+                , .{ safegguf.json_schema_version, profile_str, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, err_types.publicCodeOf(error.IoError) });
             } else {
                 try stderr.print("Error: I/O error reading file stream: {s}\n", .{@errorName(e)});
             }
@@ -304,9 +304,9 @@ fn run() anyerror!void {
             if (val.isQuotaExceeded()) {
                 if (format == .json) {
                     try stdout.print(
-                        \\{{"status":"REJECT","profile":"{s}","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"TotalAllocationLimitExceeded","error_code":"E_TotalAllocationLimitExceeded","stage":"validator","findings":[{{"code":"E_TotalAllocationLimitExceeded","severity":"reject","message":"Configured memory allocation quota exceeded"}}]}}
+                        \\{{"schema_version":{d},"status":"REJECT","profile":"{s}","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"TotalAllocationLimitExceeded","error_code":"E_TotalAllocationLimitExceeded","canonical_error_code":"{s}","stage":"validator","findings":[{{"code":"E_TotalAllocationLimitExceeded","severity":"reject","message":"Configured memory allocation quota exceeded"}}]}}
                         \\
-                    , .{ profile_str, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT });
+                    , .{ safegguf.json_schema_version, profile_str, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, err_types.publicCodeOf(error.TotalAllocationLimitExceeded) });
                 } else {
                     try stderr.print("REJECT [E_TotalAllocationLimitExceeded] Error: Allocation quota exceeded ({d} bytes)\n", .{limit.max_total_alloc_bytes});
                 }
@@ -314,9 +314,9 @@ fn run() anyerror!void {
             } else {
                 if (format == .json) {
                     try stdout.print(
-                        \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"OutOfMemory","error_code":"E_OUT_OF_MEMORY","message":"Host system out of memory"}}
+                        \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"OutOfMemory","error_code":"E_OUT_OF_MEMORY","canonical_error_code":"{s}","message":"Host system out of memory"}}
                         \\
-                    , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT });
+                    , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, err_types.publicCodeOf(error.OutOfMemory) });
                 } else {
                     try stderr.print("FATAL: Host system out of memory\n", .{});
                 }
@@ -352,9 +352,9 @@ fn run() anyerror!void {
             error.FileStatFailed => {
                 if (format == .json) {
                     try stdout.print(
-                        \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"FileStatFailed","error_code":"E_FILE_STAT_FAILED","message":"Failed to stat file"}}
+                        \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"FileStatFailed","error_code":"E_FILE_STAT_FAILED","canonical_error_code":"{s}","message":"Failed to stat file"}}
                         \\
-                    , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT });
+                    , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, err_types.public_codes.file_stat_failed });
                 } else {
                     try stderr.print("Error: Failed to stat file '{s}': FileStatFailed\n", .{file_path});
                 }
@@ -365,9 +365,10 @@ fn run() anyerror!void {
 
     if (format == .json) {
         try stdout.print(
-            \\{{"status":"PASS","profile":"{s}","version":{d},"file_size":{d},"metadata_entries":{d},"tensors":{d},"alignment":{d},"tensor_data_offset":{d},"{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"checks":{{"structural":"PASS","arithmetic":"PASS","bounds":"PASS","overlap":"PASS"}},"findings":[]}}
+            \\{{"schema_version":{d},"status":"PASS","profile":"{s}","version":{d},"file_size":{d},"metadata_entries":{d},"tensors":{d},"alignment":{d},"tensor_data_offset":{d},"{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"checks":{{"structural":"PASS","arithmetic":"PASS","bounds":"PASS","overlap":"PASS"}},"findings":[]}}
             \\
         , .{
+            safegguf.json_schema_version,
             profile_str,
             doc.header.version,
             doc.file_size,
@@ -432,8 +433,9 @@ fn emitRejection(
 }
 
 fn writeRejectionJson(w: anytype, profile_str: []const u8, target_field_name: []const u8, name: []const u8, f: *const err_types.Finding) !void {
-    try w.print("{{\"status\":\"REJECT\",\"profile\":\"{s}\",\"{s}\":{{\"project\":\"ggml\",\"version\":\"{s}\",\"commit\":\"{s}\"}},\"error\":\"{s}\",\"error_code\":\"{s}\",\"category\":\"{s}\",\"stage\":\"{s}\",\"message\":", .{
-        profile_str, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, name, f.code, @tagName(f.category.?), f.stage,
+    const canonical = err_types.canonicalFromLegacy(f.code) orelse err_types.public_codes.unknown;
+    try w.print("{{\"schema_version\":{d},\"status\":\"REJECT\",\"profile\":\"{s}\",\"{s}\":{{\"project\":\"ggml\",\"version\":\"{s}\",\"commit\":\"{s}\"}},\"error\":\"{s}\",\"error_code\":\"{s}\",\"canonical_error_code\":\"{s}\",\"category\":\"{s}\",\"stage\":\"{s}\",\"message\":", .{
+        safegguf.json_schema_version, profile_str, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, name, f.code, canonical, @tagName(f.category.?), f.stage,
     });
     try writeJsonString(w, f.message);
     try writeJsonContextFields(w, f);

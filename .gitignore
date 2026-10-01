@@ -19,4 +19,7 @@ tests/oracle/ggml_oracle
 tests/oracle/ggml_oracle_pinned
 tests/oracle/ggml_oracle_rolling
 
+bindings/python/build/
+bindings/python/*.egg-info/
+
 tests/fuzz-artifacts/
