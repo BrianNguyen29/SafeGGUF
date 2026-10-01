@@ -1,6 +1,8 @@
 import os
 import sys
 import ctypes
+import ctypes.util
+import tempfile
 from pathlib import Path
 
 # Add bindings/python to sys.path
@@ -188,7 +190,168 @@ def main():
     assert res_missing.status == "IO_ERROR", f"Expected IO_ERROR status, got: {res_missing.status}"
     print("      [PASS] Non-existent file handled cleanly with exit code 74.")
 
-    print("\nAll Python binding tests passed successfully! (13/13 suites passed)")
+    # 14. Integer limit hardening: invalid values fail before any native call
+    print("  14. Testing resource-limit integer validation (no ctypes wrapping)...")
+    invalid_limits = [-1, -2, 2**64, 2**65, 2**200, True, False, 1.0, "128"]
+    limit_params = ("max_alloc_bytes", "max_work_units", "max_scanned_bytes")
+
+    for bad in invalid_limits:
+        try:
+            safegguf.core._parse_u64_limit("max_alloc_bytes", bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"_parse_u64_limit accepted invalid value: {bad!r}")
+
+    for good in (0, 1, 128, 2**64 - 1):
+        assert safegguf.core._parse_u64_limit("max_alloc_bytes", good) == good
+
+    native_calls = []
+    original_get_lib = safegguf.core._get_lib
+
+    def _spy_get_lib():
+        native_calls.append(True)
+        return original_get_lib()
+
+    safegguf.core._get_lib = _spy_get_lib
+    try:
+        for bad in invalid_limits:
+            for param in limit_params:
+                res_bad = safegguf.validate_path(str(valid_file), **{param: bad})
+                assert res_bad.exit_code == 64, (
+                    f"Expected 64 for {param}={bad!r}, got {res_bad.exit_code}"
+                )
+                assert res_bad.status == "USAGE_ERROR", f"Expected USAGE_ERROR for {param}={bad!r}"
+                assert res_bad.category == "usage", f"Expected usage category for {param}={bad!r}"
+                assert res_bad.error_code == "E_USAGE_INVALID_LIMIT", (
+                    f"Expected E_USAGE_INVALID_LIMIT for {param}={bad!r}, got {res_bad.error_code}"
+                )
+                assert param in res_bad.message, (
+                    f"Diagnostic message should name {param}: {res_bad.message!r}"
+                )
+
+        fd_limits = os.open(str(valid_file), os.O_RDONLY)
+        try:
+            for bad in invalid_limits:
+                res_bad_fd = safegguf.validate_fd(fd_limits, max_scanned_bytes=bad)
+                assert res_bad_fd.exit_code == 64, (
+                    f"Expected 64 for validate_fd max_scanned_bytes={bad!r}, got {res_bad_fd.exit_code}"
+                )
+                assert res_bad_fd.error_code == "E_USAGE_INVALID_LIMIT"
+        finally:
+            os.close(fd_limits)
+    finally:
+        safegguf.core._get_lib = original_get_lib
+
+    assert native_calls == [], (
+        f"Native library invoked for invalid limits {native_calls!r}; validation must reject first"
+    )
+
+    # Boundary values are passed through unwrapped: UINT64_MAX is a valid
+    # (permissive) quota, while a strict quota still reaches the engine.
+    res_max_limit = safegguf.validate_path(str(valid_file), max_alloc_bytes=2**64 - 1)
+    assert res_max_limit.exit_code == 0, f"Expected UINT64_MAX limit to be accepted, got {res_max_limit}"
+    res_strict_limit = safegguf.validate_path(str(valid_file), max_alloc_bytes=128)
+    assert res_strict_limit.error_code == "TotalAllocationLimitExceeded", (
+        f"Expected strict limit to reach the engine, got {res_strict_limit}"
+    )
+    print("     [PASS] Invalid limits rejected pre-native; valid boundaries reach the engine unwrapped.")
+
+    # 15. Native library discovery hardening: CWD must never be searched
+    print("  15. Testing native library discovery hardening (no CWD search)...")
+    genuine_lib = safegguf.core._find_library()
+
+    def _is_under(path_value, root):
+        try:
+            return os.path.commonpath(
+                [os.path.realpath(path_value), os.path.realpath(root)]
+            ) == os.path.realpath(root)
+        except ValueError:
+            return False
+
+    with tempfile.TemporaryDirectory(prefix="safegguf-cwd-hijack-") as tmp:
+        attacker_root = Path(tmp)
+        fake_lib_names = (
+            "libsafegguf.so", "safegguf.so",
+            "libsafegguf.dylib", "safegguf.dylib",
+            "safegguf.dll", "libsafegguf.dll",
+        )
+        for sub in ("bin", "lib"):
+            decoy_dir = attacker_root / "zig-out" / sub
+            decoy_dir.mkdir(parents=True, exist_ok=True)
+            for name in fake_lib_names:
+                (decoy_dir / name).write_bytes(b"decoy: never load")
+
+        original_env = os.environ.pop("SAFEGGUF_LIB_PATH", None)
+        original_module_file = safegguf.core.__file__
+        original_cwd = os.getcwd()
+        os.chdir(attacker_root)
+        # Simulate an installed package: package/source-tree candidates are
+        # absent, so the only remaining discovery inputs are the CWD and the
+        # admin-managed system paths.
+        safegguf.core.__file__ = str(
+            attacker_root / "elsewhere" / "bindings" / "python" / "safegguf" / "core.py"
+        )
+        try:
+            hijacked = None
+            try:
+                hijacked = safegguf.core._find_library()
+            except FileNotFoundError:
+                pass
+            if hijacked is not None and os.path.isabs(hijacked):
+                assert not _is_under(hijacked, attacker_root), (
+                    f"CWD library hijack: discovery returned attacker-controlled path {hijacked}"
+                )
+
+            attacker_decoy = attacker_root / "zig-out" / "lib" / fake_lib_names[0]
+            bad_env_values = [
+                str(attacker_decoy.relative_to(attacker_root)),      # relative decoy
+                str(attacker_root / "zig-out" / "lib"),              # directory
+                str(attacker_root / "missing" / attacker_decoy.name),  # missing file
+            ]
+            for bad_env in bad_env_values:
+                os.environ["SAFEGGUF_LIB_PATH"] = bad_env
+                try:
+                    safegguf.core._find_library()
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise AssertionError(f"Invalid SAFEGGUF_LIB_PATH was accepted: {bad_env!r}")
+
+            # A valid absolute explicit path still works and wins over the CWD.
+            if os.path.isabs(genuine_lib):
+                os.environ["SAFEGGUF_LIB_PATH"] = genuine_lib
+                assert os.path.realpath(safegguf.core._find_library()) == os.path.realpath(genuine_lib)
+
+            # The system install path still works, resolved without CWD search.
+            os.environ.pop("SAFEGGUF_LIB_PATH", None)
+            original_find_library = ctypes.util.find_library
+            ctypes.util.find_library = (
+                lambda name: genuine_lib
+                if name in ("safegguf", "safegguf.dll", "libsafegguf.dll")
+                else None
+            )
+            try:
+                system_lib = safegguf.core._find_library()
+                assert os.path.realpath(system_lib) == os.path.realpath(genuine_lib), (
+                    f"System discovery returned unexpected path: {system_lib}"
+                )
+            finally:
+                ctypes.util.find_library = original_find_library
+        finally:
+            safegguf.core.__file__ = original_module_file
+            os.chdir(original_cwd)
+            if original_env is not None:
+                os.environ["SAFEGGUF_LIB_PATH"] = original_env
+            else:
+                os.environ.pop("SAFEGGUF_LIB_PATH", None)
+
+    assert os.path.realpath(safegguf.core._find_library()) == os.path.realpath(genuine_lib), (
+        "Discovery did not return to the genuine library after the adversarial run"
+    )
+    print("     [PASS] CWD decoys never loaded; explicit/system discovery still works.")
+
+    print("\nAll Python binding tests passed successfully! (15/15 suites passed)")
 
 if __name__ == "__main__":
     main()
