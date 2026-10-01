@@ -1,0 +1,31 @@
+# CODEOWNERS — SafeGGUF
+#
+# Reviewers listed here are requested automatically on pull requests that touch
+# the matching paths. Replace @BrianNguyen29 with your own user or org team
+# handles (for example @your-org/security-reviewers); add a second reviewer to
+# a line when a change needs two-person review.
+#
+# The last matching pattern wins, and patterns are anchored to the repository
+# root with a leading `/`, so only the paths below carry an owner until a new
+# rule is added.
+
+# Validator core: parsing, structural rules, checked arithmetic.
+/src/                @BrianNguyen29
+
+# Public C-ABI surface.
+/include/            @BrianNguyen29
+
+# Language bindings built on the C ABI.
+/bindings/           @BrianNguyen29
+
+# Deployment manifests.
+/deploy/             @BrianNguyen29
+
+# CI/CD workflows (build, test, release, signing).
+/.github/workflows/  @BrianNguyen29
+
+# Container build definition.
+/Dockerfile          @BrianNguyen29
+
+# Security policy and disclosure process.
+/SECURITY.md         @BrianNguyen29

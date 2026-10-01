@@ -2,6 +2,10 @@
 # provenance, signs the image digest with keyless Cosign OIDC, and verifies the
 # signature before the job is allowed to succeed.
 #
+# A per-architecture runtime smoke job (below) executes each built image -
+# including the arm64 one under QEMU - and gates build-and-sign, so an image
+# is never pushed or signed unless its native binary actually runs.
+#
 # Reusable-only: the v* tag trigger lives in ci.yml, whose tag-only
 # `container-release` job needs every validation job (core, version-consistency,
 # oracle, fuzz, bench, real-corpus, windows-gate) on the exact tagged commit
@@ -20,8 +24,91 @@ permissions:
   id-token: write # Required for Cosign keyless OIDC signing
 
 jobs:
+  # Builds and executes the image for each target architecture. The builder
+  # stage runs natively on the build platform (Zig cross-compiles), while the
+  # arm64 image is executed through QEMU binfmt. build-and-sign depends on this
+  # job, so a wrong-architecture or broken binary blocks the publish.
+  runtime-smoke:
+    name: Runtime smoke on ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            arch: amd64
+            elf_machine: 'x86-64'
+          - platform: linux/arm64
+            arch: arm64
+            elf_machine: 'aarch64'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build image for ${{ matrix.platform }}
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          load: true
+          push: false
+          tags: safegguf-smoke:${{ matrix.arch }}
+
+      - name: Generate GGUF smoke fixtures
+        run: |
+          set -euo pipefail
+          python3 tests/generate_fixtures.py
+          mkdir -p smoke-run
+          cp tests/fixtures/valid.gguf smoke-run/valid.gguf
+          # 7-byte bad magic: malformed input must exit 2 (REJECT), not crash.
+          printf 'NOTGGUF' > smoke-run/malformed.gguf
+
+      # The distroless runtime has no shell or uname; the ELF header of the
+      # packaged binary (extracted via docker cp) is the architecture evidence.
+      - name: Verify binary architecture matches the requested platform
+        run: |
+          set -euo pipefail
+          image="safegguf-smoke:${{ matrix.arch }}"
+          cid="$(docker create "$image")"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          docker cp "$cid:/usr/local/bin/safegguf" ./safegguf.smoke
+          file ./safegguf.smoke
+          file ./safegguf.smoke | grep -q '${{ matrix.elf_machine }}'
+          docker image inspect --format 'image platform: {{.Os}}/{{.Architecture}}' "$image"
+
+      - name: Run CLI contract on the built image
+        run: |
+          set -euo pipefail
+          image="safegguf-smoke:${{ matrix.arch }}"
+          docker run --rm --platform ${{ matrix.platform }} "$image" --version
+
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD/smoke-run:/smoke:ro" "$image" \
+            inspect /smoke/valid.gguf --format json | tee pass.json
+          grep -Eq '"status": ?"PASS"' pass.json
+
+          rc=0
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD/smoke-run:/smoke:ro" "$image" \
+            inspect /smoke/malformed.gguf --format json > reject.json 2>&1 || rc=$?
+          if [ "$rc" -ne 2 ]; then
+            echo "expected exit 2 for malformed input, got $rc"
+            cat reject.json
+            exit 1
+          fi
+          grep -Eq '"status": ?"REJECT"' reject.json
+          echo "runtime smoke passed: $image (${{ matrix.platform }})"
+
   build-and-sign:
     name: Build, SBOM, Provenance & Cosign Sign
+    needs: runtime-smoke
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
