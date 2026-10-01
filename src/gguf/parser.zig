@@ -67,6 +67,14 @@ pub fn parseDocument(
     profile: types.Profile,
     work_budget: *limits.WorkBudget,
 ) err.ParseError!Document {
+    // Admission control: the configured input-size ceiling is evaluated before
+    // the stream is touched at all, so an oversized file is rejected without
+    // any read or allocation (error.FileTooLarge / E_FileTooLarge, REJECT).
+    if (reader.size > limit.max_file_size_bytes) {
+        if (work_budget.ctx) |c| c.beginPhase("admission");
+        return err.ParseError.FileTooLarge;
+    }
+
     if (work_budget.ctx) |c| c.beginPhase("parse");
 
     // Under llama_cpp profile: upstream ggml 0.23.0 only supports host native endianness.

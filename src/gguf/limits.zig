@@ -26,6 +26,11 @@ pub const Limits = struct {
     max_total_alloc_bytes: u64 = 128 * 1024 * 1024,
     max_work_units: u64 = 10_000_000,
     max_scanned_bytes: u64 = 256 * 1024 * 1024,
+    /// Admission ceiling for the input stream size, checked before the first
+    /// read. Unlimited by default: no existing caller is capped implicitly,
+    /// and production deployments set it explicitly via the CLI
+    /// (`--max-file-size-bytes`).
+    max_file_size_bytes: u64 = std.math.maxInt(u64),
 
     /// Initialize limits with defaults and apply any overrides from environment variables.
     pub fn initFromEnv() Limits {
