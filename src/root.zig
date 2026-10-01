@@ -8,6 +8,8 @@ pub const arithmetic = @import("validate/arithmetic.zig");
 pub const structural = @import("validate/structural.zig");
 pub const validator = @import("validate/validator.zig");
 pub const Validator = validator.Validator;
+pub const metrics = @import("metrics.zig");
+pub const log = @import("log.zig");
 pub const Result = validator.Result;
 pub const OwnedValidationState = validator.OwnedValidationState;
 
