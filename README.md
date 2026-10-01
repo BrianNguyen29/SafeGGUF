@@ -228,7 +228,7 @@ docker run --rm -v $(pwd)/models:/models:ro safegguf:v0.3.6 inspect /models/mode
 
 ### 2. Kubernetes Ingress InitContainer & Cryptographic Handoff
 
-Deploy SafeGGUF as an admission firewall inside your inference Pods before `llama.cpp` or `vLLM` starts, utilizing an in-memory ephemeral volume for the **Anti-TOCTOU Content-Hash Attestation** (see [`deploy/k8s/safegguf-initcontainer.yaml`](deploy/k8s/safegguf-initcontainer.yaml)):
+Deploy SafeGGUF as an admission firewall inside your inference Pods before `llama.cpp` or `vLLM` starts. The untrusted upload is copied **once** into a private staging volume, validated and hashed there, then published by SHA-256 into a content-addressed store; the serving container loads the digest-named CAS entry only (see [`deploy/k8s/safegguf-initcontainer.yaml`](deploy/k8s/safegguf-initcontainer.yaml)):
 
 ```yaml
 apiVersion: v1
@@ -238,27 +238,47 @@ metadata:
   namespace: ai-serving
 spec:
   volumes:
-    - name: model-volume
+    # Untrusted upload source: read-only, mounted only by the staging copy.
+    - name: unvalidated-source-volume
       persistentVolumeClaim:
         claimName: models-pvc
+    # Private staging + CAS. staging/ and validated/ share one filesystem, so
+    # publishing the validated digest entry is an atomic rename.
+    # sizeLimit must be >= the largest expected model artifact.
+    - name: private-staging-volume
+      emptyDir:
+        sizeLimit: 16Gi
     - name: attestation-volume
       emptyDir:
         medium: Memory
   initContainers:
-    # Phase 1: Fail-closed structural & arithmetic inspection
+    # Phase 0: copy the untrusted upload exactly once into private staging.
+    - name: safegguf-staging-copy
+      image: busybox:1.36-musl
+      command:
+        - /bin/sh
+        - -c
+        - cp /models/model.gguf /private-stage/model.gguf
+      volumeMounts:
+        - name: unvalidated-source-volume
+          mountPath: /models
+          readOnly: true
+        - name: private-staging-volume
+          mountPath: /private-stage
+    # Phase 1: fail-closed structural & arithmetic inspection of the staged bytes.
     - name: safegguf-firewall
       image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
       command:
         - /usr/local/bin/safegguf
         - inspect
-        - /models/model.gguf
+        - /private-stage/model.gguf
         - --profile
         - llama-cpp
         - --endian
         - auto
       volumeMounts:
-        - name: model-volume
-          mountPath: /models
+        - name: private-staging-volume
+          mountPath: /private-stage
           readOnly: true
       securityContext:
         allowPrivilegeEscalation: false
@@ -266,33 +286,42 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
 
-    # Phase 2: Cryptographic SHA-256 digest attestation into in-memory CAS
+    # Phase 2: hash exactly the validated bytes, then atomically rename them
+    # into the CAS as validated/<sha256>.
     - name: safegguf-attestation-generator
       image: busybox:1.36-musl
       command:
         - /bin/sh
         - -c
-        - sha256sum /models/model.gguf > /attestation/model.gguf.sha256
+        - |
+          set -euo pipefail
+          DIGEST="$(sha256sum /private-stage/model.gguf | awk '{print $1}')"
+          mkdir -p /private-stage/validated
+          mv /private-stage/model.gguf "/private-stage/validated/$DIGEST"
+          printf '%s  %s\n' "$DIGEST" "$DIGEST" > /attestation/model.gguf.sha256
       volumeMounts:
-        - name: model-volume
-          mountPath: /models
-          readOnly: true
+        - name: private-staging-volume
+          mountPath: /private-stage
         - name: attestation-volume
           mountPath: /attestation
 
   containers:
-    # Serving Container: Verifies hash before loading weights (Anti-TOCTOU Gate)
+    # Serving: digest-pinned load from the immutable CAS; never the source path.
     - name: llama-cpp-server
       image: ghcr.io/ggerganov/llama.cpp:server
       command:
         - /bin/sh
         - -c
         - |
+          set -euo pipefail
+          DIGEST="$(awk '{print $1}' /attestation/model.gguf.sha256)"
+          cd /validated
           sha256sum -c /attestation/model.gguf.sha256
-          exec /server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080
+          exec /server -m "/validated/$DIGEST" -c 4096 --host 0.0.0.0 --port 8080
       volumeMounts:
-        - name: model-volume
-          mountPath: /models
+        - name: private-staging-volume
+          mountPath: /validated
+          subPath: validated
           readOnly: true
         - name: attestation-volume
           mountPath: /attestation

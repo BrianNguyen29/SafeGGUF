@@ -78,10 +78,21 @@ repro status for the recovered input:
 
 | taxonomy | detected by | lane |
 | --- | --- | --- |
-| `validator_crash` | crash trace tops out in `src/` or `tests/`; also the conservative default when no frame is classified | fails |
+| `validator_crash` | proven target-process crash (fatal signal, or `panic:` / `Segmentation fault` / `all fuzz workers crashed` with a nonzero exit) whose trace tops out in `src/`/`tests/`, or a deterministic standalone repro of the recovered input | fails |
+| `unknown_crash` | proven crash with no attributable frame (promoted to `validator_crash` when a standalone replay confirms the input) | fails |
 | `engine_crash` | crash trace tops out in Zig's `lib/fuzzer.zig` built-in fuzzer | fails if the recovered input reproduces; advisory (exit 0) if it does not |
 | `timeout` | startup timeout, or no execution (run counter) progress for `--stall-seconds` | fails |
 | `oom` | OOM markers in the lane log (`OutOfMemory`, `out of memory`, ...), or an early exit with no trace and a SIGKILL status | fails |
+| `setup_missing_corpus` | the required seed corpus `tests/corpus` (`tests/fuzz_cov_target.zig` `loadSeeds` `.required`) is absent | fails |
+| `setup_file_not_found` | FileNotFound in the build/test log with the required corpus present | fails |
+| `setup_build_failure` | compilation/build failure markers, or a build toolchain that crashed | fails |
+| `setup_error` | any other non-crash failure (unexpected nonzero exit without crash proof) | fails |
+
+Harness/setup/infrastructure failures are classified before the crash
+taxonomies and are never reported as `validator_crash`. Only a crash proven by
+the target process (fatal signal, or a crash marker with a nonzero exit) whose
+stack touches `src/`/`tests/` - or whose recovered input a deterministic
+standalone replay confirms - is a validator crash.
 
 Crash markers are `panic:`, `Segmentation fault`, `all fuzz workers crashed`
 and `failed with error`; a build that exits 0 before the budget is `failed`.
@@ -110,11 +121,13 @@ Artifacts under `tests/fuzz-artifacts/coverage-fuzz/`:
   crash by `zig build fuzz-cov-repro` (trailing-NUL trim + bounded prefix
   truncation, <= 24 repro calls); if the repro does not confirm, the original
   is preserved unmodified and `minimization` records that,
-- `crash-<target>-<utc>.json` - `taxonomy` (`validator_crash` |
-  `engine_crash` | `timeout` | `oom`), crash site (`validator` | `engine` |
-  `unknown`), `stack_top_frames`, `repro_status` + `repro_calls`,
+- `crash-<target>-<utc>.json` - strict incident schema: `layer` (`setup` |
+  `validator` | `engine` | `runtime` | `unknown`), `taxonomy`, `repro_status`,
+  `input_sha256` (null when no input was recovered), `commit`, `toolchain`,
+  `command`, `stderr_tail` and `first_failing_frame`, plus crash site
+  (`validator` | `engine` | `unknown`), `stack_top_frames`, `repro_calls`,
   target/profile/endian/`host_endian`/`seed`, engine + Zig version, compiler,
-  commit, platform, coverage stats, sanitizer story, input `sha256` + `sizes`
+  platform, coverage stats, sanitizer story, input `sha256` + `sizes`
   (original, minimized), log excerpt and an exact repro command,
 - `<target>.log` - full lane log for the target,
 - `coverage_history.json` - advisory trend state (schema

@@ -15,17 +15,30 @@ Policy (mirrors the nightly mutation lane; see tests/fuzz/README.md):
     PASS; malformed inputs are high-value;
   * persisted corpus <= 10,000 entries / 256 MiB, sha256-deduped, oldest
     entries pruned first;
-  * every incident carries a taxonomy class - `validator_crash` (src/tests
-    frames), `engine_crash` (Zig built-in fuzzer frames), `timeout`
-    (startup/stall) or `oom` (OOM markers, or a SIGKILLed worker) - plus a
-    repro status (`repro_confirmed`, `repro_not_confirmed`, `repro_timeout`,
-    `repro_not_attempted`);
-  * validator crashes, timeouts and OOM incidents preserve the original input
-    (and a repro-validated minimized prefix when the replay confirms a crash)
-    + metadata under tests/fuzz-artifacts/coverage-fuzz/ and fail the lane;
+  * every incident carries a taxonomy class. `validator_crash` is only
+    assigned to a proven target-process crash (fatal signal, or a panic /
+    fuzzer-worker-crash marker with a nonzero exit) whose stack touches
+    production source, or whose input a deterministic standalone replay
+    confirms; a proven crash with no attributable frame is `unknown_crash`
+    until such a replay promotes it. `engine_crash` (Zig built-in fuzzer
+    frames), `timeout` (startup/stall) and `oom` (OOM markers, or a SIGKILLed
+    worker) are unchanged. Harness/setup/infrastructure failures - a missing
+    required seed corpus (`tests/corpus`, see fuzz_cov_target.zig `loadSeeds`),
+    FileNotFound, a failed build, or an unexpected non-crash exit - are
+    `setup_*` and are never reported as validator crashes. Every incident also
+    carries a repro status (`repro_confirmed`, `repro_not_confirmed`,
+    `repro_timeout`, `repro_not_attempted`);
+  * validator crashes, unknown crashes, timeouts and OOM incidents preserve
+    the original input (and a repro-validated minimized prefix when the replay
+    confirms a crash) + metadata under tests/fuzz-artifacts/coverage-fuzz/ and
+    fail the lane; setup failures fail the lane without fabricating a crash
+    artifact;
   * an engine-internal crash inside Zig 0.14.1's built-in fuzzer (top frames
     are lib/fuzzer.zig) whose recovered input does not reproduce is preserved
-    as an advisory `engine_crash` artifact and does not fail the lane.
+    as an advisory `engine_crash` artifact and does not fail the lane;
+  * every incident JSON additionally carries the strict schema fields `layer`,
+    `taxonomy`, `repro_status`, `input_sha256`, `commit`, `toolchain`,
+    `command`, `stderr_tail` and `first_failing_frame`.
 
 History (advisory trend, never a gate): every run appends one compact record
 (executions, unique inputs, covered paths, corpus growth, incident taxonomy
@@ -46,6 +59,7 @@ import hashlib
 import json
 import os
 import platform
+import shlex
 import shutil
 import signal
 import struct
@@ -83,6 +97,56 @@ OOM_MARKERS = (
     b"memory allocation failed",
 )
 
+# A proven target-process crash needs a fatal signal (negative exit status) or
+# one of these markers with a nonzero exit; ordinary failed-build/test text is
+# not crash proof (see crash_proven).
+CRASH_PROOF_MARKERS = (
+    b"panic:",
+    b"segmentation fault",
+    b"all fuzz workers crashed",
+)
+# Harness/setup failure signatures that must never be reported as a crash.
+FILE_NOT_FOUND_MARKERS = (
+    b"filenotfound",
+    b"file not found",
+    b"no such file or directory",
+)
+BUILD_FAILURE_MARKERS = (
+    b"compilation errors",
+    b"the following command failed",
+    b"unable to build",
+    b"build failed",
+)
+
+# Incident taxonomy (one class per non-ok target run): crash classes, runtime
+# conditions, and setup/infrastructure classes that must never masquerade as
+# validator crashes (see classify_incident).
+TAXONOMY_VALIDATOR_CRASH = "validator_crash"
+TAXONOMY_ENGINE_CRASH = "engine_crash"
+TAXONOMY_UNKNOWN_CRASH = "unknown_crash"
+TAXONOMY_TIMEOUT = "timeout"
+TAXONOMY_OOM = "oom"
+TAXONOMY_SETUP_MISSING_CORPUS = "setup_missing_corpus"
+TAXONOMY_SETUP_FILE_NOT_FOUND = "setup_file_not_found"
+TAXONOMY_SETUP_BUILD_FAILURE = "setup_build_failure"
+TAXONOMY_SETUP_ERROR = "setup_error"
+
+CRASH_TAXONOMIES = (TAXONOMY_VALIDATOR_CRASH, TAXONOMY_ENGINE_CRASH,
+                    TAXONOMY_UNKNOWN_CRASH)
+SETUP_TAXONOMIES = (TAXONOMY_SETUP_MISSING_CORPUS,
+                    TAXONOMY_SETUP_FILE_NOT_FOUND,
+                    TAXONOMY_SETUP_BUILD_FAILURE, TAXONOMY_SETUP_ERROR)
+INCIDENT_TAXONOMIES = (CRASH_TAXONOMIES + (TAXONOMY_TIMEOUT, TAXONOMY_OOM)
+                       + SETUP_TAXONOMIES)
+# Layer an incident is attributable to (strict incident JSON `layer` field).
+INCIDENT_LAYERS = ("setup", "validator", "engine", "runtime", "unknown")
+# Strict fields every incident JSON carries; both artifact writers spread
+# incident_schema() so the shape cannot drift.
+REQUIRED_INCIDENT_FIELDS = (
+    "layer", "taxonomy", "repro_status", "input_sha256", "commit",
+    "toolchain", "command", "stderr_tail", "first_failing_frame",
+)
+
 
 def stack_top_frames(blob, limit=12):
     """Top-of-trace frames: up to `limit` non-blank lines after the first
@@ -104,7 +168,8 @@ def stack_top_frames(blob, limit=12):
 def crash_site(blob):
     """Classify a crash trace: 'engine' when the top frame is Zig's built-in
     fuzzer runtime, 'validator' when safegguf src/tests frames are on top,
-    'unknown' otherwise (conservatively treated as validator_crash)."""
+    'unknown' otherwise. An 'unknown' site is never labeled validator_crash
+    without a confirmed standalone repro (see classify_incident)."""
     for frame in stack_top_frames(blob):
         if "lib/fuzzer.zig" in frame or "lib/Build/Fuzz" in frame:
             return "engine"
@@ -118,23 +183,114 @@ def has_oom_marker(blob):
     return any(marker in lower for marker in OOM_MARKERS)
 
 
-def crash_taxonomy(blob):
-    """(taxonomy, crash_site) for one crash log; OOM evidence takes precedence
-    over frame classification."""
+def has_file_not_found_marker(blob):
+    lower = blob.lower()
+    return any(marker in lower for marker in FILE_NOT_FOUND_MARKERS)
+
+
+def has_build_failure_marker(blob):
+    lower = blob.lower()
+    return any(marker in lower for marker in BUILD_FAILURE_MARKERS)
+
+
+def crash_proven(blob, rc):
+    """True only when the target process demonstrably crashed: a fatal signal
+    (negative exit status) or an explicit crash marker with a nonzero exit.
+    Ordinary nonzero exits (failed build, test error, ...) are not proof."""
+    if rc is not None and rc < 0:
+        return True
+    if rc in (0, None):
+        return False
+    lower = blob.lower()
+    return any(marker in lower for marker in CRASH_PROOF_MARKERS)
+
+
+def classify_incident(blob, rc, required_corpus_present=True):
+    """(taxonomy, crash_site) for one non-ok target run, strict precedence:
+    OOM, then harness/setup/infrastructure, then proven crashes.
+
+    `tests/corpus` is required by tests/fuzz_cov_target.zig `loadSeeds`, so
+    when it is absent the run can only have failed setup - never validator.
+    FileNotFound and failed-build signatures are `setup_*` as well. A proven
+    crash is `validator_crash` only with production-source frames; a proven
+    crash with no attributable frame stays `unknown_crash` until
+    save_crash_artifact promotes it on a confirmed standalone repro."""
     site = crash_site(blob)
     if has_oom_marker(blob):
-        return "oom", site
-    return ("engine_crash" if site == "engine" else "validator_crash"), site
+        return TAXONOMY_OOM, site
+    if not required_corpus_present:
+        return TAXONOMY_SETUP_MISSING_CORPUS, site
+    if not crash_proven(blob, rc):
+        if has_file_not_found_marker(blob):
+            return TAXONOMY_SETUP_FILE_NOT_FOUND, site
+        if has_build_failure_marker(blob):
+            return TAXONOMY_SETUP_BUILD_FAILURE, site
+        return TAXONOMY_SETUP_ERROR, site
+    if has_build_failure_marker(blob) and site != "validator":
+        # A failed or crashed build toolchain is infrastructure, not a target
+        # process validator crash.
+        return TAXONOMY_SETUP_BUILD_FAILURE, site
+    if site == "validator":
+        return TAXONOMY_VALIDATOR_CRASH, site
+    if site == "engine":
+        return TAXONOMY_ENGINE_CRASH, site
+    return TAXONOMY_UNKNOWN_CRASH, site
+
+
+def incident_layer(taxonomy):
+    """Layer an incident is attributable to (strict incident JSON field):
+    setup_* -> setup, validator_crash -> validator, engine_crash -> engine,
+    timeout/oom -> runtime, anything else -> unknown."""
+    if taxonomy in SETUP_TAXONOMIES:
+        return "setup"
+    if taxonomy == TAXONOMY_VALIDATOR_CRASH:
+        return "validator"
+    if taxonomy == TAXONOMY_ENGINE_CRASH:
+        return "engine"
+    if taxonomy in (TAXONOMY_TIMEOUT, TAXONOMY_OOM):
+        return "runtime"
+    return "unknown"
+
+
+def first_failing_frame(blob):
+    """First attributable failure line for an incident: the top crash frame
+    when a crash trace exists, else the first error/panic line (setup
+    failures have no stack), else None."""
+    frames = stack_top_frames(blob)
+    if frames:
+        return frames[0]
+    for line in blob.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if line and ("error" in line.lower() or "panic" in line.lower()):
+            return line[:200]
+    return None
+
+
+def incident_schema(taxonomy, repro_status, input_sha256, command, blob,
+                     toolchain, commit):
+    """Strict incident JSON fields every artifact writer must carry."""
+    return {
+        "layer": incident_layer(taxonomy),
+        "taxonomy": taxonomy,
+        "repro_status": repro_status,
+        "input_sha256": input_sha256,
+        "commit": commit,
+        "toolchain": toolchain,
+        "command": command,
+        "stderr_tail": blob[-STDERR_TAIL_BYTES:].decode("utf-8", "replace"),
+        "first_failing_frame": first_failing_frame(blob),
+    }
+
 
 MAX_CORPUS_ENTRIES = 10_000
 MAX_CORPUS_BYTES = 256 * 1024 * 1024
 MAX_REPRO_CALLS = 24
 REPRO_TIMEOUT = 300
 FUZZ_SEED = 0  # std.testing.fuzz RNG seed, kept deterministic by the harness
+STDERR_TAIL_BYTES = 4000  # stderr_tail/log_excerpt evidence window
 
-# Incident taxonomy (one class per non-ok target run) and repro statuses; the
-# taxonomy constants are the status values used across results, summaries and
-# history records.
+# Repro statuses for a recovered incident input; the constants are the status
+# values used across results, summaries and history records.
 REPRO_STATUSES = ("repro_confirmed", "repro_not_confirmed",
                   "repro_timeout", "repro_not_attempted")
 
@@ -161,6 +317,8 @@ DELTA_FIELDS = (
     "crash_artifacts",
     "validator_crashes",
     "engine_crashes",
+    "unknown_crashes",
+    "setup_failures",
     "advisory_crashes",
     "timeouts",
     "ooms",
@@ -331,6 +489,7 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
         "--cache-dir", cache_dir,
         "--global-cache-dir", global_cache_dir,
     ]
+    command = shlex.join(argv)
     log("target %s: fuzzing for up to %ds (cache %s)" % (target["step"], budget, cache_dir))
     result = {
         "step": target["step"],
@@ -407,22 +566,25 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
             if stalled:
                 stop_group(proc)
                 blob = read_log(log_path)
-                result["taxonomy"] = "oom" if has_oom_marker(blob) else "timeout"
+                result["taxonomy"] = TAXONOMY_OOM if has_oom_marker(blob) else TAXONOMY_TIMEOUT
                 result["status"] = result["taxonomy"]
                 result["crash_site"] = crash_site(blob)
                 result["stack_top_frames"] = stack_top_frames(blob)
                 result["detail"] = "no fuzz progress for %ds%s" % (
                     args.stall_seconds,
                     "; OOM markers in lane log (taxonomy=oom)"
-                    if result["taxonomy"] == "oom"
+                    if result["taxonomy"] == TAXONOMY_OOM
                     else " (hang suspected; taxonomy=timeout)")
             elif proc.poll() is None:
                 stop_group(proc)
 
         result["rc"] = proc.returncode
         blob = read_log(log_path)
+        required_corpus_present = os.path.isdir(
+            os.path.join(REPO_ROOT, "tests", "corpus"))
         if crash_marked or has_marker(blob):
-            result["taxonomy"], result["crash_site"] = crash_taxonomy(blob)
+            result["taxonomy"], result["crash_site"] = classify_incident(
+                blob, result["rc"], required_corpus_present)
             result["status"] = result["taxonomy"]
             result["stack_top_frames"] = stack_top_frames(blob)
             result["detail"] = "fuzz worker crash marker in lane log (taxonomy=%s site=%s)" % (
@@ -434,14 +596,15 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
             elif has_oom_marker(blob) or proc.returncode in (-signal.SIGKILL, 137):
                 # No crash marker and no frame: an externally SIGKILLed worker on
                 # CI is most likely the kernel OOM killer, so classify as oom.
-                result["status"] = "oom"
-                result["taxonomy"] = "oom"
+                result["status"] = TAXONOMY_OOM
+                result["taxonomy"] = TAXONOMY_OOM
                 result["crash_site"] = crash_site(blob)
                 result["stack_top_frames"] = stack_top_frames(blob)
                 result["detail"] = ("fuzz build exited early with rc=%s; no crash trace, "
                                     "SIGKILL/OOM marker (taxonomy=oom)" % proc.returncode)
             else:
-                result["taxonomy"], result["crash_site"] = crash_taxonomy(blob)
+                result["taxonomy"], result["crash_site"] = classify_incident(
+                    blob, proc.returncode, required_corpus_present)
                 result["status"] = result["taxonomy"]
                 result["stack_top_frames"] = stack_top_frames(blob)
                 result["detail"] = "fuzz build exited early with rc=%s (taxonomy=%s site=%s)" % (
@@ -453,15 +616,23 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
     if corpus_dir is not None:
         entries = list_corpus_entries(corpus_dir)
         result["corpus_files"] = len(entries)
-    if result["status"] in ("validator_crash", "engine_crash"):
+    if result["status"] in CRASH_TAXONOMIES:
         site = result["crash_site"] or "unknown"
         if entries:
-            artifact, repro_status, repro_calls = save_crash_artifact(
-                args, target, entries, cache_dir, log_path, result["taxonomy"], site
+            artifact, repro_status, repro_calls, taxonomy = save_crash_artifact(
+                args, target, entries, cache_dir, log_path, result["taxonomy"], site,
+                command=command,
             )
             result["crash_artifact"] = artifact
             result["repro_status"] = repro_status
             result["repro_calls"] = repro_calls
+            if taxonomy != result["taxonomy"]:
+                # unknown_crash + deterministic standalone repro => validator.
+                result["detail"] += (
+                    "; deterministic standalone repro confirmed: reclassified %s -> %s"
+                    % (result["taxonomy"], taxonomy))
+                result["taxonomy"] = taxonomy
+                result["status"] = taxonomy
             if site == "engine" and repro_status == "repro_not_confirmed":
                 # Spontaneous Zig 0.14.1 built-in fuzzer instability: the crash
                 # is in lib/fuzzer.zig and the recovered input does not replay,
@@ -475,16 +646,17 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
                 result["detail"] += "; repro_status=%s" % repro_status
         else:
             result["crash_artifact"] = save_crash_without_input(
-                args, target, log_path, result["taxonomy"], site)
+                args, target, log_path, result["taxonomy"], site, command=command)
             result["repro_status"] = "repro_not_attempted"
-    elif result["status"] in ("timeout", "oom"):
+    elif result["status"] in (TAXONOMY_TIMEOUT, TAXONOMY_OOM):
         # Replaying a possibly-hanging or OOM-triggering input is not attempted;
         # the original input (when one exists) is preserved unminimized.
         result["repro_status"] = "repro_not_attempted"
         if entries:
-            artifact, repro_status, repro_calls = save_crash_artifact(
+            artifact, repro_status, repro_calls, _ = save_crash_artifact(
                 args, target, entries, cache_dir, log_path, result["taxonomy"],
-                result["crash_site"] or "unknown", attempt_repro=False
+                result["crash_site"] or "unknown", attempt_repro=False,
+                command=command,
             )
             result["crash_artifact"] = artifact
             result["repro_status"] = repro_status
@@ -494,13 +666,16 @@ def run_bounded(args, target, budget, artifacts_dir, global_cache_dir):
     return result
 
 
-def save_crash_without_input(args, target, log_path, taxonomy, site):
+def save_crash_without_input(args, target, log_path, taxonomy, site, command=None):
     """Incident during the seed smoke pass: no f/ entry exists, keep the log."""
     base = "crash-%s-%s" % (target["step"], utcstamp())
     blob = read_log(log_path)
+    version = zig_version(args.zig)
+    commit = git_commit()
     meta = {
         "kind": "coverage_fuzz_crash_no_input",
-        "taxonomy": taxonomy,
+        **incident_schema(taxonomy, "repro_not_attempted", None, command, blob,
+                          "zig " + version, commit),
         "target": target["step"],
         "profile": target["profile"],
         "endian": target["endian"],
@@ -508,17 +683,16 @@ def save_crash_without_input(args, target, log_path, taxonomy, site):
         "seed": FUZZ_SEED,
         "crash_site": site,
         "stack_top_frames": stack_top_frames(blob),
-        "repro_status": "repro_not_attempted",
         "repro_calls": 0,
         "sha": None,
         "sizes": None,
         "engine": "zig built-in fuzzer (std.testing.fuzz, Zig 0.14.1)",
-        "zig_version": zig_version(args.zig),
-        "git_commit": git_commit(),
+        "zig_version": version,
+        "git_commit": commit,
         "platform": platform.platform(),
         "detail": "crash before/without a recoverable corpus entry (seed smoke pass); see log",
         "log": os.path.basename(log_path),
-        "log_excerpt": blob[-4000:].decode("utf-8", "replace"),
+        "log_excerpt": blob[-STDERR_TAIL_BYTES:].decode("utf-8", "replace"),
         "repro_command": ("rerun the lane target; a persisted seed is the likely input "
                           "(tests/fuzz/coverage_lane.py --targets %s)" % target["step"]),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -609,13 +783,16 @@ def repro_verdict(args, path, target, global_cache_dir, repro_cache_dir):
 
 
 def save_crash_artifact(args, target, entries, cache_dir, log_path, taxonomy, site,
-                        attempt_repro=True):
+                        attempt_repro=True, command=None):
     """original + repro-validated minimized input + metadata for one incident.
 
-    Returns ``(artifact_name, repro_status, repro_calls)`` where
-    ``repro_status`` is one of REPRO_STATUSES. ``attempt_repro`` is False for
-    timeout/oom incidents, where replaying a possibly-hanging input is not
-    attempted and the original is preserved unminimized."""
+    Returns ``(artifact_name, repro_status, repro_calls, taxonomy)`` where
+    ``repro_status`` is one of REPRO_STATUSES and ``taxonomy`` is final: a
+    proven crash with no attributable frame (`unknown_crash`) is promoted to
+    `validator_crash` when the standalone replay confirms the input.
+    ``attempt_repro`` is False for timeout/oom incidents, where replaying a
+    possibly-hanging input is not attempted and the original is preserved
+    unminimized."""
     stamp = utcstamp()
     base = "crash-%s-%s" % (target["step"], stamp)
     global_cache_dir = os.path.join(args.cache_root, "zig-global")
@@ -695,24 +872,32 @@ def save_crash_artifact(args, target, entries, cache_dir, log_path, taxonomy, si
                             % REPRO_TIMEOUT)
     else:
         minimization = "repro not attempted for taxonomy=%s; original preserved" % taxonomy
+    if (attempt_repro and taxonomy == TAXONOMY_UNKNOWN_CRASH
+            and repro_status == "repro_confirmed"):
+        # A proven crash with no attributable frame is a validator crash only
+        # when the deterministic standalone replay confirms the input.
+        taxonomy = TAXONOMY_VALIDATOR_CRASH
     log("target %s: %s artifact %s (%s)" % (target["step"], taxonomy, base, minimization))
 
+    blob = read_log(log_path)
+    version = zig_version(args.zig)
+    commit = git_commit()
     meta = {
         "kind": "coverage_fuzz_crash",
-        "taxonomy": taxonomy,
+        **incident_schema(taxonomy, repro_status, original_sha, command, blob,
+                          "zig " + version, commit),
         "target": target["step"],
         "profile": target["profile"],
         "endian": target["endian"],
         "host_endian": sys.byteorder,
         "seed": FUZZ_SEED,
         "crash_site": site,
-        "stack_top_frames": stack_top_frames(read_log(log_path)),
-        "repro_status": repro_status,
+        "stack_top_frames": stack_top_frames(blob),
         "repro_calls": repro_calls,
         "engine": "zig built-in fuzzer (std.testing.fuzz, Zig 0.14.1)",
-        "zig_version": zig_version(args.zig),
-        "compiler": "zig " + str(zig_version(args.zig)),
-        "git_commit": git_commit(),
+        "zig_version": version,
+        "compiler": "zig " + str(version),
+        "git_commit": commit,
         "platform": platform.platform(),
         "sanitizers": "Debug safety checks + GeneralPurposeAllocator leak panic (no ASan/UBSan runtime)",
         "coverage": parse_coverage(cache_dir),
@@ -722,7 +907,7 @@ def save_crash_artifact(args, target, entries, cache_dir, log_path, taxonomy, si
         "minimized_file": os.path.basename(minimized_path) if minimized_path else None,
         "minimization": minimization,
         "log": os.path.basename(log_path),
-        "log_excerpt": read_log(log_path)[-4000:].decode("utf-8", "replace"),
+        "log_excerpt": blob[-STDERR_TAIL_BYTES:].decode("utf-8", "replace"),
         "repro_command": (
             "SAFEGGUF_COV_FUZZ_REPRO=%s SAFEGGUF_COV_FUZZ_PROFILE=%s "
             "SAFEGGUF_COV_FUZZ_ENDIAN=%s zig build fuzz-cov-repro"
@@ -732,7 +917,7 @@ def save_crash_artifact(args, target, entries, cache_dir, log_path, taxonomy, si
     }
     with open(os.path.join(args.artifacts_dir, base + ".json"), "w", encoding="utf-8") as f:
         json.dump(meta, f, indent=2)
-    return os.path.basename(original_path), repro_status, repro_calls
+    return os.path.basename(original_path), repro_status, repro_calls, taxonomy
 
 
 def zig_version(zig):
@@ -787,6 +972,8 @@ def summary_totals(summary):
         "crash_artifacts": 0,
         "validator_crashes": 0,
         "engine_crashes": 0,
+        "unknown_crashes": 0,
+        "setup_failures": 0,
         "advisory_crashes": 0,
         "timeouts": 0,
         "ooms": 0,
@@ -811,6 +998,10 @@ def summary_totals(summary):
             totals["validator_crashes"] += 1
         elif status == "engine_crash":
             totals["engine_crashes"] += 1
+        elif status == "unknown_crash":
+            totals["unknown_crashes"] += 1
+        elif status in SETUP_TAXONOMIES:
+            totals["setup_failures"] += 1
         elif status == "timeout":
             totals["timeouts"] += 1
         elif status == "oom":
@@ -1005,7 +1196,8 @@ def history_lines(hist):
             delta_text(f, delta) for f in ("corpus_entries", "corpus_bytes", "promoted")),
         "delta incidents: " + " ".join(
             delta_text(f, delta) for f in ("crash_artifacts", "validator_crashes",
-                                           "engine_crashes", "advisory_crashes",
+                                           "engine_crashes", "unknown_crashes",
+                                           "setup_failures", "advisory_crashes",
                                            "timeouts", "ooms", "failed_targets")),
         "delta repro: " + " ".join(
             delta_text(f, delta) for f in ("repro_confirmed", "repro_not_confirmed",
@@ -1041,9 +1233,12 @@ def write_summary(args, results, started):
         "advisory_engine_crashes": advisory,
         "note": ("coverage lane is advisory (nightly); production toolchain stays 0.13.0, "
                  "pinned oracle/differential and mutation campaigns are unchanged; "
-                 "incidents carry taxonomy validator_crash | engine_crash | timeout | oom "
-                 "plus a repro status, and only non-reproducing engine-internal Zig 0.14.1 "
-                 "fuzzer crashes are advisory (they do not fail the lane)"),
+                 "incidents carry taxonomy validator_crash | engine_crash | unknown_crash | "
+                 "timeout | oom | setup_* plus a repro status; validator_crash requires proof "
+                 "of a target-process crash with production frames or a deterministic repro, "
+                 "setup_* failures are never reported as validator crashes, and only "
+                 "non-reproducing engine-internal Zig 0.14.1 fuzzer crashes are advisory "
+                 "(they do not fail the lane)"),
         "budget_seconds": args.budget_seconds,
         "wall_seconds": round(time.monotonic() - started, 1),
         "seed_corpus": os.path.join(REPO_ROOT, "tests", "corpus"),
@@ -1164,8 +1359,8 @@ def main():
     write_summary(args, results, started)
     advisory = [r["step"] for r in results if r.get("advisory")]
     if exit_code != 0:
-        log("lane FAILED: validator crash, timeout, OOM or unexpected engine exit; see %s"
-            % args.artifacts_dir)
+        log("lane FAILED: validator/unknown crash, setup/infra failure, timeout, OOM or "
+            "unexpected engine exit; see %s" % args.artifacts_dir)
     elif advisory:
         log("lane OK with advisory engine crashes (repro_status=repro_not_confirmed, "
             "did not fail lane): %s" % ", ".join(advisory))
