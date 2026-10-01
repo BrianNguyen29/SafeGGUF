@@ -72,6 +72,7 @@ fn run() anyerror!void {
     var format: OutputFormat = .text;
     var profile: types.Profile = .gguf_spec;
     var limit = limits.Limits.initFromEnv();
+    var require_stable_file: bool = false;
 
     // The variable-array cap is a sub-limit: max_array_elements is checked
     // first, so an override above it could never take effect (contradictory).
@@ -168,6 +169,22 @@ fn run() anyerror!void {
                 std.process.exit(64);
             }
             limit.max_work_units = parsed;
+        } else if (std.mem.eql(u8, arg, "--max-file-size-bytes")) {
+            const val_arg = args.next() orelse {
+                try stderr.print("Error: --max-file-size-bytes requires a positive integer N\n", .{});
+                std.process.exit(64);
+            };
+            const parsed = std.fmt.parseInt(u64, val_arg, 10) catch {
+                try stderr.print("Error: invalid --max-file-size-bytes value '{s}'\n", .{val_arg});
+                std.process.exit(64);
+            };
+            if (parsed == 0) {
+                try stderr.print("Error: --max-file-size-bytes must be greater than 0\n", .{});
+                std.process.exit(64);
+            }
+            limit.max_file_size_bytes = parsed;
+        } else if (std.mem.eql(u8, arg, "--require-stable-file")) {
+            require_stable_file = true;
         } else {
             // Fail closed: reject unknown arguments immediately
             try stderr.print("Error: unknown argument '{s}'\n\n", .{arg});
@@ -224,6 +241,27 @@ fn run() anyerror!void {
             try stderr.print("Error: Not a regular file '{s}': {s}\n", .{ file_path, kind_error });
         }
         std.process.exit(74); // EX_IOERR
+    }
+
+    // Optional stable-file check (--require-stable-file): snapshot the open
+    // handle's identity before validation so it can be re-verified afterwards.
+    // Off by default, so existing behavior is unchanged. The check operates on
+    // the already-open handle (never re-opens by path) and bounds
+    // dev/inode/size/mtime/ctime mutation; it is not cryptographic
+    // immutability (see reader.FileIdentity for the exact limits).
+    var stable_identity: ?reader_mod.FileIdentity = null;
+    if (require_stable_file) {
+        stable_identity = reader_mod.FileIdentity.capture(file) catch |e| {
+            if (format == .json) {
+                try stdout.print(
+                    \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","message":"Failed to stat file"}}
+                    \\
+                , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e) });
+            } else {
+                try stderr.print("Error: Failed to stat file '{s}': {s}\n", .{ file_path, @errorName(e) });
+            }
+            std.process.exit(74); // EX_IOERR
+        };
     }
 
     // Sliding-window buffered reader to mitigate syscall-heavy DoS attacks
@@ -290,6 +328,40 @@ fn run() anyerror!void {
         std.process.exit(2);
     };
     defer val.deinitDocument(&doc);
+
+    // Stable-file mode: a PASS verdict must describe the bytes actually read,
+    // so re-stat the same handle and reject when any identity field moved
+    // while the file was being validated. Only the PASS path needs the check:
+    // every failure path already exits non-zero for this file.
+    if (stable_identity) |before| {
+        before.verifyUnchanged(file) catch |e| switch (e) {
+            error.FileChanged => {
+                const finding = err_types.Finding{
+                    .code = "E_FileChangedDuringValidation",
+                    .message = "File identity changed while it was being validated (device, inode, size, or timestamps differ)",
+                    .severity = .reject,
+                    .stage = "stability",
+                    .category = .io,
+                };
+                switch (format) {
+                    .json => try writeRejectionJson(stdout, profile_str, target_field_name, "FileChangedDuringValidation", &finding),
+                    .text => try writeRejectionText(stderr, &finding),
+                }
+                std.process.exit(2); // REJECT
+            },
+            error.FileStatFailed => {
+                if (format == .json) {
+                    try stdout.print(
+                        \\{{"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"FileStatFailed","error_code":"E_FILE_STAT_FAILED","message":"Failed to stat file"}}
+                        \\
+                    , .{ target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT });
+                } else {
+                    try stderr.print("Error: Failed to stat file '{s}': FileStatFailed\n", .{file_path});
+                }
+                std.process.exit(74); // EX_IOERR
+            },
+        };
+    }
 
     if (format == .json) {
         try stdout.print(
@@ -496,6 +568,8 @@ fn printUsage(writer: anytype) !void {
     try writer.print("                                    gguf-spec: resource-bounded GGUF v3 structural safe subset\n", .{});
     try writer.print("                                    llama-cpp: ggml 0.23.0 safe pre-admission subset\n", .{});
     try writer.print("  --max-variable-array-elements <N> String/nested-array element sanity cap (default: {d})\n", .{(limits.Limits{}).max_variable_array_elements});
+    try writer.print("  --max-file-size-bytes <N>       Reject files larger than N bytes before parsing (default: no limit)\n", .{});
+    try writer.print("  --require-stable-file           Reject the PASS verdict if the open file's dev/inode/size/mtime/ctime change during validation\n", .{});
     try writer.print("  --max-memory-mb <N>             Maximum allocation quota in MiB (default: 128)\n", .{});
     try writer.print("  --max-work-budget <N>           Maximum logical work units budget (default: 10000000)\n", .{});
     try writer.print("  --help, -h                      Display this help message and exit\n", .{});

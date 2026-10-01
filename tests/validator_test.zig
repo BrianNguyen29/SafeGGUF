@@ -2434,3 +2434,206 @@ test "quota_allocator: resize shrink saturates instead of underflowing (P2-3)" {
     try std.testing.expectEqual(@as(u64, 0), quota.allocated_bytes);
     try std.testing.expectEqual(@as(u64, 32), quota.peak_bytes);
 }
+
+// ---------------------------------------------------------------------------
+// 10. File-size admission control and stable-file identity
+// ---------------------------------------------------------------------------
+
+test "limits: max_file_size_bytes boundary matrix (0, n-1, n, n+1, maxInt)" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+    const file_size: u64 = @intCast(gguf.len);
+    try std.testing.expect(file_size > 1);
+
+    // Admission is inclusive: size == limit passes, size == limit + 1 rejects.
+    const cases = [_]struct { limit: u64, admitted: bool }{
+        .{ .limit = 0, .admitted = false },
+        .{ .limit = file_size - 1, .admitted = false },
+        .{ .limit = file_size, .admitted = true },
+        .{ .limit = file_size + 1, .admitted = true },
+        .{ .limit = std.math.maxInt(u64), .admitted = true },
+    };
+
+    for (cases) |case| {
+        var val = safegguf.Validator.init(
+            std.testing.allocator,
+            limits.Limits{ .max_file_size_bytes = case.limit },
+            .gguf_spec,
+        );
+        const r = reader_mod.SliceReader.init(gguf).reader();
+        if (case.admitted) {
+            var doc = try val.validate(r);
+            val.deinitDocument(&doc);
+        } else {
+            try std.testing.expectError(error.FileTooLarge, val.validate(r));
+        }
+    }
+}
+
+/// Reader that fails the test if any byte is read: proves the admission
+/// rejection happens before the parse touches the stream.
+const NoReadReader = struct {
+    claimed_size: u64,
+
+    fn reader(self: *const NoReadReader) reader_mod.Reader {
+        return .{
+            .ptr = @constCast(@ptrCast(self)),
+            .vtable = &vtable,
+            .size = self.claimed_size,
+        };
+    }
+
+    const vtable = reader_mod.Reader.VTable{ .readBytes = readBytesImpl };
+
+    fn readBytesImpl(ctx: *anyopaque, offset: u64, dest: []u8) err.ParseError!void {
+        _ = ctx;
+        _ = offset;
+        _ = dest;
+        @panic("admission rejection must not read from the stream");
+    }
+};
+
+test "limits: oversize streams are rejected pre-parse with the admission stage" {
+    var no_read = NoReadReader{ .claimed_size = 4096 };
+    var budget = limits.WorkBudget.initWithLimits(1_000, 4096);
+    var parse_ctx = err.ParseContext{};
+    budget.ctx = &parse_ctx;
+
+    const policy = limits.Limits{ .max_file_size_bytes = 1024 };
+    try std.testing.expectError(
+        error.FileTooLarge,
+        parser.parseDocument(std.testing.allocator, no_read.reader(), .little, policy, .gguf_spec, &budget),
+    );
+    // The rejection is stamped with its own stage, not a parse stage.
+    try std.testing.expectEqualStrings("admission", parse_ctx.stage);
+}
+
+test "limits: max-uint file size is admitted only by an unlimited ceiling" {
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+
+    // Default policy is unlimited, so existing callers stay uncapped.
+    try std.testing.expectEqual(std.math.maxInt(u64), (limits.Limits{}).max_file_size_bytes);
+
+    var huge = HugeSizeReader{ .data = gguf, .claimed_size = std.math.maxInt(u64) };
+
+    {
+        // One below max-uint rejects the max-uint claim before any read.
+        var val = safegguf.Validator.init(
+            std.testing.allocator,
+            limits.Limits{ .max_file_size_bytes = std.math.maxInt(u64) - 1 },
+            .gguf_spec,
+        );
+        try std.testing.expectError(error.FileTooLarge, val.validate(huge.reader()));
+    }
+    {
+        // The default ceiling admits it: any failure, if one occurs, is not
+        // the admission check.
+        var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+        const res = val.validate(huge.reader());
+        if (res) |validated| {
+            var doc = validated;
+            val.deinitDocument(&doc);
+        } else |e| {
+            try std.testing.expect(e != error.FileTooLarge);
+        }
+    }
+}
+
+test "stability: FileIdentity detects size and timestamp changes and passes unchanged handles" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("identity.bin", .{ .read = true });
+    defer file.close();
+    try file.writeAll("stable-content");
+
+    const before = try reader_mod.FileIdentity.capture(file);
+
+    // Unchanged handle: equal snapshot and a passing verify.
+    try std.testing.expect(reader_mod.FileIdentity.eql(before, try reader_mod.FileIdentity.capture(file)));
+    try before.verifyUnchanged(file);
+
+    // In-place extension: size (and timestamps) move.
+    try file.seekFromEnd(0);
+    try file.writeAll("!");
+    const after_append = try reader_mod.FileIdentity.capture(file);
+    try std.testing.expectEqual(before.inode, after_append.inode);
+    try std.testing.expectEqual(before.size + 1, after_append.size);
+    try std.testing.expect(!reader_mod.FileIdentity.eql(before, after_append));
+    try std.testing.expectError(error.FileChanged, before.verifyUnchanged(file));
+
+    // Same-size rewrite scenario: only mtime/ctime move (inode and size stay).
+    try file.updateTimes(0, 0);
+    const after_times = try reader_mod.FileIdentity.capture(file);
+    try std.testing.expectEqual(after_append.size, after_times.size);
+    try std.testing.expectEqual(after_append.inode, after_times.inode);
+    try std.testing.expect(!reader_mod.FileIdentity.eql(after_append, after_times));
+    try std.testing.expectError(error.FileChanged, after_append.verifyUnchanged(file));
+
+    // A different inode (another file) is never equal to this snapshot.
+    const other = try tmp_dir.dir.createFile("identity_other.bin", .{ .read = true });
+    defer other.close();
+    try other.writeAll("stable-content");
+    const other_id = try reader_mod.FileIdentity.capture(other);
+    try std.testing.expect(other_id.inode != before.inode);
+    try std.testing.expect(!reader_mod.FileIdentity.eql(before, other_id));
+}
+
+/// Reader that appends to the backing file on its first read, simulating a
+/// concurrent writer inside the validation window; every read is then served
+/// from the original bytes.
+const MutateOnFirstReadReader = struct {
+    inner: reader_mod.Reader,
+    file: std.fs.File,
+    mutated: bool = false,
+
+    fn reader(self: *MutateOnFirstReadReader) reader_mod.Reader {
+        return .{
+            .ptr = @ptrCast(self),
+            .vtable = &vtable,
+            .size = self.inner.size,
+        };
+    }
+
+    const vtable = reader_mod.Reader.VTable{ .readBytes = readBytesImpl };
+
+    fn readBytesImpl(ctx: *anyopaque, offset: u64, dest: []u8) err.ParseError!void {
+        const self: *MutateOnFirstReadReader = @ptrCast(@alignCast(ctx));
+        if (!self.mutated) {
+            self.mutated = true;
+            self.file.seekFromEnd(0) catch return err.ParseError.IoError;
+            self.file.writeAll("mutation") catch return err.ParseError.IoError;
+        }
+        return self.inner.readBytes(offset, dest);
+    }
+};
+
+test "stability: mutation during validation is rejected by the post-parse identity check" {
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    const file = try tmp_dir.dir.createFile("mid_read.gguf", .{ .read = true });
+    defer file.close();
+
+    var buffer: [256]u8 = [_]u8{0} ** 256;
+    const gguf = try buildScalarTensorGguf(&buffer);
+    try file.writeAll(gguf);
+
+    // CLI sequence: snapshot -> validate -> re-verify the same handle.
+    const before = try reader_mod.FileIdentity.capture(file);
+
+    var buffered = reader_mod.BufferedReader.init(file, @intCast(gguf.len));
+    var mutating = MutateOnFirstReadReader{ .inner = buffered.reader(), .file = file };
+
+    var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+    var doc = try val.validate(mutating.reader());
+    val.deinitDocument(&doc);
+    try std.testing.expect(mutating.mutated);
+
+    try std.testing.expectError(error.FileChanged, before.verifyUnchanged(file));
+
+    // Control: an unchanged handle over the same bytes verifies clean.
+    const stable_before = try reader_mod.FileIdentity.capture(file);
+    try stable_before.verifyUnchanged(file);
+}

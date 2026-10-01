@@ -162,3 +162,59 @@ pub const BufferedReader = struct {
         @memcpy(dest, self.window_buf[0..dest.len]);
     }
 };
+
+/// Coarse identity/metadata snapshot of an open file handle, backing the
+/// optional stable-file check (`safegguf inspect --require-stable-file`):
+/// capture before validation and verify the same handle after it. Any change
+/// to device, inode, size, mtime or ctime is reported as `error.FileChanged`.
+///
+/// Scope and limits: this is a mutation-bounding check, not cryptographic
+/// immutability. It fstats the already-open handle (never re-opens by path),
+/// so it observes mutation of the exact inode being validated rather than
+/// replacement of the path; content rewritten in place with the original size
+/// and restored timestamps is indistinguishable and is not detected. A field
+/// a platform does not expose (no device id on Windows) stays at its neutral
+/// value on both sides of the comparison.
+pub const FileIdentity = struct {
+    /// Device identifier where the platform exposes one; 0 otherwise.
+    dev: u64 = 0,
+    inode: u64 = 0,
+    size: u64 = 0,
+    mtime_ns: i128 = 0,
+    ctime_ns: i128 = 0,
+
+    /// fstat snapshot of `file`. Windows has no `std.posix.fstat`, so the
+    /// portable `File.stat()` fields are used there instead (no device id).
+    pub fn capture(file: std.fs.File) error{FileStatFailed}!FileIdentity {
+        if (builtin.os.tag == .windows) {
+            const stat = file.stat() catch return error.FileStatFailed;
+            return .{
+                .inode = @intCast(stat.inode),
+                .size = stat.size,
+                .mtime_ns = stat.mtime,
+                .ctime_ns = stat.ctime,
+            };
+        }
+        const stat = std.posix.fstat(file.handle) catch return error.FileStatFailed;
+        const portable = std.fs.File.Stat.fromSystem(stat);
+        return .{
+            .dev = @intCast(stat.dev),
+            .inode = @intCast(portable.inode),
+            .size = portable.size,
+            .mtime_ns = portable.mtime,
+            .ctime_ns = portable.ctime,
+        };
+    }
+
+    pub fn eql(a: FileIdentity, b: FileIdentity) bool {
+        return a.dev == b.dev and a.inode == b.inode and a.size == b.size and
+            a.mtime_ns == b.mtime_ns and a.ctime_ns == b.ctime_ns;
+    }
+
+    /// Re-fstats `file` and returns `error.FileChanged` when any snapshot field
+    /// moved since capture; `error.FileStatFailed` when the re-stat fails.
+    pub fn verifyUnchanged(self: FileIdentity, file: std.fs.File) error{ FileStatFailed, FileChanged }!void {
+        const after = try capture(file);
+        if (!eql(self, after)) return error.FileChanged;
+    }
+};
