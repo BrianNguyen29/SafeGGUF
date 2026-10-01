@@ -113,7 +113,7 @@ finally:
 
 ## 4. Triển Khai Kubernetes Cloud-Native & Anti-TOCTOU Handoff
 
-Mẫu Pod Deployment trong Kubernetes áp dụng mô hình InitContainer 2 giai đoạn với chốt chặn mật mã Content-Hash Handoff (xem chi tiết tại [`deploy/k8s/safegguf-initcontainer.yaml`](../deploy/k8s/safegguf-initcontainer.yaml) và [`deploy/k8s/attestation_handoff.sh`](../deploy/k8s/attestation_handoff.sh)):
+Mẫu Pod Deployment trong Kubernetes áp dụng mô hình copy-once vào staging riêng tư: nguồn tải lên bất khả tín được sao chép đúng một lần, thẩm định và băm trên chính bản sao đó, rồi chuyển tên nguyên tử (atomic rename) vào CAS `validated/<sha256>`; container serving chỉ nạp theo digest và không mount nguồn tải lên (xem chi tiết tại [`deploy/k8s/safegguf-initcontainer.yaml`](../deploy/k8s/safegguf-initcontainer.yaml) và [`deploy/k8s/attestation_handoff.sh`](../deploy/k8s/attestation_handoff.sh)):
 
 ```yaml
 apiVersion: v1
@@ -122,20 +122,37 @@ metadata:
   name: llama-serving-pod
 spec:
   volumes:
-    - name: model-storage
+    # Nguồn tải lên bất khả tín: chỉ container copy-once mount read-only.
+    - name: unvalidated-source-storage
       persistentVolumeClaim:
         claimName: models-pvc
+    # Staging riêng tư + CAS; staging/ và validated/ cùng một filesystem nên
+    # publish vào validated/<sha256> là atomic rename.
+    - name: private-staging-storage
+      emptyDir:
+        sizeLimit: 16Gi
     - name: attestation-storage
       emptyDir:
         medium: Memory
   initContainers:
-    # Giai đoạn 1: Thẩm định cấu trúc và số học với SafeGGUF (Fail-closed exit 2)
+    # Giai đoạn 0: sao chép nguồn đúng một lần vào staging riêng tư.
+    - name: safegguf-staging-copy
+      image: busybox:1.36-musl
+      command: ["/bin/sh", "-c", "cp /models/model.gguf /private-stage/model.gguf"]
+      volumeMounts:
+        - name: unvalidated-source-storage
+          mountPath: /models
+          readOnly: true
+        - name: private-staging-storage
+          mountPath: /private-stage
+
+    # Giai đoạn 1: Thẩm định cấu trúc và số học trên bản sao staged (Fail-closed exit 2)
     - name: safegguf-validator
       image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
-      command: ["/usr/local/bin/safegguf", "inspect", "/models/model.gguf", "--profile", "llama-cpp", "--format", "json", "--endian", "auto"]
+      command: ["/usr/local/bin/safegguf", "inspect", "/private-stage/model.gguf", "--profile", "llama-cpp", "--format", "json", "--endian", "auto"]
       volumeMounts:
-        - name: model-storage
-          mountPath: /models
+        - name: private-staging-storage
+          mountPath: /private-stage
           readOnly: true
       securityContext:
         allowPrivilegeEscalation: false
@@ -143,14 +160,21 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
 
-    # Giai đoạn 2: Tạo attestation digest SHA-256 vào volume bộ nhớ tạm (CAS)
+    # Giai đoạn 2: Băm đúng các byte vừa thẩm định rồi rename vào CAS validated/<sha256>
     - name: safegguf-attestation-generator
       image: busybox:1.36-musl
-      command: ["/bin/sh", "-c", "sha256sum /models/model.gguf > /attestation/model.gguf.sha256"]
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -euo pipefail
+          DIGEST="$(sha256sum /private-stage/model.gguf | awk '{print $1}')"
+          mkdir -p /private-stage/validated
+          mv /private-stage/model.gguf "/private-stage/validated/$DIGEST"
+          printf '%s  %s\n' "$DIGEST" "$DIGEST" > /attestation/model.gguf.sha256
       volumeMounts:
-        - name: model-storage
-          mountPath: /models
-          readOnly: true
+        - name: private-staging-storage
+          mountPath: /private-stage
         - name: attestation-storage
           mountPath: /attestation
       securityContext:
@@ -160,7 +184,7 @@ spec:
         runAsUser: 65534
 
   containers:
-    # Tầng Inference Runtime: Đối soát attestation hash trước khi mmap trọng số
+    # Tầng Inference Runtime: nạp theo digest từ CAS bất biến, không bao giờ mount nguồn
     - name: llama-cpp-server
       image: ghcr.io/ggerganov/llama.cpp:server
       command:
@@ -168,18 +192,20 @@ spec:
         - -c
         - |
           set -euo pipefail
-          echo "[Inference Gate] Validating cryptographic attestation..."
+          DIGEST="$(awk '{print $1}' /attestation/model.gguf.sha256)"
+          cd /validated
           sha256sum -c /attestation/model.gguf.sha256
-          exec /server -m /models/model.gguf -c 4096 --host 0.0.0.0 --port 8080
+          exec /server -m "/validated/$DIGEST" -c 4096 --host 0.0.0.0 --port 8080
       volumeMounts:
-        - name: model-storage
-          mountPath: /models
+        - name: private-staging-storage
+          mountPath: /validated
+          subPath: validated
           readOnly: true
         - name: attestation-storage
           mountPath: /attestation
           readOnly: true
 ```
-> **Đặc tính Fail-Closed & Anti-TOCTOU**: Nếu tệp model bị lỗi hoặc độc hại, container `safegguf-validator` sẽ thoát với mã `exit 2`, ngăn chặn toàn bộ Pod khởi động. Nếu tệp model bị tráo đổi sau khi kiểm tra, bước `sha256sum -c` tại container serving sẽ phát hiện sai lệch và từ chối tải trọng số vào bộ nhớ.
+> **Đặc tính Fail-Closed & Anti-TOCTOU**: Nếu tệp model bị lỗi hoặc độc hại, container `safegguf-validator` sẽ thoát với mã `exit 2`, ngăn chặn toàn bộ Pod khởi động. Nguồn tải lên chỉ được đọc đúng một lần để đưa vào staging riêng tư; thẩm định, băm và serving đều thao tác trên bản sao/CAS nên không còn TOCTOU trên đường dẫn nguồn: digest `sha256` ghim chính xác các byte đã vượt thẩm định, và `sha256sum -c` tại container serving từ chối nếu byte trong CAS sai lệch trước khi mmap trọng số.
 
 ---
 
