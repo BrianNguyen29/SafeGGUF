@@ -819,6 +819,152 @@ test "metadata: reject key containing hyphens" {
     try safegguf.metadata.validateKey("blk_0_attn_q");
 }
 
+test "metadata: lenient key policy admits hyphens and uppercase, strict stays fail-closed" {
+    // Default policy (strict) is unchanged.
+    try std.testing.expectError(error.InvalidKeyFormat, safegguf.metadata.validateKeyWithPolicy("general.model-arch", .strict));
+    try std.testing.expectError(error.InvalidKeyFormat, safegguf.metadata.validateKeyWithPolicy("Model_Arch", .strict));
+
+    // Lenient relief admits [A-Z-] but keeps the segment/format invariants.
+    try safegguf.metadata.validateKeyWithPolicy("general.model-arch", .lenient);
+    try safegguf.metadata.validateKeyWithPolicy("Model_Arch", .lenient);
+    try safegguf.metadata.validateKeyWithPolicy("tokenizer.GGML.Tokens-2", .lenient);
+    try std.testing.expectError(error.InvalidKeyFormat, safegguf.metadata.validateKeyWithPolicy(".leading", .lenient));
+    try std.testing.expectError(error.InvalidKeyFormat, safegguf.metadata.validateKeyWithPolicy("trailing.", .lenient));
+    try std.testing.expectError(error.InvalidKeyFormat, safegguf.metadata.validateKeyWithPolicy("double..dot", .lenient));
+    try std.testing.expectError(error.InvalidKeyFormat, safegguf.metadata.validateKeyWithPolicy("bad space", .lenient));
+}
+
+test "parser: lenient key policy accepts hyphen/uppercase keys only when selected" {
+    var buffer: [128]u8 = [_]u8{0} ** 128;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 0, .little); // tensor_count
+    try writer.writeInt(u64, 1, .little); // metadata_kv_count
+    const key = "general.model-arch";
+    try writer.writeInt(u64, key.len, .little);
+    try writer.writeAll(key);
+    try writer.writeInt(u32, 4, .little); // MetadataType.uint32
+    try writer.writeInt(u32, 32, .little);
+
+    // GGUF v3 gguf-spec zero-tensor files must carry alignment padding to the
+    // tensor-data base.
+    var pad_len: usize = (32 - (fbs.getWritten().len % 32)) % 32;
+    while (pad_len > 0) : (pad_len -= 1) try writer.writeByte(0);
+
+    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    var budget_strict = limits.WorkBudget.init(1000);
+    try std.testing.expectError(
+        error.InvalidKeyFormat,
+        parser.parseDocument(std.testing.allocator, slice_reader.reader(), .little, limits.Limits{}, .gguf_spec, &budget_strict),
+    );
+
+    var lenient = limits.Limits{};
+    lenient.key_policy = .lenient;
+    var budget_lenient = limits.WorkBudget.init(1000);
+    var doc = try parser.parseDocument(std.testing.allocator, slice_reader.reader(), .little, lenient, .gguf_spec, &budget_lenient);
+    doc.deinit(std.testing.allocator);
+}
+
+test "parser: max_string_bytes override raises the metadata string cap (relief only)" {
+    var buffer: [2048]u8 = [_]u8{0} ** 2048;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 0, .little); // tensor_count
+    try writer.writeInt(u64, 1, .little); // metadata_kv_count
+    const key = "big.string";
+    try writer.writeInt(u64, key.len, .little);
+    try writer.writeAll(key);
+    try writer.writeInt(u32, 8, .little); // MetadataType.string
+    const value_len: usize = 1024;
+    try writer.writeInt(u64, value_len, .little);
+    try writer.writeAll(&([_]u8{'a'} ** value_len));
+
+    var pad_len: usize = (32 - (fbs.getWritten().len % 32)) % 32;
+    while (pad_len > 0) : (pad_len -= 1) try writer.writeByte(0);
+
+    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    var tight = limits.Limits{};
+    tight.max_string_bytes = 512;
+    var budget_tight = limits.WorkBudget.init(1000);
+    try std.testing.expectError(
+        error.ResourceLimitExceeded,
+        parser.parseDocument(std.testing.allocator, slice_reader.reader(), .little, tight, .gguf_spec, &budget_tight),
+    );
+
+    var raised = limits.Limits{};
+    raised.max_string_bytes = 4096;
+    var budget_raised = limits.WorkBudget.init(1000);
+    var doc = try parser.parseDocument(std.testing.allocator, slice_reader.reader(), .little, raised, .gguf_spec, &budget_raised);
+    doc.deinit(std.testing.allocator);
+}
+
+test "parser: llama-cpp dimension overflow records SGGUF_E_DIMENSION_OVERFLOW detail" {
+    var buffer: [128]u8 = [_]u8{0} ** 128;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little); // tensor_count
+    try writer.writeInt(u64, 0, .little); // metadata_kv_count
+    const name = "ovf_i64";
+    try writer.writeInt(u64, name.len, .little);
+    try writer.writeAll(name);
+    try writer.writeInt(u32, 1, .little); // n_dims
+    try writer.writeInt(u64, 0x8000000000000000, .little); // > INT64_MAX
+    try writer.writeInt(u32, 0, .little); // F32
+    try writer.writeInt(u64, 0, .little); // offset
+
+    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    var budget = limits.WorkBudget.init(1000);
+    var ctx = err.ParseContext{};
+    budget.ctx = &ctx;
+
+    try std.testing.expectError(
+        error.CompatibilityViolation,
+        parser.parseDocument(std.testing.allocator, slice_reader.reader(), .little, limits.Limits{}, .llama_cpp, &budget),
+    );
+    // Legacy code stays CompatibilityViolation; the additive canonical detail
+    // names the specific cause.
+    try std.testing.expect(ctx.canonical_detail != null);
+    try std.testing.expectEqualStrings(err.public_codes.dimension_overflow, ctx.canonical_detail.?);
+}
+
+test "validator: true checked-arithmetic wrap records no dimension-overflow detail" {
+    var buffer: [128]u8 = [_]u8{0} ** 128;
+    var fbs = std.io.fixedBufferStream(&buffer);
+    const writer = fbs.writer();
+
+    try writer.writeAll("GGUF");
+    try writer.writeInt(u32, 3, .little);
+    try writer.writeInt(u64, 1, .little); // tensor_count
+    try writer.writeInt(u64, 0, .little); // metadata_kv_count
+    const name = "ovf_prod";
+    try writer.writeInt(u64, name.len, .little);
+    try writer.writeAll(name);
+    try writer.writeInt(u32, 2, .little); // n_dims
+    try writer.writeInt(u64, 0xFFFFFFFF, .little);
+    try writer.writeInt(u64, 0xFFFFFFFF, .little); // u64 product wrap
+    try writer.writeInt(u32, 0, .little); // F32
+    try writer.writeInt(u64, 0, .little); // offset
+
+    const slice_reader = reader_mod.SliceReader.init(fbs.getWritten());
+    var val = safegguf.Validator.init(std.testing.allocator, limits.Limits{}, .gguf_spec);
+    var ctx = err.ParseContext{};
+    val.work_budget.ctx = &ctx;
+
+    try std.testing.expectError(error.ArithmeticOverflow, val.validate(slice_reader.reader()));
+    // A true checked-arithmetic wrap is not the dimension guard: no additive
+    // detail is recorded, so the canonical code stays SGGUF_E_ARITHMETIC_OVERFLOW.
+    try std.testing.expect(ctx.canonical_detail == null);
+}
+
 test "parser: reject zero dimension in tensor" {
     var buffer: [128]u8 = [_]u8{0} ** 128;
     var fbs = std.io.fixedBufferStream(&buffer);

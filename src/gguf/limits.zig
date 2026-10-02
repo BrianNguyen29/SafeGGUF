@@ -8,10 +8,24 @@ const err = @import("error.zig");
 /// differs on either toolchain.
 const VtableAlignment = if (@hasDecl(std.mem, "Alignment")) std.mem.Alignment else u8;
 
+/// Metadata key grammar policy. `.strict` is the default GGUF key grammar
+/// (non-empty lower_snake_case segments); `.lenient` additionally admits
+/// hyphen and uppercase ASCII letters. Relief is opt-in only: the default is
+/// unchanged and remains fail-closed.
+pub const KeyPolicy = enum {
+    strict,
+    lenient,
+};
+
 pub const Limits = struct {
     max_tensors: u64 = 1_000_000,
     max_metadata_entries: u64 = 1_000_000,
+    /// Byte cap for metadata keys and string values; raised only by explicit
+    /// relief (`--max-string-bytes`, `SAFEGGUF_MAX_STRING_BYTES`, or the
+    /// appended C ABI / Python option).
     max_string_bytes: u64 = 65536,
+    /// Metadata key grammar; `.strict` is the default (see `KeyPolicy`).
+    key_policy: KeyPolicy = .strict,
     max_tensor_name_bytes: u64 = 64,
     max_dimensions: u32 = 4,
     max_array_elements: u64 = 10_000_000,
@@ -75,6 +89,25 @@ pub const Limits = struct {
             if (std.fmt.parseInt(u64, val, 10)) |v| {
                 lim.max_scanned_bytes = v;
             } else |_| {}
+        } else |_| {}
+
+        if (std.process.getEnvVarOwned(alloc, "SAFEGGUF_MAX_STRING_BYTES")) |val| {
+            defer alloc.free(val);
+            if (std.fmt.parseInt(u64, val, 10)) |v| {
+                if (v > 0) {
+                    lim.max_string_bytes = v;
+                }
+            } else |_| {}
+        } else |_| {}
+
+        // Invalid values are ignored, keeping the strict default (fail-closed).
+        if (std.process.getEnvVarOwned(alloc, "SAFEGGUF_KEY_POLICY")) |val| {
+            defer alloc.free(val);
+            if (std.mem.eql(u8, val, "lenient")) {
+                lim.key_policy = .lenient;
+            } else if (std.mem.eql(u8, val, "strict")) {
+                lim.key_policy = .strict;
+            }
         } else |_| {}
 
         return lim;

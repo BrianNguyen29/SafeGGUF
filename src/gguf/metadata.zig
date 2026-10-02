@@ -26,11 +26,18 @@ pub const ArrayValue = struct {
     count: u64,
 };
 
-/// Validates strict GGUF key specification:
-/// Keys consist of segments separated by a single dot ('.').
-/// Each segment must be strictly non-empty lower_snake_case: [a-z0-9_]+.
-/// Hyphens ('-') and uppercase letters are rejected.
+/// Validates a metadata key under the strict GGUF key grammar (see
+/// `validateKeyWithPolicy`). Retained as the default-policy entry point.
 pub fn validateKey(key: []const u8) err.ParseError!void {
+    return validateKeyWithPolicy(key, .strict);
+}
+
+/// Validates a GGUF key under `policy`:
+/// Keys consist of segments separated by a single dot ('.').
+/// Each segment must be strictly non-empty; segment characters are
+/// [a-z0-9_]+ under `.strict` and additionally [A-Z-] under `.lenient`.
+/// The key length bound (<= 65535) is invariant across policies.
+pub fn validateKeyWithPolicy(key: []const u8, policy: limits.KeyPolicy) err.ParseError!void {
     if (key.len == 0 or key.len > 65535) {
         return err.ParseError.InvalidStringLength;
     }
@@ -44,7 +51,9 @@ pub fn validateKey(key: []const u8) err.ParseError!void {
         if (c == '.') {
             if (prev_dot) return err.ParseError.InvalidKeyFormat;
             prev_dot = true;
-        } else if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_') {
+        } else if ((c >= 'a' and c <= 'z') or (c >= '0' and c <= '9') or c == '_' or
+            (policy == .lenient and ((c >= 'A' and c <= 'Z') or c == '-')))
+        {
             prev_dot = false;
         } else {
             return err.ParseError.InvalidKeyFormat;

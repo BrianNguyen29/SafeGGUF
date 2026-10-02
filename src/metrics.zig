@@ -18,9 +18,11 @@ const Atomic = std.atomic.Value(u64);
 const parse_error_variants = @typeInfo(err.ParseError).ErrorSet.?;
 
 /// Upper bound on reject-label slots: one per `ParseError` variant, one per
-/// legacy public-code mapping, plus the UNKNOWN bucket. Duplicate canonical
-/// codes (legacy aliases of a `ParseError` code) are collapsed at comptime.
-const max_reject_labels = parse_error_variants.len + err.legacy_public_codes.len + 1;
+/// legacy public-code mapping, one additive context-dependent detail
+/// (`SGGUF_E_DIMENSION_OVERFLOW`), plus the UNKNOWN bucket. Duplicate
+/// canonical codes (legacy aliases of a `ParseError` code) are collapsed at
+/// comptime.
+const max_reject_labels = parse_error_variants.len + err.legacy_public_codes.len + 2;
 
 fn hasLabel(labels: []const []const u8, label: []const u8) bool {
     for (labels) |existing| {
@@ -48,6 +50,12 @@ fn fillRejectLabels(out: *[max_reject_labels][]const u8) usize {
             out[n] = entry.canonical;
             n += 1;
         }
+    }
+    // Context-dependent canonical detail (not reachable from a `ParseError`
+    // alone); recorded when the raise site reports the specific cause.
+    if (!hasLabel(out[0..n], err.public_codes.dimension_overflow)) {
+        out[n] = err.public_codes.dimension_overflow;
+        n += 1;
     }
     if (!hasLabel(out[0..n], err.public_codes.unknown)) {
         out[n] = err.public_codes.unknown;

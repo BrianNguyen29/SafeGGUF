@@ -169,7 +169,7 @@ pub fn parseDocument(
         // Snapshot the key into the context: key_buf may be freed on unwind.
         if (work_budget.ctx) |c| c.setKey(key_buf);
 
-        try metadata_mod.validateKey(key_buf);
+        try metadata_mod.validateKeyWithPolicy(key_buf, limit.key_policy);
 
         if (seen_keys.contains(key_buf)) {
             return err.ParseError.DuplicateMetadataKey;
@@ -273,7 +273,7 @@ pub fn parseDocument(
             dims[d_idx] = try reader.readInt(u64, cur, endian);
             cur += 8;
         }
-        try arithmetic.validateDimensions(dims, profile);
+        try arithmetic.validateDimensions(dims, profile, work_budget.ctx);
 
         const tensor_type = try reader.readInt(u32, cur, endian);
         cur += 4;

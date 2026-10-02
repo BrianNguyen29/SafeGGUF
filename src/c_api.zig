@@ -5,6 +5,7 @@ const safegguf = @import("safegguf");
 const types = safegguf.types;
 const reader_mod = safegguf.reader;
 const limits = safegguf.limits;
+const err_types = safegguf.error_types;
 const Validator = safegguf.Validator;
 
 const version_z: [:0]const u8 = std.fmt.comptimePrint("{s}", .{build_options.version});
@@ -28,6 +29,31 @@ pub export fn safegguf_canonical_error_code(error_code: ?[*:0]const u8) [*:0]con
     return canonical.ptr;
 }
 
+/// Resolves a `safegguf_result_t` to its canonical `SGGUF_E_*` code,
+/// including the context-dependent detail the compatibility `error_code`
+/// cannot carry: a rejection raised by the llama.cpp dimension-product guard
+/// keeps the legacy `error_code` "CompatibilityViolation" (byte-for-byte)
+/// while this accessor returns SGGUF_E_DIMENSION_OVERFLOW, distinguishing it
+/// from a true checked-arithmetic wrap. For every other result this is
+/// equivalent to `safegguf_canonical_error_code(result->error_code)`.
+/// Canonical codes already in the namespace are resolved to their static
+/// string; NULL and unmapped results return SGGUF_E_UNKNOWN. The returned
+/// pointer is a static string that must not be freed.
+pub export fn safegguf_result_canonical_error_code(result: ?*const Result) [*:0]const u8 {
+    const unknown = err_types.public_codes.unknown;
+    const res = result orelse return unknown.ptr;
+    const code = std.mem.sliceTo(&res.error_code, 0);
+    const message = std.mem.sliceTo(&res.message, 0);
+    if (std.mem.eql(u8, code, "CompatibilityViolation") and
+        std.mem.eql(u8, message, err_types.dimension_overflow_message))
+    {
+        return err_types.public_codes.dimension_overflow.ptr;
+    }
+    if (err_types.canonicalCodeRef(code)) |canonical| return canonical.ptr;
+    const canonical = err_types.canonicalFromLegacy(code) orelse return unknown.ptr;
+    return canonical.ptr;
+}
+
 /// Options layout as first shipped in v1 (48 bytes on LP64): the unchanged
 /// prefix of the current `OptionsV1`. It exists only as the `struct_size`
 /// contract old callers still satisfy; it is never dereferenced as a whole.
@@ -41,14 +67,31 @@ pub const OptionsV1Legacy = extern struct {
     reserved: ?*anyopaque,
 };
 
-/// Current v1 options layout: the v1.0 prefix plus appended input-size and
-/// stability controls. Appending fields keeps the ABI backward compatible:
-/// callers pass the `struct_size` of the layout they were compiled against,
-/// access to the appended fields is gated on that size, and a v1.0-size
-/// (legacy) caller keeps the old defaults (unlimited input, stability off).
-/// The caller owns the struct and must keep it, and any `reserved` pointer it
-/// contains, valid only for the duration of the call; the library neither
-/// retains nor frees it. Calls are independent and thread-safe.
+/// v1.1 options layout: the v1.0 prefix plus appended input-size and
+/// stability controls. Retained as an accepted `struct_size` so callers
+/// compiled against the v1.1 layout keep their contract; it is never
+/// dereferenced as a whole.
+pub const OptionsV1_1 = extern struct {
+    struct_size: u32,
+    profile: c_int,
+    endian: c_int,
+    max_alloc_bytes: u64,
+    max_work_units: u64,
+    max_scanned_bytes: u64,
+    reserved: ?*anyopaque,
+    max_file_size_bytes: u64,
+    require_stable_file: u32,
+};
+
+/// Current v1.2 options layout: the v1.1 fields plus appended metadata
+/// string-cap and key-policy relief controls. Appending fields keeps the ABI
+/// backward compatible: callers pass the `struct_size` of the layout they were
+/// compiled against, access to the appended fields is gated on that size, and
+/// a legacy caller keeps the old defaults (unlimited input, stability off,
+/// default string cap, strict key grammar). The caller owns the struct and
+/// must keep it, and any `reserved` pointer it contains, valid only for the
+/// duration of the call; the library neither retains nor frees it. Calls are
+/// independent and thread-safe.
 pub const OptionsV1 = extern struct {
     struct_size: u32,
     profile: c_int,
@@ -65,6 +108,13 @@ pub const OptionsV1 = extern struct {
     /// file's identity (device/inode/size/mtime/ctime) to be unchanged across
     /// validation, otherwise REJECT (2) with E_FileChangedDuringValidation.
     require_stable_file: u32,
+    /// Appended (v1.2): metadata key/string byte cap. 0 = use the env/default
+    /// (`Limits.max_string_bytes`, 65536), preserving prior behavior for
+    /// callers that zero the field.
+    max_string_bytes: u64,
+    /// Appended (v1.2): metadata key grammar policy. 0 = use the env/default
+    /// (strict), 1 = strict, 2 = lenient.
+    key_policy: u32,
 };
 
 pub const Result = extern struct {
@@ -101,10 +151,14 @@ fn populateResult(
 
 fn validateOptions(options: ?*const OptionsV1, out_result: ?*Result) ?c_int {
     if (options) |opts| {
-        // struct_size gating: accept the v1.0 (legacy) layout as well as the
-        // current one. Unknown sizes stay fail-closed.
+        // struct_size gating: accept every shipped layout (v1.0, v1.1, and
+        // the current v1.2) so callers compiled against an older header stay
+        // valid. Unknown sizes stay fail-closed.
         const struct_size = opts.struct_size;
-        if (struct_size != @sizeOf(OptionsV1Legacy) and struct_size != @sizeOf(OptionsV1)) {
+        if (struct_size != @sizeOf(OptionsV1Legacy) and
+            struct_size != @sizeOf(OptionsV1_1) and
+            struct_size != @sizeOf(OptionsV1))
+        {
             populateResult(out_result, 64, "E_USAGE_INVALID_OPTIONS", "usage", "options", "Invalid struct_size in safegguf_options_v1_t");
             return 64;
         }
@@ -122,10 +176,16 @@ fn validateOptions(options: ?*const OptionsV1, out_result: ?*Result) ?c_int {
         }
         // Appended fields are readable only when struct_size covers them; a
         // legacy caller has no such storage (validated above, so this is
-        // exactly `struct_size == @sizeOf(OptionsV1)` today).
-        if (hasAppendedControls(opts)) {
+        // exactly one of the known shipped sizes today).
+        if (hasV11Controls(opts)) {
             if (opts.require_stable_file > 1) {
                 populateResult(out_result, 64, "E_USAGE_INVALID_OPTIONS", "usage", "options", "Invalid require_stable_file: must be 0 (off) or 1 (require stable file)");
+                return 64;
+            }
+        }
+        if (hasV12Controls(opts)) {
+            if (opts.key_policy > 2) {
+                populateResult(out_result, 64, "E_USAGE_INVALID_OPTIONS", "usage", "options", "Invalid key_policy: must be 0 (use default), 1 (strict), or 2 (lenient)");
                 return 64;
             }
         }
@@ -133,10 +193,17 @@ fn validateOptions(options: ?*const OptionsV1, out_result: ?*Result) ?c_int {
     return null;
 }
 
-/// True when `opts.struct_size` covers the fields appended after the v1.0
-/// prefix. All other sizes are rejected by `validateOptions` first, so this
-/// only distinguishes legacy callers from current-layout callers.
-fn hasAppendedControls(opts: *const OptionsV1) bool {
+/// True when `opts.struct_size` covers the fields appended in v1.1. All other
+/// sizes are rejected by `validateOptions` first, so this only distinguishes
+/// legacy callers from callers that pass a v1.1-or-newer layout.
+fn hasV11Controls(opts: *const OptionsV1) bool {
+    return opts.struct_size >= @sizeOf(OptionsV1_1);
+}
+
+/// True when `opts.struct_size` covers the fields appended in v1.2. Reads of
+/// `max_string_bytes` / `key_policy` must stay gated on this: a v1.1 caller's
+/// struct ends before them.
+fn hasV12Controls(opts: *const OptionsV1) bool {
     return opts.struct_size >= @sizeOf(OptionsV1);
 }
 
@@ -172,11 +239,21 @@ fn validateInternal(
         if (opts.max_alloc_bytes > 0) lim.max_total_alloc_bytes = opts.max_alloc_bytes;
         if (opts.max_work_units > 0) lim.max_work_units = opts.max_work_units;
         if (opts.max_scanned_bytes > 0) lim.max_scanned_bytes = opts.max_scanned_bytes;
-        if (hasAppendedControls(opts)) {
+        if (hasV11Controls(opts)) {
             // 0 = use the default (unlimited), matching Limits' default and
             // preserving v1.0 behavior for callers that zero the field.
             if (opts.max_file_size_bytes > 0) lim.max_file_size_bytes = opts.max_file_size_bytes;
             require_stable_file = opts.require_stable_file != 0;
+        }
+        if (hasV12Controls(opts)) {
+            // 0 = use the env/default (string cap 65536, strict key grammar),
+            // preserving behavior for callers that zero the appended fields.
+            if (opts.max_string_bytes > 0) lim.max_string_bytes = opts.max_string_bytes;
+            switch (opts.key_policy) {
+                1 => lim.key_policy = .strict,
+                2 => lim.key_policy = .lenient,
+                else => {},
+            }
         }
     }
 
@@ -209,6 +286,13 @@ fn validateInternal(
     var val = Validator.init(gpa.allocator(), lim, profile);
     val.endian = endian;
 
+    // Diagnostics channel: parse/structural raise sites snapshot their
+    // position and any additive canonical detail (see
+    // `error_types.public_codes.dimension_overflow`) into parse_ctx so a
+    // rejection can be reported with full context, mirroring the CLI.
+    var parse_ctx = err_types.ParseContext{};
+    val.work_budget.ctx = &parse_ctx;
+
     var doc = val.validate(r) catch |e| {
         const quota_hit = (e == error.OutOfMemory and val.quota_alloc.isQuotaExceeded());
         const exit_code: c_int = switch (e) {
@@ -225,7 +309,15 @@ fn validateInternal(
             "E_FileTooLarge"
         else
             @errorName(e);
-        const msg = if (quota_hit) "Configured memory allocation quota exceeded" else safegguf.error_types.messageOf(e);
+        // The legacy error_code stays byte-for-byte; the context-dependent
+        // canonical detail is carried out-of-band by the result message and
+        // resolved by safegguf_result_canonical_error_code().
+        const msg = if (parse_ctx.canonical_detail != null)
+            err_types.dimension_overflow_message
+        else if (quota_hit)
+            "Configured memory allocation quota exceeded"
+        else
+            safegguf.error_types.messageOf(e);
         populateResult(
             out_result,
             exit_code,
