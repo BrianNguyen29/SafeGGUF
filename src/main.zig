@@ -70,9 +70,11 @@ fn run() anyerror!void {
     }
 
     var endian: std.builtin.Endian = .little;
-    var auto_endian: bool = false;
+    var auto_endian: bool = true;
     var format: OutputFormat = .text;
-    var profile: types.Profile = .gguf_spec;
+    // Unified default across surfaces: the CLI joins the C ABI and Python
+    // bindings (llama-cpp + auto endianness). `--profile` / `--endian` opt out.
+    var profile: types.Profile = .llama_cpp;
     var limit = limits.Limits.initFromEnv();
     var require_stable_file: bool = false;
     var emit_metrics: bool = false;
@@ -92,8 +94,10 @@ fn run() anyerror!void {
             };
             if (std.mem.eql(u8, val_arg, "big")) {
                 endian = .big;
+                auto_endian = false;
             } else if (std.mem.eql(u8, val_arg, "little")) {
                 endian = .little;
+                auto_endian = false;
             } else if (std.mem.eql(u8, val_arg, "auto")) {
                 auto_endian = true;
             } else {
@@ -189,6 +193,33 @@ fn run() anyerror!void {
                 std.process.exit(64);
             }
             limit.max_file_size_bytes = parsed;
+        } else if (std.mem.eql(u8, arg, "--max-string-bytes")) {
+            const val_arg = args.next() orelse {
+                try stderr.print("Error: --max-string-bytes requires a positive integer N\n", .{});
+                std.process.exit(64);
+            };
+            const parsed = std.fmt.parseInt(u64, val_arg, 10) catch {
+                try stderr.print("Error: invalid --max-string-bytes value '{s}'\n", .{val_arg});
+                std.process.exit(64);
+            };
+            if (parsed == 0) {
+                try stderr.print("Error: --max-string-bytes must be greater than 0\n", .{});
+                std.process.exit(64);
+            }
+            limit.max_string_bytes = parsed;
+        } else if (std.mem.eql(u8, arg, "--key-policy")) {
+            const val_arg = args.next() orelse {
+                try stderr.print("Error: --key-policy requires 'strict' or 'lenient'\n", .{});
+                std.process.exit(64);
+            };
+            if (std.mem.eql(u8, val_arg, "strict")) {
+                limit.key_policy = .strict;
+            } else if (std.mem.eql(u8, val_arg, "lenient")) {
+                limit.key_policy = .lenient;
+            } else {
+                try stderr.print("Error: invalid key-policy value '{s}'\n", .{val_arg});
+                std.process.exit(64);
+            }
         } else if (std.mem.eql(u8, arg, "--require-stable-file")) {
             require_stable_file = true;
         } else if (std.mem.eql(u8, arg, "--emit-metrics")) {
@@ -371,10 +402,12 @@ fn run() anyerror!void {
 
         // Rejection code for observability: same legacy spelling the JSON/text
         // finding carries (`E_<ZigName>`); the bounded metric label is derived
-        // from it by the metrics sink.
+        // from it by the metrics sink, except when the raise site recorded an
+        // additive canonical detail (which then becomes the metric label).
         var code_buf: [64]u8 = undefined;
         const legacy_code = std.fmt.bufPrint(&code_buf, "E_{s}", .{@errorName(e)}) catch @errorName(e);
         const stage = if (parse_ctx.stage.len > 0) parse_ctx.stage else "validator";
+        obs.reject_detail = parse_ctx.canonical_detail;
         try emitRejection(profile_str, target_field_name, e, &parse_ctx, format, stdout, stderr);
         obs.finish(2, .reject, legacy_code, stage);
     };
@@ -473,13 +506,20 @@ const RunObservability = struct {
     request_id_hex: [64]u8 = undefined,
     tenant_hash_buf: [log_mod.tenant_hash_hex_len]u8 = undefined,
     digest_buf: [64]u8 = undefined,
+    /// Additive canonical detail recorded by the raise site for the current
+    /// rejection; used as the bounded metric label in place of the legacy
+    /// code when present. The structured log keeps the legacy `error_code`.
+    reject_detail: ?[:0]const u8 = null,
 
     /// Records the verdict, validation duration, and run budgets, then renders
     /// the requested JSON documents on stderr.
     fn conclude(self: *RunObservability, verdict: metrics_mod.Verdict, error_code: []const u8, stage: []const u8) void {
         const now = std.time.nanoTimestamp();
         self.metrics.recordVerdict(verdict);
-        if (verdict == .reject and error_code.len > 0) self.metrics.recordRejectCode(error_code);
+        if (verdict == .reject) {
+            const metric_code = self.reject_detail orelse error_code;
+            if (metric_code.len > 0) self.metrics.recordRejectCode(metric_code);
+        }
         if (self.validation_start_ns != 0 and now > self.validation_start_ns) {
             self.metrics.recordValidationNanos(@intCast(now - self.validation_start_ns));
         }
@@ -589,7 +629,7 @@ fn emitRejection(
     const code = std.fmt.bufPrint(&code_buf, "E_{s}", .{name}) catch name;
     const finding = err_types.Finding{
         .code = code,
-        .message = err_types.messageOf(e),
+        .message = if (parse_ctx.canonical_detail != null) err_types.dimension_overflow_message else err_types.messageOf(e),
         .severity = .reject,
         .stage = if (parse_ctx.stage.len > 0) parse_ctx.stage else "validator",
         .tensor = if (parse_ctx.name_len > 0) parse_ctx.tensorName() else null,
@@ -599,6 +639,7 @@ fn emitRejection(
         .category = err_types.categoryOf(e),
         .key = if (parse_ctx.key_len > 0) parse_ctx.key() else null,
         .key_truncated = parse_ctx.key_truncated,
+        .canonical_detail = parse_ctx.canonical_detail,
     };
     switch (format) {
         .json => try writeRejectionJson(stdout_writer, profile_str, target_field_name, name, &finding),
@@ -607,7 +648,10 @@ fn emitRejection(
 }
 
 fn writeRejectionJson(w: anytype, profile_str: []const u8, target_field_name: []const u8, name: []const u8, f: *const err_types.Finding) !void {
-    const canonical = err_types.canonicalFromLegacy(f.code) orelse err_types.public_codes.unknown;
+    // Additive canonical detail wins over the generic legacy mapping: the
+    // legacy `error_code` bytes stay unchanged while `canonical_error_code`
+    // names the specific cause (e.g. SGGUF_E_DIMENSION_OVERFLOW).
+    const canonical = f.canonical_detail orelse err_types.canonicalFromLegacy(f.code) orelse err_types.public_codes.unknown;
     try w.print("{{\"schema_version\":{d},\"status\":\"REJECT\",\"profile\":\"{s}\",\"{s}\":{{\"project\":\"ggml\",\"version\":\"{s}\",\"commit\":\"{s}\"}},\"error\":\"{s}\",\"error_code\":\"{s}\",\"canonical_error_code\":\"{s}\",\"category\":\"{s}\",\"stage\":\"{s}\",\"message\":", .{
         safegguf.json_schema_version, profile_str, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, name, f.code, canonical, @tagName(f.category.?), f.stage,
     });
@@ -738,13 +782,15 @@ fn printUsage(writer: anytype) !void {
     try writer.print("SafeGGUF v{s} - Memory-Safe GGUF v3 Structural & Arithmetic Validator\n", .{build_info.version});
     try writer.print("Usage: safegguf inspect <path_to_model.gguf> [options]\n", .{});
     try writer.print("Options:\n", .{});
-    try writer.print("  --endian <little|big|auto>      Byte order (default: little)\n", .{});
+    try writer.print("  --endian <little|big|auto>      Byte order (default: auto)\n", .{});
     try writer.print("  --format <text|json>            Output format (default: text)\n", .{});
-    try writer.print("  --profile <gguf-spec|llama-cpp> Validation profile (default: gguf-spec):\n", .{});
+    try writer.print("  --profile <gguf-spec|llama-cpp> Validation profile (default: llama-cpp):\n", .{});
     try writer.print("                                    gguf-spec: resource-bounded GGUF v3 structural safe subset\n", .{});
     try writer.print("                                    llama-cpp: ggml 0.23.0 safe pre-admission subset\n", .{});
     try writer.print("  --max-variable-array-elements <N> String/nested-array element sanity cap (default: {d})\n", .{(limits.Limits{}).max_variable_array_elements});
     try writer.print("  --max-file-size-bytes <N>       Reject files larger than N bytes before parsing (default: no limit)\n", .{});
+    try writer.print("  --max-string-bytes <N>          Metadata key/string byte cap; relief flag (default: {d})\n", .{(limits.Limits{}).max_string_bytes});
+    try writer.print("  --key-policy <strict|lenient>   Metadata key grammar; lenient admits '-' and uppercase (default: strict)\n", .{});
     try writer.print("  --require-stable-file           Reject the PASS verdict if the open file's dev/inode/size/mtime/ctime change during validation\n", .{});
     try writer.print("  --max-memory-mb <N>             Maximum allocation quota in MiB (default: 128)\n", .{});
     try writer.print("  --max-work-budget <N>           Maximum logical work units budget (default: 10000000)\n", .{});

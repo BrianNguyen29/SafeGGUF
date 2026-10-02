@@ -31,16 +31,24 @@ def test_positive():
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     assert "Result: PASS" in stdout, f"Missing PASS: {stdout}"
 
-    # 2. Valid file JSON (gguf-spec profile emits type_layout_source)
+    # 2. Valid file JSON (default profile: llama-cpp emits compatibility_target)
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "valid.gguf"), "--format", "json")
     assert rc == 0, f"Expected 0, got {rc}: {stderr}"
     data = json.loads(stdout)
     assert data["status"] == "PASS"
-    assert data["profile"] == "gguf-spec"
-    assert "type_layout_source" in data
-    assert data["type_layout_source"] == GGML_PROVENANCE
+    assert data["profile"] == "llama-cpp"
+    assert "compatibility_target" in data
+    assert data["compatibility_target"] == GGML_PROVENANCE
     assert data["checks"]["structural"] == "PASS"
     assert data["checks"]["arithmetic"] == "PASS"
+
+    # 2b. Valid file JSON under gguf-spec profile (emits type_layout_source)
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "valid.gguf"), "--profile", "gguf-spec", "--format", "json")
+    assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+    data_spec = json.loads(stdout)
+    assert data_spec["status"] == "PASS"
+    assert data_spec["profile"] == "gguf-spec"
+    assert data_spec["type_layout_source"] == GGML_PROVENANCE
 
     # 3. Valid file JSON under llama-cpp profile (emits compatibility_target)
     rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "valid.gguf"), "--profile", "llama-cpp", "--format", "json")
@@ -125,10 +133,10 @@ def test_negative_validation():
         (["inspect", os.path.join(FIXTURES, "name_64.gguf"), "--profile", "llama-cpp"], "E_TensorNameTooLong"),
         # Version 2 under gguf-spec
         (["inspect", os.path.join(FIXTURES, "version_2.gguf"), "--profile", "gguf-spec"], "E_UnsupportedVersion"),
-        # Malformed files
-        (["inspect", os.path.join(FIXTURES, "overflow.gguf")], "E_ArithmeticOverflow"),
-        (["inspect", os.path.join(FIXTURES, "out_of_bounds.gguf")], "E_TensorOutOfBounds"),
-        (["inspect", os.path.join(FIXTURES, "overlap.gguf")], "E_TensorOverlap"),
+        # Malformed files (default profile is llama-cpp; contiguity checks run first)
+        (["inspect", os.path.join(FIXTURES, "overflow.gguf")], "E_CompatibilityViolation"),
+        (["inspect", os.path.join(FIXTURES, "out_of_bounds.gguf")], "E_NonContiguousTensorOffset"),
+        (["inspect", os.path.join(FIXTURES, "overlap.gguf")], "E_NonContiguousTensorOffset"),
         (["inspect", os.path.join(FIXTURES, "duplicate_tensor.gguf")], "E_DuplicateTensorName"),
         (["inspect", os.path.join(FIXTURES, "duplicate_key.gguf")], "E_DuplicateMetadataKey"),
         (["inspect", os.path.join(FIXTURES, "invalid_key.gguf")], "E_InvalidKeyFormat"),
@@ -166,7 +174,7 @@ def test_negative_json():
     assert data_ov["error_code"] == "E_ArithmeticOverflow"
     assert data_ov["compatibility_target"] == GGML_PROVENANCE
 
-    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "overflow.gguf"), "--format", "json")
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "overflow.gguf"), "--profile", "gguf-spec", "--format", "json")
     assert rc == 2, f"Expected returncode 2, got {rc}"
     data = json.loads(stdout)
     assert data["status"] == "REJECT"
@@ -216,7 +224,7 @@ def test_rich_rejection_context():
     assert data["findings"][0]["key"] == "InvalidKeyWithUppercase"
 
     # Arithmetic category is surfaced for checked-arithmetic rejections (JSON).
-    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "overflow.gguf"), "--format", "json")
+    rc, stdout, stderr = run_cli("inspect", os.path.join(FIXTURES, "overflow.gguf"), "--profile", "gguf-spec", "--format", "json")
     assert rc == 2, f"Expected returncode 2, got {rc}"
     data = json.loads(stdout)
     assert data["error_code"] == "E_ArithmeticOverflow"
@@ -334,6 +342,14 @@ def test_usage_and_flags():
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-work-budget", "-1"],
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-work-budget", "abc"],
         ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-work-budget", "18446744073709551616"],
+        # P0-1 relief-flag value contracts (defaults stay fail-closed)
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-string-bytes"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-string-bytes", "0"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-string-bytes", "-1"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-string-bytes", "abc"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--max-string-bytes", "18446744073709551616"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--key-policy"],
+        ["inspect", os.path.join(FIXTURES, "valid.gguf"), "--key-policy", "bogus"],
     ]
 
     for args in bad_invocations:
@@ -346,6 +362,84 @@ def test_usage_and_flags():
     assert "Error: --endian requires 'little', 'big', or 'auto'" in stderr
 
     print("  [ok] All usage tests passed with exit code 64.")
+
+def write_oversize_string_fixture(path, value_len):
+    """Writes a minimal metadata-only GGUF v3 whose single metadata entry is
+    `big.string: string` with `value_len` ASCII bytes (default cap is 65536)."""
+    b = bytearray()
+    b += b"GGUF"
+    b += struct.pack("<I", 3)
+    b += struct.pack("<Q", 0)  # tensor_count
+    b += struct.pack("<Q", 1)  # metadata_kv_count
+
+    key = b"big.string"
+    b += struct.pack("<Q", len(key))
+    b += key
+    b += struct.pack("<I", 8)  # MetadataType.string
+    value = b"a" * value_len
+    b += struct.pack("<Q", len(value))
+    b += value
+
+    pad = (32 - (len(b) % 32)) % 32
+    b += b"\x00" * pad
+    with open(path, "wb") as f:
+        f.write(b)
+
+def test_relief_flags_and_canonical_split():
+    print("Running P0-1/P0-3 relief-flag and canonical-detail tests...")
+
+    # 1. Key grammar: hyphen/uppercase keys reject by default, pass under the
+    #    explicit lenient relief policy.
+    for fixture in ("hyphen_key.gguf", "invalid_key.gguf"):
+        path = os.path.join(FIXTURES, fixture)
+        rc, stdout, stderr = run_cli("inspect", path)
+        assert rc == 2, f"Expected default strict REJECT for {fixture}, got {rc}: {stderr}"
+        assert "E_InvalidKeyFormat" in stderr, f"Expected E_InvalidKeyFormat for {fixture}: {stderr}"
+        rc, stdout, stderr = run_cli("inspect", path, "--key-policy", "lenient")
+        assert rc == 0, f"Expected lenient PASS for {fixture}, got {rc}: {stderr}"
+
+    # 2. String cap: oversize value rejects by default, passes when the cap is
+    #    explicitly raised.
+    oversize_path = os.path.join(FIXTURES, "oversize_string_tmp.gguf")
+    try:
+        write_oversize_string_fixture(oversize_path, 70000)
+        rc, stdout, stderr = run_cli("inspect", oversize_path, "--format", "json")
+        assert rc == 2, f"Expected default REJECT for oversize string, got {rc}: {stdout}"
+        data = json.loads(stdout)
+        assert data["error_code"] == "E_ResourceLimitExceeded", data
+        rc, stdout, stderr = run_cli("inspect", oversize_path, "--max-string-bytes", "80000")
+        assert rc == 0, f"Expected relief PASS for oversize string, got {rc}: {stderr}"
+        rc, stdout, stderr = run_cli(
+            "inspect", oversize_path, env={"SAFEGGUF_MAX_STRING_BYTES": "80000"}
+        )
+        assert rc == 0, f"Expected env relief PASS for oversize string, got {rc}: {stderr}"
+    finally:
+        if os.path.exists(oversize_path):
+            os.remove(oversize_path)
+
+    # 3. Canonical split: the dimension-product guard keeps the legacy
+    #    E_CompatibilityViolation code while its canonical code names the
+    #    specific cause, distinct from a true checked-arithmetic wrap.
+    rc, stdout, stderr = run_cli(
+        "inspect", os.path.join(FIXTURES, "element_product_overflow.gguf"),
+        "--profile", "llama-cpp", "--format", "json",
+    )
+    assert rc == 2, f"Expected 2, got {rc}: {stdout}"
+    data = json.loads(stdout)
+    assert data["error_code"] == "E_CompatibilityViolation", data
+    assert data["canonical_error_code"] == "SGGUF_E_DIMENSION_OVERFLOW", data
+    assert data["category"] == "compatibility", data
+
+    rc, stdout, stderr = run_cli(
+        "inspect", os.path.join(FIXTURES, "llama_cpp_overflow.gguf"),
+        "--profile", "llama-cpp", "--format", "json",
+    )
+    assert rc == 2, f"Expected 2, got {rc}: {stdout}"
+    data = json.loads(stdout)
+    assert data["error_code"] == "E_ArithmeticOverflow", data
+    assert data["canonical_error_code"] == "SGGUF_E_ARITHMETIC_OVERFLOW", data
+
+    print("  [ok] P0-1/P0-3 relief-flag and canonical-detail tests passed.")
 
 def test_io_error():
     print("Running IO error tests (must exit code 74)...")
@@ -360,8 +454,8 @@ def test_io_error():
     data = json.loads(stdout)
     assert data["status"] == "ERROR", f"Expected status ERROR, got {data['status']}"
     assert data["error_code"] == "E_FILE_OPEN_FAILED"
-    # Provenance accompanies ERROR JSON too (default gguf-spec profile).
-    assert data["type_layout_source"] == GGML_PROVENANCE
+    # Provenance accompanies ERROR JSON too (default llama-cpp profile).
+    assert data["compatibility_target"] == GGML_PROVENANCE
 
     # 3. Non-regular path target (a directory) must fail closed as an IO error
     #    instead of surfacing as an opaque mid-parse read failure. Windows
@@ -371,7 +465,7 @@ def test_io_error():
     data = json.loads(stdout)
     assert data["status"] == "ERROR", f"Expected status ERROR, got {data['status']}"
     assert data["error_code"] in ("E_FILE_STAT_FAILED", "E_FILE_OPEN_FAILED"), data
-    assert data["type_layout_source"] == GGML_PROVENANCE
+    assert data["compatibility_target"] == GGML_PROVENANCE
 
     print("  [ok] IO error tests passed with exit code 74 and status ERROR.")
 
@@ -384,10 +478,13 @@ def test_help():
         assert "SafeGGUF v0.3." in output, f"Version missing in help: {output}"
         assert "--endian <little|big|auto>" in output, f"Accurate endian flag missing in help: {output}"
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
-        assert "default: little" in output, f"Default little endian missing in help: {output}"
+        assert "default: auto" in output, f"Default auto endian missing in help: {output}"
+        assert "default: llama-cpp" in output, f"Default llama-cpp profile missing in help: {output}"
         assert "--format <text|json>" in output
         assert "--max-variable-array-elements <N>" in output, f"Variable-array cap flag missing in help: {output}"
         assert "default: 1000000" in output, f"Variable-array cap default missing in help: {output}"
+        assert "--max-string-bytes <N>" in output, f"String-cap relief flag missing in help: {output}"
+        assert "--key-policy <strict|lenient>" in output, f"Key-policy relief flag missing in help: {output}"
     print("  [ok] All help contract tests passed with exit code 0.")
 
 def test_endian_auto():
@@ -508,6 +605,7 @@ if __name__ == "__main__":
     test_rich_rejection_context()
     test_variable_array_cap_override()
     test_usage_and_flags()
+    test_relief_flags_and_canonical_split()
     test_io_error()
     test_help()
     test_endian_auto()

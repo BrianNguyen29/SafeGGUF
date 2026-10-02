@@ -52,7 +52,7 @@ pub fn validateStructural(
             c.tensor_index = t_i;
             c.setTensorName(tensor.name);
         }
-        try arithmetic.validateDimensions(tensor.dimensions, profile);
+        try arithmetic.validateDimensions(tensor.dimensions, profile, work_budget.ctx);
     }
 
     // Per-element work factor shared by the O(N log2(N + 1)) phases below:

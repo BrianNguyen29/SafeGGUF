@@ -54,7 +54,20 @@ pub const public_codes = struct {
     pub const invalid_fd: [:0]const u8 = "SGGUF_E_INVALID_FD";
     pub const invalid_handle: [:0]const u8 = "SGGUF_E_INVALID_HANDLE";
     pub const fd_stat_failed: [:0]const u8 = "SGGUF_E_FD_STAT_FAILED";
+    /// Context-dependent canonical detail for the llama.cpp dimension-product
+    /// guard. The legacy `error_code` for that rejection stays
+    /// `CompatibilityViolation`; this code is surfaced out-of-band (CLI JSON
+    /// `canonical_error_code`, or `safegguf_result_canonical_error_code` in
+    /// the C ABI) and distinguishes it from a true checked-arithmetic wrap
+    /// (`SGGUF_E_ARITHMETIC_OVERFLOW`).
+    pub const dimension_overflow: [:0]const u8 = "SGGUF_E_DIMENSION_OVERFLOW";
 };
+
+/// Specific diagnostic for the llama.cpp dimension-product guard; the generic
+/// `CompatibilityViolation` message stays in use for every other rejection
+/// carrying that legacy code. The C ABI accessor keys the canonical detail
+/// split on this message, so it is a stable, pinned contract string.
+pub const dimension_overflow_message = "Tensor dimensions exceed the llama.cpp signed 64-bit element-count limit";
 
 pub const LegacyPublicCode = struct {
     legacy: []const u8,
@@ -117,17 +130,28 @@ pub fn publicCodeOf(e: ParseError) [:0]const u8 {
     };
 }
 
-/// True when `code` is a canonical public code in the `SGGUF_E_*` namespace.
-pub fn isPublicCode(code: []const u8) bool {
-    if (std.mem.eql(u8, code, public_codes.unknown)) return true;
+/// Static reference to a canonical public code by value, or null when `code`
+/// is outside the `SGGUF_E_*` namespace. Unlike `canonicalFromLegacy`, this
+/// accepts canonical codes directly (returned as-is) and is exhaustive over
+/// the namespace, including additive context-dependent details such as
+/// `public_codes.dimension_overflow`.
+pub fn canonicalCodeRef(code: []const u8) ?[:0]const u8 {
+    if (std.mem.eql(u8, code, public_codes.unknown)) return public_codes.unknown;
+    if (std.mem.eql(u8, code, public_codes.dimension_overflow)) return public_codes.dimension_overflow;
     for (legacy_public_codes) |entry| {
-        if (std.mem.eql(u8, code, entry.canonical)) return true;
+        if (std.mem.eql(u8, code, entry.canonical)) return entry.canonical;
     }
     inline for (@typeInfo(ParseError).ErrorSet.?) |variant| {
         const e: ParseError = @field(ParseError, variant.name);
-        if (std.mem.eql(u8, code, publicCodeOf(e))) return true;
+        const canonical = publicCodeOf(e);
+        if (std.mem.eql(u8, code, canonical)) return canonical;
     }
-    return false;
+    return null;
+}
+
+/// True when `code` is a canonical public code in the `SGGUF_E_*` namespace.
+pub fn isPublicCode(code: []const u8) bool {
+    return canonicalCodeRef(code) != null;
 }
 
 /// Maps a legacy/internal identifier to its canonical public code. Accepts the
@@ -264,6 +288,11 @@ pub const ParseContext = struct {
     key_truncated: bool = false,
     name_buf: [tensor_name_snapshot_max]u8 = undefined,
     name_len: usize = 0,
+    /// Additive canonical detail for a context-dependent rejection: a
+    /// `SGGUF_E_*` code that refines a legacy error code whose cause is only
+    /// known at the raise site (see `public_codes.dimension_overflow`).
+    /// Static string owned by the canonical namespace, never a borrowed slice.
+    canonical_detail: ?[:0]const u8 = null,
 
     /// Starts a new phase ("parse" / "structural"): stamps the stage and
     /// clears fields that can only describe other phases.
@@ -276,6 +305,12 @@ pub const ParseContext = struct {
         self.key_len = 0;
         self.key_truncated = false;
         self.name_len = 0;
+        self.canonical_detail = null;
+    }
+
+    /// Records the additive canonical detail for the rejection being raised.
+    pub fn setCanonicalDetail(self: *ParseContext, code: [:0]const u8) void {
+        self.canonical_detail = code;
     }
 
     pub fn setKey(self: *ParseContext, key_bytes: []const u8) void {
@@ -313,4 +348,8 @@ pub const Finding = struct {
     category: ?ErrorCategory = null,
     key: ?[]const u8 = null,
     key_truncated: bool = false,
+    /// Additive canonical detail code when the rejection's legacy `code` is
+    /// context-dependent; renderers prefer it over the generic legacy
+    /// mapping (see `public_codes.dimension_overflow`).
+    canonical_detail: ?[:0]const u8 = null,
 };

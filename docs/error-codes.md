@@ -11,7 +11,7 @@ backward compatibility).
 | Surface | How |
 | :--- | :--- |
 | CLI `--format json` | Every ERROR/REJECT object carries `canonical_error_code` next to the compatibility `error_code`. |
-| C ABI (`include/safegguf.h`) | `safegguf_result_t.error_code` keeps the compatibility identifier (e.g. `"ArithmeticOverflow"`, `"E_FILE_OPEN_FAILED"`); map it with `safegguf_canonical_error_code()`. |
+| C ABI (`include/safegguf.h`) | `safegguf_result_t.error_code` keeps the compatibility identifier (e.g. `"ArithmeticOverflow"`, `"E_FILE_OPEN_FAILED"`); map it with `safegguf_canonical_error_code()`, or map the whole result with `safegguf_result_canonical_error_code()` to resolve context-dependent details. |
 | In-tree (Zig) | `safegguf.error_types.publicCodeOf(ParseError)` and `canonicalFromLegacy(code)`. |
 
 `canonicalFromLegacy` / `safegguf_canonical_error_code` accept:
@@ -21,6 +21,21 @@ backward compatibility).
 - canonical codes already in the namespace (returned unchanged).
 
 Unmapped input (and `NULL`) maps to `SGGUF_E_UNKNOWN`.
+
+## Context-dependent canonical details
+
+A few rejections share one legacy `error_code` but have a specific canonical
+cause that is only known at the raise site. Those are surfaced **out-of-band**:
+the legacy `error_code` stays byte-for-byte, while the CLI emits the specific
+code as `canonical_error_code` and the C ABI exposes it through
+`safegguf_result_canonical_error_code()`.
+
+| Legacy code | Context | Canonical detail | Category | Exit |
+| :--- | :--- | :--- | :--- | :---: |
+| `E_CompatibilityViolation` | llama.cpp dimension/product guard (dimension or element product exceeds the signed 64-bit element-count limit) | `SGGUF_E_DIMENSION_OVERFLOW` | compatibility | 2 |
+
+This is distinct from `SGGUF_E_ARITHMETIC_OVERFLOW`, which reports a true
+checked-arithmetic wrap in the u64 layout computation.
 
 ## Canonical namespace
 

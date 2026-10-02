@@ -374,7 +374,9 @@ CASES = [
             "element-count product 2^64 overflows u64 under checked arithmetic."
         ),
         "expected_error_code": "E_ArithmeticOverflow",
-        "cli_args": [],
+        # Pinned: llama-cpp's signed dimension guard rejects this shape first
+        # as E_CompatibilityViolation; the checked wrap path is gguf-spec.
+        "cli_args": ["--profile", "gguf-spec"],
     },
     {
         "name": "synthetic-int-overflow-nbytes.gguf",
@@ -396,7 +398,9 @@ CASES = [
             "byte-size computation overflows u64 under checked arithmetic."
         ),
         "expected_error_code": "E_ArithmeticOverflow",
-        "cli_args": [],
+        # Pinned: llama-cpp's signed dimension guard rejects this shape first
+        # as E_CompatibilityViolation; the checked wrap path is gguf-spec.
+        "cli_args": ["--profile", "gguf-spec"],
     },
     {
         "name": "synthetic-dims-ndims-5.gguf",
@@ -689,7 +693,9 @@ CASES = [
         ),
         "expected_profile": "gguf-spec",
         "expected_error_code": "E_ArithmeticOverflow",
-        "cli_args": [],
+        # Pinned: llama-cpp's signed dimension guard rejects this shape first
+        # as E_CompatibilityViolation; the checked nbytes wrap path is gguf-spec.
+        "cli_args": ["--profile", "gguf-spec"],
     },
 ]
 
@@ -751,7 +757,7 @@ def _case_profile(case):
     """Effective --profile of a case (the CLI default when cli_args omit it)."""
     args = case["cli_args"]
     if "--profile" not in args:
-        return "gguf-spec"
+        return "llama-cpp"
     index = args.index("--profile")
     if index + 1 >= len(args):
         return None  # dangling --profile: reported as an unknown profile

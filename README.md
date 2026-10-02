@@ -41,10 +41,12 @@ release is **v0.3.6** (2026-09-15). Only released artifacts are supported — se
   scanned bytes) cap validator-managed work; exit taxonomy `0`/`2`/`64`/`70`/`74`;
   descriptor validation (`safegguf_validate_fd_v1` / `safegguf.validate_fd`) or a
   CAS digest handoff ([Kubernetes example](#kubernetes)).
-- **Profiles and interfaces.** `gguf-spec` (default, GGUF v3 safe subset) and
-  `llama-cpp` (v2/v3 pre-admission subset, differential-tested against pinned
-  ggml 0.23.0 `e91ded11`); CLI, C ABI, Python bindings; metrics/JSON logs on
-  stderr; distroless container, K8s init pattern, hybrid triage ([deployment guide](docs/production_deployment.md)).
+- **Profiles and interfaces.** `llama-cpp` (unified default across the CLI,
+  C ABI, and Python bindings: v2/v3 pre-admission subset, differential-tested
+  against pinned ggml 0.23.0 `e91ded11`) and `gguf-spec` (GGUF v3 safe subset;
+  opt in with `--profile gguf-spec`); CLI, C ABI, Python bindings; metrics/JSON
+  logs on stderr; distroless container, K8s init pattern, hybrid triage
+  ([deployment guide](docs/production_deployment.md)).
 
 ## Quick Start
 
@@ -97,8 +99,33 @@ safegguf inspect <path_to_model.gguf> [options]
 safegguf inspect /path/to/model.gguf --profile llama-cpp --endian auto     # text (default)
 safegguf inspect /path/to/model.gguf --profile llama-cpp --format json    # JSON on stdout
 safegguf inspect /path/to/model.gguf --max-file-size-bytes 17179869184 --require-stable-file  # v1.1 controls
+safegguf inspect /path/to/model.gguf --max-string-bytes 131072 --key-policy lenient           # v1.2 relief (opt-in)
 safegguf inspect /path/to/model.gguf --emit-metrics --log-json --request-id req-123 --tenant-id tenant-a  # stderr
 ```
+
+The CLI defaults match the C ABI and Python bindings: `--profile llama-cpp`
+and `--endian auto` (byte order is detected, falling back to little-endian).
+Opt into the resource-bounded GGUF v3 safe subset with `--profile gguf-spec`,
+or pin `--endian little|big` explicitly.
+
+Relief flags are opt-in and leave the defaults fail-closed:
+`--max-string-bytes <N>` raises the 65536-byte metadata key/string cap, and
+`--key-policy lenient` admits `-` and uppercase ASCII letters in metadata keys.
+Both are also available as `SAFEGGUF_MAX_STRING_BYTES` / `SAFEGGUF_KEY_POLICY`,
+as the appended C ABI `max_string_bytes` / `key_policy` option fields (v1.2),
+and as Python `validate_path` / `validate_fd` parameters; the same file yields
+the same default verdict through every surface.
+
+> **Change note (0.3.7-dev).** The CLI default flipped from `gguf-spec` /
+> little-endian to `llama-cpp` / auto to match the C ABI and Python defaults.
+> C ABI callers passing `NULL` options always had llama-cpp + auto; a
+> zero-initialized options struct still means gguf-spec + little. Pin
+> `--profile` / `--endian` (or set the struct fields explicitly) if you relied
+> on the old CLI default. The legacy `error_code` strings are unchanged; the
+> llama.cpp dimension-product guard now resolves to the canonical detail
+> `SGGUF_E_DIMENSION_OVERFLOW` (`canonical_error_code` in JSON,
+> `safegguf_result_canonical_error_code()` in the C ABI) while its
+> `error_code` stays `E_CompatibilityViolation`.
 
 ### Exit Codes
 
@@ -250,7 +277,9 @@ provides the same handoff outside Kubernetes.
 The `safegguf` package exposes `validate_path` and `validate_fd`
 (descriptor-based, anti-TOCTOU), with the same profiles, endianness options,
 and resource controls as the CLI, including the v1.1 `max_file_size_bytes` and
-`require_stable_file` controls; `safegguf.version()` returns the native library
+`require_stable_file` controls and the v1.2 `max_string_bytes` /
+`key_policy` relief parameters (both default to the engine defaults, so
+omitting them is fail-closed); `safegguf.version()` returns the native library
 version. Library lookup: `SAFEGGUF_LIB_PATH` (absolute regular file), packaged
 wheel, source `zig-out`, platform search; unenforceable controls fail closed
 with `E_USAGE_UNSUPPORTED_OPTIONS` (exit `64`). See [`bindings/python`](bindings/python).
@@ -259,13 +288,18 @@ with `E_USAGE_UNSUPPORTED_OPTIONS` (exit `64`). See [`bindings/python`](bindings
 
 [`include/safegguf.h`](include/safegguf.h) exports `safegguf_validate_path_v1` /
 `safegguf_validate_fd_v1` (legacy `safegguf_validate_path` /
-`safegguf_validate_fd`), `safegguf_version`, and `safegguf_canonical_error_code`,
+`safegguf_validate_fd`), `safegguf_version`, `safegguf_canonical_error_code`,
+and `safegguf_result_canonical_error_code` (resolves context-dependent
+canonical details such as `SGGUF_E_DIMENSION_OVERFLOW` from a whole result),
 with exit constants `SAFEGGUF_OK`, `SAFEGGUF_REJECT`, `SAFEGGUF_EX_USAGE`,
 `SAFEGGUF_EX_SOFTWARE`, `SAFEGGUF_EX_IOERR` and option enums
 `SAFEGGUF_PROFILE_LLAMA_CPP` / `SAFEGGUF_ENDIAN_AUTO`. `safegguf_options_v1_t`
 is caller-owned; `struct_size` gates appended fields, so a v1.0-layout caller
-keeps the legacy defaults (`max_file_size_bytes = 0`, `require_stable_file = 0`),
-unknown sizes exit `64`; concurrent calls are safe if the struct is not mutated mid-call.
+keeps the legacy defaults (`max_file_size_bytes = 0`, `require_stable_file = 0`)
+and a v1.1-layout caller keeps the default string cap and strict key grammar,
+unknown sizes exit `64`; concurrent calls are safe if the struct is not mutated
+mid-call. `NULL` options select the engine defaults (llama-cpp + auto), while a
+zero-initialized struct means gguf-spec + little.
 
 ## Security
 

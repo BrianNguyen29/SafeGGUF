@@ -137,6 +137,7 @@ test "contract: include/safegguf.h canonical namespace matches the Zig mapping" 
         try expectMacroDefined(header, err.publicCodeOf(e));
     }
     for (err.legacy_public_codes) |entry| try expectMacroDefined(header, entry.canonical);
+    try expectMacroDefined(header, err.public_codes.dimension_overflow);
     try expectMacroDefined(header, err.public_codes.unknown);
 
     // No SGGUF_E_* macro exists that the Zig mapping does not know about.
@@ -198,6 +199,8 @@ test "ffi: C ABI codes map to canonical codes through the exported surface" {
         .reserved = null,
         .max_file_size_bytes = 0,
         .require_stable_file = 0,
+        .max_string_bytes = 0,
+        .key_policy = 0,
     };
     try std.testing.expectEqual(@as(c_int, 64), cabi.safegguf_validate_path_v1("ignored", &opts, &res));
     try std.testing.expectEqualStrings("E_USAGE_INVALID_OPTIONS", resultCode(&res));
@@ -226,6 +229,46 @@ test "ffi: C ABI codes map to canonical codes through the exported surface" {
     );
     try std.testing.expectEqualStrings(err.public_codes.unknown, std.mem.span(cabi.safegguf_canonical_error_code("Bogus")));
     try std.testing.expectEqualStrings(err.public_codes.unknown, std.mem.span(cabi.safegguf_canonical_error_code(null)));
+}
+
+fn setResultField(dest: []u8, value: []const u8) void {
+    @memset(dest, 0);
+    @memcpy(dest[0..value.len], value);
+}
+
+test "ffi: result accessor resolves the context-dependent dimension-overflow detail" {
+    var res: cabi.Result = undefined;
+    @memset(std.mem.asBytes(&res), 0);
+    res.exit_code = 2;
+    setResultField(&res.error_code, "CompatibilityViolation");
+    setResultField(&res.category, "compatibility");
+    setResultField(&res.stage, "validation");
+    setResultField(&res.message, err.dimension_overflow_message);
+
+    // Legacy error_code stays "CompatibilityViolation"; the accessor resolves
+    // the additive SGGUF_E_DIMENSION_OVERFLOW detail.
+    try std.testing.expectEqualStrings(
+        err.public_codes.dimension_overflow,
+        std.mem.span(cabi.safegguf_result_canonical_error_code(&res)),
+    );
+
+    // A generic compatibility rejection keeps the generic canonical code.
+    setResultField(&res.message, "File violates upstream ggml compatibility invariants");
+    try std.testing.expectEqualStrings(
+        "SGGUF_E_COMPATIBILITY_VIOLATION",
+        std.mem.span(cabi.safegguf_result_canonical_error_code(&res)),
+    );
+
+    // Legacy/bare identifier mapping and NULL handling.
+    setResultField(&res.error_code, "ArithmeticOverflow");
+    try std.testing.expectEqualStrings(
+        "SGGUF_E_ARITHMETIC_OVERFLOW",
+        std.mem.span(cabi.safegguf_result_canonical_error_code(&res)),
+    );
+    try std.testing.expectEqualStrings(
+        err.public_codes.unknown,
+        std.mem.span(cabi.safegguf_result_canonical_error_code(null)),
+    );
 }
 
 test "ffi: closed descriptor returns an io error instead of trapping" {

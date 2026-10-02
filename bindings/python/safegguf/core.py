@@ -83,6 +83,27 @@ class SafeggufOptionsV1(ctypes.Structure):
         ("reserved", ctypes.c_void_p),
         ("max_file_size_bytes", ctypes.c_uint64),
         ("require_stable_file", ctypes.c_uint32),
+        ("max_string_bytes", ctypes.c_uint64),
+        ("key_policy", ctypes.c_uint32),
+    ]
+
+class _SafeggufOptionsV11(ctypes.Structure):
+    """v1.1 options layout, before the appended v1.2 relief controls.
+
+    Only its ``sizeof`` is used: calls that set a v1.1 control (but no v1.2
+    relief control) send this ``struct_size`` so native libraries built
+    against v1.1 keep validating with their old defaults.
+    """
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("profile", ctypes.c_int32),
+        ("endian", ctypes.c_int32),
+        ("max_alloc_bytes", ctypes.c_uint64),
+        ("max_work_units", ctypes.c_uint64),
+        ("max_scanned_bytes", ctypes.c_uint64),
+        ("reserved", ctypes.c_void_p),
+        ("max_file_size_bytes", ctypes.c_uint64),
+        ("require_stable_file", ctypes.c_uint32),
     ]
 
 class SafeggufOptionsV1Legacy(ctypes.Structure):
@@ -103,6 +124,7 @@ class SafeggufOptionsV1Legacy(ctypes.Structure):
     ]
 
 _LEGACY_OPTIONS_SIZE = ctypes.sizeof(SafeggufOptionsV1Legacy)
+_V11_OPTIONS_SIZE = ctypes.sizeof(_SafeggufOptionsV11)
 
 class SafeggufResult(ctypes.Structure):
     _fields_ = [
@@ -289,12 +311,41 @@ def _parse_flag(name: str, value: Union[bool, int]) -> int:
         f"{name} must be a bool or the integer 0/1, got {type(value).__name__}: {value!r}"
     )
 
+def _parse_key_policy(value: Union[str, int]) -> int:
+    """Validate a metadata key-policy selector for the ``key_policy`` field.
+
+    ``0`` keeps the engine-configured default (strict unless
+    ``SAFEGGUF_KEY_POLICY=lenient``), ``1`` forces strict, and ``2`` selects
+    the lenient relief grammar (admits ``-`` and uppercase ASCII letters).
+    The strings ``"default"``/``"strict"``/``"lenient"`` are accepted as
+    aliases. Any other value is rejected before the native call so a typo
+    cannot silently relax or tighten the key grammar.
+    """
+    if isinstance(value, bool):
+        raise ValueError(
+            f"key_policy must be 'default', 'strict', or 'lenient', got {value!r}"
+        )
+    if isinstance(value, int):
+        if value in (0, 1, 2):
+            return value
+        raise ValueError(f"Invalid key_policy integer: {value} (must be 0, 1, or 2)")
+    lowered = str(value).lower()
+    if lowered in ("default", "engine"):
+        return 0
+    if lowered == "strict":
+        return 1
+    if lowered == "lenient":
+        return 2
+    raise ValueError(f"Invalid key_policy: {value!r} (choose 'strict' or 'lenient')")
+
 def _parse_limits(
     max_alloc_bytes: int,
     max_work_units: int,
     max_scanned_bytes: int,
     max_file_size_bytes: int,
     require_stable_file: Union[bool, int],
+    max_string_bytes: int,
+    key_policy: Union[str, int],
 ):
     """Validate all per-call resource limits and controls before any native call."""
     return (
@@ -303,55 +354,86 @@ def _parse_limits(
         _parse_u64_limit("max_scanned_bytes", max_scanned_bytes),
         _parse_u64_limit("max_file_size_bytes", max_file_size_bytes),
         _parse_flag("require_stable_file", require_stable_file),
+        _parse_u64_limit("max_string_bytes", max_string_bytes),
+        _parse_key_policy(key_policy),
     )
 
 _extended_options_supported: Optional[bool] = None
+_v12_options_supported: Optional[bool] = None
+
+def _probe_options_layout(lib: ctypes.CDLL, struct_size: int) -> bool:
+    """NULL-path probe: the current library answers E_USAGE_NULL_PATH for a
+    supported ``struct_size`` and E_USAGE_INVALID_OPTIONS for an unknown one.
+    Touches no filesystem state."""
+    probe_opts = SafeggufOptionsV1(
+        struct_size=struct_size,
+        profile=int(Profile.GGUF_SPEC),
+        endian=int(Endian.AUTO),
+        max_alloc_bytes=0,
+        max_work_units=0,
+        max_scanned_bytes=0,
+        reserved=None,
+        max_file_size_bytes=0,
+        require_stable_file=0,
+        max_string_bytes=0,
+        key_policy=0,
+    )
+    probe_result = SafeggufResult()
+    lib.safegguf_validate_path_v1(None, ctypes.byref(probe_opts), ctypes.byref(probe_result))
+    return probe_result.error_code.decode("utf-8", errors="replace") == "E_USAGE_NULL_PATH"
 
 def _native_supports_extended_options(lib: ctypes.CDLL) -> bool:
     """Detect whether the loaded native library understands the v1.1 options.
 
     The appended controls are gated natively on ``struct_size``: a legacy
     library rejects the extended size with ``E_USAGE_INVALID_OPTIONS``, while
-    the current library accepts it and fails the NULL-path probe with
+    a v1.1-or-newer library accepts it and fails the NULL-path probe with
     ``E_USAGE_NULL_PATH`` instead. The probe touches no filesystem state and
     the answer is cached for the process; any other outcome is treated as
     unsupported so set controls fail closed rather than being dropped.
     """
     global _extended_options_supported
     if _extended_options_supported is None:
-        probe_opts = SafeggufOptionsV1(
-            struct_size=ctypes.sizeof(SafeggufOptionsV1),
-            profile=int(Profile.GGUF_SPEC),
-            endian=int(Endian.AUTO),
-            max_alloc_bytes=0,
-            max_work_units=0,
-            max_scanned_bytes=0,
-            reserved=None,
-            max_file_size_bytes=0,
-            require_stable_file=0,
-        )
-        probe_result = SafeggufResult()
-        lib.safegguf_validate_path_v1(None, ctypes.byref(probe_opts), ctypes.byref(probe_result))
-        _extended_options_supported = (
-            probe_result.error_code.decode("utf-8", errors="replace") == "E_USAGE_NULL_PATH"
-        )
+        _extended_options_supported = _probe_options_layout(lib, _V11_OPTIONS_SIZE)
     return _extended_options_supported
 
+def _native_supports_v12_options(lib: ctypes.CDLL) -> bool:
+    """Detect whether the loaded native library understands the v1.2 options.
+
+    Probes with the current (v1.2) ``struct_size``: a v1.1-or-older library
+    rejects the unknown size with ``E_USAGE_INVALID_OPTIONS``, while a v1.2
+    library accepts it and fails the NULL-path probe with
+    ``E_USAGE_NULL_PATH``. Cached per process; any other outcome is treated as
+    unsupported so the relief controls fail closed rather than being dropped.
+    """
+    global _v12_options_supported
+    if _v12_options_supported is None:
+        _v12_options_supported = _probe_options_layout(lib, ctypes.sizeof(SafeggufOptionsV1))
+    return _v12_options_supported
+
 def _options_struct_size(
-    lib: ctypes.CDLL, max_file_size_bytes: int, require_stable_file: int
+    lib: ctypes.CDLL,
+    max_file_size_bytes: int,
+    require_stable_file: int,
+    max_string_bytes: int,
+    key_policy: int,
 ) -> Optional[int]:
     """Pick the native options ``struct_size`` for this call.
 
     Calls without appended controls send the v1.0 size so legacy libraries
-    stay fully usable. Calls that set a control send the current size only
-    when the native library supports the extended layout; ``None`` means the
+    stay fully usable. Calls that set a v1.1 control send the v1.1 size; calls
+    that set a v1.2 relief control send the current size. ``None`` means the
     request cannot be enforced and the caller must fail closed.
     """
+    if max_string_bytes != 0 or key_policy != 0:
+        if not _native_supports_v12_options(lib):
+            return None
+        return ctypes.sizeof(SafeggufOptionsV1)
     if max_file_size_bytes == 0 and require_stable_file == 0:
         return _LEGACY_OPTIONS_SIZE
     if not _native_supports_extended_options(lib):
         return None
-    return ctypes.sizeof(SafeggufOptionsV1)
+    return _V11_OPTIONS_SIZE
 
 def _unsupported_extended_options() -> ValidationResult:
     """Fail-closed result for appended controls a legacy native library cannot enforce."""
@@ -362,8 +444,9 @@ def _unsupported_extended_options() -> ValidationResult:
         stage="options",
         message=(
             "Loaded native library does not support max_file_size_bytes / "
-            "require_stable_file (legacy safegguf_options_v1 layout); refusing "
-            "to run with the requested controls silently dropped"
+            "require_stable_file / max_string_bytes / key_policy (legacy "
+            "safegguf_options_v1 layout); refusing to run with the requested "
+            "controls silently dropped"
         ),
     )
 
@@ -376,6 +459,8 @@ def validate_path(
     max_scanned_bytes: int = 0,
     max_file_size_bytes: int = 0,
     require_stable_file: Union[bool, int] = False,
+    max_string_bytes: int = 0,
+    key_policy: Union[str, int] = 0,
 ) -> ValidationResult:
     """
     Validate a GGUF model file on disk by path with structured diagnostics.
@@ -391,6 +476,13 @@ def validate_path(
     require a native library with the extended v1 options layout; on a legacy
     library they fail closed with E_USAGE_UNSUPPORTED_OPTIONS (64) instead of
     being silently ignored.
+
+    ``max_string_bytes`` raises the metadata key/string byte cap (0 = engine
+    default, 65536) and ``key_policy`` selects the metadata key grammar
+    (``0``/``"default"`` = engine default strict, ``1``/``"strict"``,
+    ``2``/``"lenient"``). These v1.2 relief controls are opt-in only and fail
+    closed with E_USAGE_UNSUPPORTED_OPTIONS (64) on a native library that
+    predates them.
     """
     if path is None or not isinstance(path, (str, bytes, os.PathLike)):
         return ValidationResult(
@@ -420,12 +512,16 @@ def validate_path(
             max_scanned_bytes,
             max_file_size_bytes,
             require_stable_file,
+            max_string_bytes,
+            key_policy,
         ) = _parse_limits(
             max_alloc_bytes,
             max_work_units,
             max_scanned_bytes,
             max_file_size_bytes,
             require_stable_file,
+            max_string_bytes,
+            key_policy,
         )
     except ValueError as exc:
         return ValidationResult(
@@ -461,7 +557,9 @@ def validate_path(
 
     lib = _get_lib()
     if hasattr(lib, "safegguf_validate_path_v1"):
-        struct_size = _options_struct_size(lib, max_file_size_bytes, require_stable_file)
+        struct_size = _options_struct_size(
+            lib, max_file_size_bytes, require_stable_file, max_string_bytes, key_policy
+        )
         if struct_size is None:
             return _unsupported_extended_options()
         opts = SafeggufOptionsV1(
@@ -474,6 +572,8 @@ def validate_path(
             reserved=None,
             max_file_size_bytes=max_file_size_bytes,
             require_stable_file=require_stable_file,
+            max_string_bytes=max_string_bytes,
+            key_policy=key_policy,
         )
         res = SafeggufResult()
         rc = lib.safegguf_validate_path_v1(path_bytes, ctypes.byref(opts), ctypes.byref(res))
@@ -485,7 +585,12 @@ def validate_path(
             message=res.message.decode("utf-8", errors="replace"),
         )
     else:
-        if max_file_size_bytes != 0 or require_stable_file != 0:
+        if (
+            max_file_size_bytes != 0
+            or require_stable_file != 0
+            or max_string_bytes != 0
+            or key_policy != 0
+        ):
             return _unsupported_extended_options()
         rc = lib.safegguf_validate_path(path_bytes, prof_id, end_id)
         return ValidationResult(rc)
@@ -501,6 +606,8 @@ def validate_fd(
     max_scanned_bytes: int = 0,
     max_file_size_bytes: int = 0,
     require_stable_file: Union[bool, int] = False,
+    max_string_bytes: int = 0,
+    key_policy: Union[str, int] = 0,
 ) -> ValidationResult:
     """
     Validate an open GGUF file descriptor directly with structured diagnostics.
@@ -517,6 +624,13 @@ def validate_fd(
     controls require a native library with the extended v1 options layout; on
     a legacy library they fail closed with E_USAGE_UNSUPPORTED_OPTIONS (64)
     instead of being silently ignored.
+
+    ``max_string_bytes`` raises the metadata key/string byte cap (0 = engine
+    default, 65536) and ``key_policy`` selects the metadata key grammar
+    (``0``/``"default"`` = engine default strict, ``1``/``"strict"``,
+    ``2``/``"lenient"``). These v1.2 relief controls are opt-in only and fail
+    closed with E_USAGE_UNSUPPORTED_OPTIONS (64) on a native library that
+    predates them.
     """
     if not isinstance(fd, int) or isinstance(fd, bool):
         return ValidationResult(
@@ -546,12 +660,16 @@ def validate_fd(
             max_scanned_bytes,
             max_file_size_bytes,
             require_stable_file,
+            max_string_bytes,
+            key_policy,
         ) = _parse_limits(
             max_alloc_bytes,
             max_work_units,
             max_scanned_bytes,
             max_file_size_bytes,
             require_stable_file,
+            max_string_bytes,
+            key_policy,
         )
     except ValueError as exc:
         return ValidationResult(
@@ -595,7 +713,9 @@ def validate_fd(
 
         try:
             if hasattr(lib, "safegguf_validate_fd_v1"):
-                struct_size = _options_struct_size(lib, max_file_size_bytes, require_stable_file)
+                struct_size = _options_struct_size(
+                    lib, max_file_size_bytes, require_stable_file, max_string_bytes, key_policy
+                )
                 if struct_size is None:
                     return _unsupported_extended_options()
                 opts = SafeggufOptionsV1(
@@ -608,6 +728,8 @@ def validate_fd(
                     reserved=None,
                     max_file_size_bytes=max_file_size_bytes,
                     require_stable_file=require_stable_file,
+                    max_string_bytes=max_string_bytes,
+                    key_policy=key_policy,
                 )
                 res = SafeggufResult()
                 rc = lib.safegguf_validate_fd_v1(raw_handle, ctypes.byref(opts), ctypes.byref(res))
@@ -619,7 +741,12 @@ def validate_fd(
                     message=res.message.decode("utf-8", errors="replace"),
                 )
             else:
-                if max_file_size_bytes != 0 or require_stable_file != 0:
+                if (
+                    max_file_size_bytes != 0
+                    or require_stable_file != 0
+                    or max_string_bytes != 0
+                    or key_policy != 0
+                ):
                     return _unsupported_extended_options()
                 rc = lib.safegguf_validate_fd(raw_handle, prof_id, end_id)
                 return ValidationResult(rc)

@@ -57,6 +57,11 @@ extern "C" {
 #define SGGUF_E_TOTAL_ALLOCATION_LIMIT_EXCEEDED "SGGUF_E_TOTAL_ALLOCATION_LIMIT_EXCEEDED"
 #define SGGUF_E_FILE_TOO_LARGE                 "SGGUF_E_FILE_TOO_LARGE"
 #define SGGUF_E_COMPATIBILITY_VIOLATION        "SGGUF_E_COMPATIBILITY_VIOLATION"
+/* Context-dependent canonical detail: the llama.cpp dimension-product guard
+ * keeps error_code "CompatibilityViolation" (legacy byte compatibility) and
+ * resolves here through safegguf_result_canonical_error_code(). It is also
+ * emitted as the CLI JSON canonical_error_code for that rejection. */
+#define SGGUF_E_DIMENSION_OVERFLOW             "SGGUF_E_DIMENSION_OVERFLOW"
 #define SGGUF_E_ZERO_DIMENSION_NOT_ALLOWED     "SGGUF_E_ZERO_DIMENSION_NOT_ALLOWED"
 #define SGGUF_E_OUT_OF_MEMORY                  "SGGUF_E_OUT_OF_MEMORY"
 #define SGGUF_E_IO_ERROR                       "SGGUF_E_IO_ERROR"
@@ -90,10 +95,18 @@ extern "C" {
  * Versioned options structure for extensible per-call resource limits and configuration.
  *
  * The caller MUST set struct_size to sizeof() of the layout it was compiled
- * against: either the previous v1.0 layout or the current one. struct_size
- * gates the appended fields, so a caller compiled against v1.0 keeps the
- * legacy defaults (max_file_size_bytes = 0 -> unlimited, require_stable_file
- * = 0 -> off). Unknown sizes are rejected (64, E_USAGE_INVALID_OPTIONS).
+ * against: the v1.0 layout, the v1.1 layout, or the current v1.2 layout.
+ * struct_size gates the appended fields, so a caller compiled against an
+ * older layout keeps the legacy defaults (max_file_size_bytes = 0 ->
+ * unlimited, require_stable_file = 0 -> off, max_string_bytes = 0 -> engine
+ * default, key_policy = 0 -> engine default). Unknown sizes are rejected
+ * (64, E_USAGE_INVALID_OPTIONS).
+ *
+ * Passing NULL for `options` is NOT the same as passing a zero-initialized
+ * struct: NULL selects the engine defaults (profile = llama-cpp,
+ * endian = auto), while a zero-initialized struct means profile = 0
+ * (gguf-spec) and endian = 0 (little). Set every field you mean, or pass NULL
+ * to take the engine defaults.
  *
  * Ownership and threading: the struct is caller-owned and read only for the
  * duration of the call - the library neither retains nor frees it (or the
@@ -110,6 +123,8 @@ typedef struct safegguf_options_v1 {
     void*    reserved;             /* Reserved for future expansion, must be NULL */
     uint64_t max_file_size_bytes;  /* Appended (v1.1): input admission ceiling in bytes, checked before the first read (0 = unlimited, default) */
     uint32_t require_stable_file;  /* Appended (v1.1): 0 = off (default), 1 = REJECT (2, E_FileChangedDuringValidation) if the open file's identity changes during validation */
+    uint64_t max_string_bytes;     /* Appended (v1.2): metadata key/string byte cap (0 = env/default, 65536); raise only as explicit relief */
+    uint32_t key_policy;           /* Appended (v1.2): metadata key grammar; 0 = env/default (strict), 1 = strict, 2 = lenient (admits '-' and uppercase) */
 } safegguf_options_v1_t;
 
 /**
@@ -118,7 +133,9 @@ typedef struct safegguf_options_v1 {
  * `error_code` carries a compatibility identifier (an implementation name such
  * as "ArithmeticOverflow", or a code such as "E_FILE_OPEN_FAILED"). Key policy
  * decisions on the canonical `SGGUF_E_*` namespace: map this field through
- * safegguf_canonical_error_code().
+ * safegguf_canonical_error_code(), or map the whole result through
+ * safegguf_result_canonical_error_code() to also resolve context-dependent
+ * details such as SGGUF_E_DIMENSION_OVERFLOW.
  */
 typedef struct safegguf_result {
     int32_t exit_code;             /* SafeGGUF exit code: 0, 2, 64, 70, 74 */
@@ -189,8 +206,29 @@ const char* safegguf_version(void);
  * canonical codes already in the namespace (returned unchanged). The returned
  * pointer is a static string that must not be freed; NULL and unmapped input
  * return SGGUF_E_UNKNOWN.
+ *
+ * This maps the legacy error_code alone. For a result whose legacy code is
+ * context-dependent (currently the llama.cpp dimension-product guard, which
+ * keeps "CompatibilityViolation" while carrying the SGGUF_E_DIMENSION_OVERFLOW
+ * detail), use safegguf_result_canonical_error_code() instead.
  */
 const char* safegguf_canonical_error_code(const char* error_code);
+
+/**
+ * Resolve a whole safegguf_result_t to its canonical SGGUF_E_* code,
+ * including the context-dependent detail the compatibility error_code cannot
+ * carry: a rejection raised by the llama.cpp dimension-product guard keeps
+ * error_code "CompatibilityViolation" (byte-for-byte) while this accessor
+ * returns SGGUF_E_DIMENSION_OVERFLOW, distinguishing it from a true
+ * checked-arithmetic wrap (SGGUF_E_ARITHMETIC_OVERFLOW). For every other
+ * result this is equivalent to
+ * safegguf_canonical_error_code(result->error_code).
+ *
+ * Canonical codes already in the namespace resolve to their static string;
+ * NULL and unmapped results return SGGUF_E_UNKNOWN. The returned pointer is a
+ * static string that must not be freed.
+ */
+const char* safegguf_result_canonical_error_code(const safegguf_result_t* result);
 
 #ifdef __cplusplus
 }

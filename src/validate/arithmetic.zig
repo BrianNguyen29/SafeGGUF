@@ -22,7 +22,14 @@ pub fn checkedAlignUp(value: u64, alignment: u64) !u64 {
     return checkedAdd(value, alignment - remainder);
 }
 
-pub fn validateDimensions(dims: []const u64, profile: types.Profile) err.ParseError!void {
+/// llama.cpp profile: upstream ggml represents element counts as signed
+/// 64-bit values, so a dimension or dimension product that cannot be
+/// represented is a compatibility rejection. Both guards record the additive
+/// canonical detail (`SGGUF_E_DIMENSION_OVERFLOW`) into `ctx` when present:
+/// the legacy `CompatibilityViolation` code stays byte-for-byte, while the
+/// detail distinguishes this arithmetic-capacity rejection from a true
+/// checked-arithmetic wrap (`ArithmeticOverflow`).
+pub fn validateDimensions(dims: []const u64, profile: types.Profile, ctx: ?*err.ParseContext) err.ParseError!void {
     if (dims.len > 4) {
         return err.ParseError.InvalidDimensionCount;
     }
@@ -33,9 +40,11 @@ pub fn validateDimensions(dims: []const u64, profile: types.Profile) err.ParseEr
         }
         if (profile == .llama_cpp) {
             if (d > @as(u64, std.math.maxInt(i64))) {
+                if (ctx) |c| c.setCanonicalDetail(err.public_codes.dimension_overflow);
                 return err.ParseError.CompatibilityViolation;
             }
             if (@as(u64, std.math.maxInt(i64)) / d <= element_product) {
+                if (ctx) |c| c.setCanonicalDetail(err.public_codes.dimension_overflow);
                 return err.ParseError.CompatibilityViolation;
             }
             element_product *= d;
