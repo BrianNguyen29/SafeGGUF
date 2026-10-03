@@ -217,18 +217,21 @@ spec:
 
 ---
 
-## 5. Vận Hành Triage: Online Jev vs Offline Air-Gapped Fallback
+## 5. Vận Hành Triage: Online Jev vs Offline Air-Gapped
 
 Sử dụng công cụ `safegguf-triage` ([`tools/safegguf-triage/safegguf_triage.py`](../tools/safegguf-triage/safegguf_triage.py)).
 
 `risk_score` / `threat_category` / `severity` là **tín hiệu heuristic** (thang điểm phân loại của rule engine, hoặc đầu ra model ở chế độ online): chúng không phải xác suất đã hiệu chuẩn và không phải phán quyết admission. Phán quyết cấu trúc (`structural_verdict`) suy ra trực tiếp từ exit code SafeGGUF (`0 -> STRUCTURALLY_ACCEPTED`, `2 -> REJECT`, `64/70/74 -> ERROR`) và không bao giờ bị ghi đè bởi điểm số heuristic.
 
-### 5.1. Khi Có Kết Nối Mạng & TypeSafe API Key
+### 5.1. Chấm Điểm Ngữ Nghĩa Online (TypeSafe Jev) — Phải Chỉ Định Rõ `--mode online`
 ```bash
 export TYPESAFE_API_KEY="ts_live_..."
-python tools/safegguf-triage/safegguf_triage.py /models/model.gguf --format json
+python tools/safegguf-triage/safegguf_triage.py /models/model.gguf --mode online --format json
 ```
 * Engine: **Online Jev System One**
+* **Mặc định không egress**: `--mode auto` (mặc định) và `--mode offline` **không bao giờ** mở kết nối mạng, kể cả khi `TYPESAFE_API_KEY` đã được thiết lập; egress chỉ xảy ra khi chọn rõ ràng `--mode online`.
+* **Fail-closed**: `--mode online` thiếu `TYPESAFE_API_KEY` → exit 64; không kết nối được TypeSafe API → exit 70 (không fallback ngầm về engine offline).
+* Payload gửi đi đã được làm sạch: đường dẫn tệp cục bộ và tên tensor/key bị loại bỏ trước khi egress.
 * Trả về điểm số rủi ro ngữ nghĩa (`risk_score` — thang điểm heuristic, không phải xác suất đã hiệu chuẩn), phân loại mối đe dọa (`threat_category`), và phán quyết cấu trúc (`structural_verdict`).
 
 ### 5.2. Khi Chạy Trong Môi Trường Biệt Lập (Air-Gapped / Không có Jev)
