@@ -290,7 +290,12 @@ jobs:
       contents: read
       packages: write
       id-token: write
+    # Tag-derived release version: the called workflow strips the leading v and
+    # passes it as the image build-arg, so the binary and the OCI version label
+    # report the release tag instead of the Dockerfile's 0.3.7-dev fallback.
     uses: ./.github/workflows/container-release.yml
+    with:
+      version: ${{ github.ref_name }}
 
   release:
     name: Build & Publish Release Artifacts
