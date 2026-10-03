@@ -7,6 +7,12 @@ metadata:
     app: llama-cpp-serving
     security.policy: safegguf-validated
 spec:
+  # Fail-closed bound on the whole Pod (staging copy -> validation ->
+  # attestation -> serving): a hung copy or validator cannot occupy the node
+  # indefinitely. The deadline also covers the serving window; a production
+  # serving workload should run under a Deployment/StatefulSet controller so
+  # the Pod is recreated after the deadline instead of staying Failed.
+  activeDeadlineSeconds: 3600
   volumes:
     # Untrusted upload source. Mounted read-only by exactly one init container
     # (the one-time staging copy) and by no other container in this Pod.
@@ -83,6 +89,15 @@ spec:
     # Phase 1: Structural & arithmetic pre-admission validation of the STAGED
     # bytes. The untrusted source path is not mounted in this container.
     - name: safegguf-pre-admission-validator
+      # NOTE (unresolved image reference): CI publishes container tags only for
+      # `v*` git tags, through docker/metadata-action semver patterns, so a
+      # published tag has no `v` prefix (`0.3.6`, `0.3`, `latest` -- see
+      # .github/workflows/container-release.yml and README "Docker"). No
+      # released image contains this commit's `--max-file-size-bytes` /
+      # `--require-stable-file` flags (added after v0.3.6), and
+      # ghcr.io/briannguyen29/safegguf denies anonymous manifest access, so no
+      # digest could be resolved. Substitute a verified release image (tag +
+      # digest) built from this commit before production use.
       image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
       imagePullPolicy: IfNotPresent
       command:
@@ -95,6 +110,9 @@ spec:
         - json
         - --endian
         - auto
+        - --max-file-size-bytes
+        - "17179869184" # 16 GiB; matches the staging volume sizeLimit
+        - --require-stable-file
       resources:
         limits:
           cpu: "1000m"
@@ -167,7 +185,13 @@ spec:
   # ============================================================================
   containers:
     - name: llama-cpp-server
-      image: ghcr.io/ggerganov/llama.cpp:server
+      # Upstream moved from ghcr.io/ggerganov/llama.cpp (no `server` tag
+      # remains there) to ghcr.io/ggml-org/llama.cpp. Pinned by the multi-arch
+      # index digest resolved from the registry on 2026-10-03; update only via
+      # a reviewed digest bump. The entrypoint of this image is
+      # /app/llama-server (verified from the image config), not /server.
+      image: ghcr.io/ggml-org/llama.cpp:server@sha256:970168341efef973da5666ea5c362fa428ee66ba0dfa621b0f69bf3feb3320f7
+      imagePullPolicy: IfNotPresent
       command:
         - /bin/sh
         - -c
@@ -178,7 +202,7 @@ spec:
           cd /validated
           sha256sum -c /attestation/model.gguf.sha256
           echo "[Inference Gate] Bytes match the validated digest; loading immutable CAS entry..."
-          exec /server -m "/validated/$DIGEST" -c 4096 --host 0.0.0.0 --port 8080
+          exec /app/llama-server -m "/validated/$DIGEST" -c 4096 --host 0.0.0.0 --port 8080
       ports:
         - containerPort: 8080
           name: http
@@ -197,3 +221,17 @@ spec:
         requests:
           cpu: "2000m"
           memory: "8Gi"
+      # Hardened to the same standard as the init containers: the inference
+      # process never needs root, never writes outside its read-only mounts,
+      # cannot gain privileges, and runs under the RuntimeDefault seccomp
+      # profile. The CAS entry it reads is mode 0444 and mounted read-only.
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65534 # nobody
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
