@@ -1,0 +1,122 @@
+# ==============================================================================
+# Example Kyverno admission policy for the SafeGGUF handoff.
+#
+# STATUS: partial, and intentionally fail-closed about what it can prove.
+#
+#   * ENFORCEABLE TODAY: the validator container image signature. The release
+#     pipeline signs the image digest with keyless Cosign OIDC and verifies it
+#     before publishing (.github/workflows/container-release.yml), so Kyverno
+#     can verify the same identity/issuer pair at admission time.
+#   * NOT ENFORCEABLE TODAY: the model attestation signature.
+#     deploy/k8s/attestation_handoff.sh emits a canonical, signing-ready
+#     attestation JSON (`attestations/<sha256>.json`, binding digest + verdict
+#     + validator version + profile + limits), but this repository has no
+#     signing flow for script outputs -- the only Cosign flow signs container
+#     image digests in CI. Until a signing step exists, there is no signature
+#     for admission to verify; the commented rule at the bottom shows where it
+#     attaches.
+#
+# This is an example manifest, not applied by CI. Adjust namespaces, image
+# references, and identities to the deployment.
+# ==============================================================================
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: safegguf-verified-serving
+  annotations:
+    policies.kyverno.io/title: SafeGGUF verified serving
+    policies.kyverno.io/category: Supply Chain
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Verifies the SafeGGUF validator image signature with keyless Cosign (the
+      same identity the release pipeline verifies) and enforces the hardened
+      security context on every container and init container of the serving
+      pod.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    # Rule 1: only validator images signed by the release workflow may run.
+    - name: verify-safegguf-validator-image
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - ai-serving
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/briannguyen29/safegguf*"
+          attestors:
+            - entries:
+                - keyless:
+                    subject: "https://github.com/BrianNguyen29/SafeGGUF/.github/workflows/*"
+                    issuer: "https://token.actions.githubusercontent.com"
+                    rekor:
+                      url: "https://rekor.sigstore.dev"
+
+    # Rule 2: every container and init container must match the hardened
+    # profile used by deploy/k8s/safegguf-initcontainer.yaml.
+    - name: require-hardened-pod-security
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - ai-serving
+      validate:
+        message: >-
+          Every container and init container must set runAsNonRoot,
+          readOnlyRootFilesystem, allowPrivilegeEscalation=false, drop ALL
+          capabilities, and the RuntimeDefault seccomp profile.
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+          - list: "request.object.spec.initContainers"
+            pattern:
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+
+    # NOT YET ENFORCEABLE -- model-attestation signature verification.
+    # Once a signing step exists (e.g. `cosign attest --predicate
+    # attestations/<sha256>.json --type https://safegguf.dev/attestation/v1`
+    # attached to the validator image digest, with a pinned key or CI keyless
+    # OIDC), enable this rule so admission verifies the signed model
+    # attestation that binds the digest the pod is allowed to load:
+    #
+    # - name: verify-model-attestation-signature
+    #   match:
+    #     any:
+    #       - resources:
+    #           kinds:
+    #             - Pod
+    #           namespaces:
+    #             - ai-serving
+    #   verifyImages:
+    #     - imageReferences:
+    #         - "ghcr.io/briannguyen29/safegguf*"
+    #       attestations:
+    #         - predicateType: https://safegguf.dev/attestation/v1
+    #           attestors:
+    #             - entries:
+    #                 - keyless:
+    #                     subject: "https://github.com/BrianNguyen29/SafeGGUF/.github/workflows/*"
+    #                     issuer: "https://token.actions.githubusercontent.com"
