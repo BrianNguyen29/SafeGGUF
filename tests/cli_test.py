@@ -644,6 +644,313 @@ def test_resource_limits():
 
     print("  [ok] Resource limits and environment variable tests passed.")
 
+def sha256_file(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def test_admit_publish_and_script_byte_identity():
+    print("Running admit publication tests (layout, attestation bytes, stdout identity)...")
+    import hashlib
+    import shutil
+    import tempfile
+
+    valid = os.path.join(FIXTURES, "valid.gguf")
+    digest = sha256_file(valid)
+
+    with tempfile.TemporaryDirectory() as td:
+        cas = os.path.join(td, "validated")
+        att = os.path.join(td, "attestations")
+        os.makedirs(cas)
+        os.makedirs(att)
+
+        # 1. Happy path: publish + attest + pin, stdout is exactly the
+        #    attestation document.
+        rc, stdout, stderr = run_cli(
+            "admit", "--", valid, "--cas-dir", cas, "--attestations-dir", att,
+            "--log-json",
+        )
+        assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+        cas_entry = os.path.join(cas, digest)
+        att_json = os.path.join(att, digest + ".json")
+        pin = os.path.join(att, digest + ".sha256")
+        assert os.path.isfile(cas_entry), f"CAS entry missing: {os.listdir(cas)}"
+        assert open(cas_entry, "rb").read() == open(valid, "rb").read(), "CAS bytes differ from source"
+        assert open(att_json, "rb").read() == stdout.encode(), "stdout is not the attestation bytes"
+        assert open(pin, "rb").read() == (digest + "  " + digest + "\n").encode(), "pin bytes differ"
+        if os.name != "nt":
+            import stat as stat_mod
+            assert stat_mod.S_IMODE(os.stat(cas_entry).st_mode) == 0o444, "CAS entry not 0444"
+
+        data = json.loads(stdout)
+        assert data["schema_version"] == 1, data
+        assert data["digest"] == {"algorithm": "sha256", "value": digest}, data
+        assert data["size_bytes"] == os.path.getsize(valid), data
+        assert data["verdict"] == {"status": "PASS", "validator_exit_code": 0}, data
+        assert data["validator"]["profile"] == "llama-cpp", data
+        assert data["validator"]["limits"] == {
+            "max_file_size_bytes": 17179869184,
+            "require_stable_file": True,
+        }, data
+        assert data["cas"] == {
+            "relative_path": "validated/" + digest,
+            "sha256": digest,
+        }, data
+        assert data["validator"]["version"], data
+        assert data["validator"]["source_commit"], data
+
+        # --log-json digest is the copy-stream digest.
+        log_record = json.loads(stderr.strip().splitlines()[-1])
+        assert log_record["digest"] == digest, log_record
+        assert log_record["verdict"] == "PASS", log_record
+
+        # No staging leftovers.
+        assert not [n for n in os.listdir(cas) if n.startswith(".admit-stage")], os.listdir(cas)
+
+        # 2. Byte-identical to the K8s handoff script for the same input
+        #    (POSIX + bash only; the script needs mktemp/sha256sum/awk).
+        script = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "deploy", "k8s", "attestation_handoff.sh",
+        )
+        if sys.platform != "win32" and shutil.which("bash") and os.path.isfile(script):
+            work = os.path.join(td, "script-work")
+            env = os.environ.copy()
+            env["PATH"] = os.path.dirname(BINARY) + os.pathsep + env.get("PATH", "")
+            proc = subprocess.run(
+                ["bash", script, valid, work],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                timeout=60, env=env,
+            )
+            assert proc.returncode == 0, f"script failed rc={proc.returncode}: {proc.stderr}"
+            assert open(os.path.join(work, "attestations", digest + ".json"), "rb").read() == \
+                open(att_json, "rb").read(), "attestation differs from script bytes"
+            assert open(os.path.join(work, "validated", digest), "rb").read() == \
+                open(cas_entry, "rb").read(), "CAS bytes differ from script"
+            assert open(os.path.join(work, "attestations", digest + ".sha256"), "rb").read() == \
+                open(pin, "rb").read(), "pin bytes differ from script"
+
+        # 3. --max-file-size-bytes override is bound into the attestation.
+        cas2 = os.path.join(td, "validated2")
+        att2 = os.path.join(td, "attestations2")
+        os.makedirs(cas2)
+        os.makedirs(att2)
+        rc, stdout, stderr = run_cli(
+            "admit", "--", valid, "--cas-dir", cas2, "--attestations-dir", att2,
+            "--max-file-size-bytes", "1048576",
+        )
+        assert rc == 0, f"Expected 0, got {rc}: {stderr}"
+        data2 = json.loads(stdout)
+        assert data2["validator"]["limits"]["max_file_size_bytes"] == 1048576, data2
+
+    print("  [ok] admit publication, layout, and script byte-identity tests passed.")
+
+def test_admit_reject_and_size_cap():
+    print("Running admit reject/size-cap tests (nothing published)...")
+    import tempfile
+
+    valid = os.path.join(FIXTURES, "valid.gguf")
+
+    # 1. Validation REJECT: exit 2, REJECT JSON, no CAS/attestation/staging.
+    with tempfile.TemporaryDirectory() as td:
+        cas = os.path.join(td, "validated")
+        att = os.path.join(td, "attestations")
+        os.makedirs(cas)
+        os.makedirs(att)
+        rc, stdout, stderr = run_cli(
+            "admit", "--", os.path.join(FIXTURES, "gap.gguf"),
+            "--cas-dir", cas, "--attestations-dir", att, "--profile", "llama-cpp",
+        )
+        assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
+        data = json.loads(stdout)
+        assert data["status"] == "REJECT", data
+        assert data["error_code"] == "E_NonContiguousTensorOffset", data
+        assert os.listdir(cas) == [], os.listdir(cas)
+        assert os.listdir(att) == [], os.listdir(att)
+
+    # 2. Pre-copy stat gate: an oversized source rejects at admission with
+    #    nothing published.
+    with tempfile.TemporaryDirectory() as td:
+        cas = os.path.join(td, "validated")
+        att = os.path.join(td, "attestations")
+        os.makedirs(cas)
+        os.makedirs(att)
+        rc, stdout, stderr = run_cli(
+            "admit", "--", valid, "--cas-dir", cas, "--attestations-dir", att,
+            "--max-file-size-bytes", "1",
+        )
+        assert rc == 2, f"Expected 2, got {rc}: {stdout} {stderr}"
+        data = json.loads(stdout)
+        assert data["error_code"] == "E_FileTooLarge", data
+        assert data["stage"] == "admission", data
+        assert os.listdir(cas) == [] and os.listdir(att) == []
+
+    # 3. Streaming gate: a regular file whose stat size (0) understates its
+    #    readable content must abort at cap+1, not copy the whole stream.
+    #    /proc/<pid>/status is such a file on Linux; on other platforms the
+    #    stat gate above is the portable cap contract.
+    proc_status = "/proc/self/status"
+    if sys.platform.startswith("linux") and os.path.isfile(proc_status) and os.path.getsize(proc_status) == 0:
+        with tempfile.TemporaryDirectory() as td:
+            cas = os.path.join(td, "validated")
+            att = os.path.join(td, "attestations")
+            os.makedirs(cas)
+            os.makedirs(att)
+            rc, stdout, stderr = run_cli(
+                "admit", "--", proc_status, "--cas-dir", cas, "--attestations-dir", att,
+                "--max-file-size-bytes", "100",
+            )
+            assert rc == 2, f"Expected streaming abort rc 2, got {rc}: {stdout} {stderr}"
+            data = json.loads(stdout)
+            assert data["error_code"] == "E_FileTooLarge", data
+            assert data["stage"] == "admission", data
+            assert os.listdir(cas) == [] and os.listdir(att) == []
+
+    print("  [ok] admit reject and size-cap tests passed with nothing published.")
+
+def test_admit_usage_and_dash_paths():
+    print("Running admit usage/dash-path tests (must exit 64/74 fail-closed)...")
+    import tempfile
+
+    valid = os.path.join(FIXTURES, "valid.gguf")
+    dash_probe = "-admit-dash-arg-probe.gguf"
+
+    with tempfile.TemporaryDirectory() as td:
+        cas = os.path.join(td, "validated")
+        att = os.path.join(td, "attestations")
+        os.makedirs(cas)
+        os.makedirs(att)
+        not_a_dir = os.path.join(td, "not-a-dir")
+        with open(not_a_dir, "w") as f:
+            f.write("x")
+
+        bad_invocations = [
+            ["admit"],
+            ["admit", "--", valid],  # missing both dirs
+            ["admit", "--", valid, "--cas-dir", cas],
+            ["admit", "--", valid, "--attestations-dir", att],
+            ["admit", "--", valid, "--cas-dir"],
+            ["admit", "--", valid, "--attestations-dir"],
+            ["admit", "--", valid, "--cas-dir", cas, "--attestations-dir", att, "--format", "json"],
+            ["admit", "--", valid, "--cas-dir", cas, "--attestations-dir", att, "--unknown-flag"],
+            ["admit", "--", valid, "--cas-dir", cas, "--attestations-dir", att, "--endian", "middle"],
+            ["admit", "--", valid, "--cas-dir", cas, "--attestations-dir", att, "--key-policy", "bogus"],
+            ["admit", dash_probe, "--cas-dir", cas, "--attestations-dir", att],
+            ["admit", "--help"],
+            ["admit", "--", valid, "--cas-dir", os.path.join(td, "missing"), "--attestations-dir", att],
+            ["admit", "--", valid, "--cas-dir", not_a_dir, "--attestations-dir", att],
+        ]
+        for args in bad_invocations:
+            rc, stdout, stderr = run_cli(*args)
+            assert rc == 64, f"Expected 64 for {args}, got {rc}: {stdout} {stderr}"
+
+        # `--` admits a dash-leading path: it is opened and fails closed as a
+        # missing file (exit 74), never parsed as a flag.
+        rc, stdout, stderr = run_cli("admit", "--", dash_probe, "--cas-dir", cas, "--attestations-dir", att)
+        assert rc == 74, f"Expected 74 for '-- {dash_probe}', got {rc}: {stderr}"
+        data = json.loads(stdout)
+        assert data["error_code"] == "E_FILE_OPEN_FAILED", data
+
+        # Missing/directory/FIFO sources are I/O errors (74), not usage errors.
+        rc, stdout, stderr = run_cli("admit", "--", os.path.join(FIXTURES, "nope.gguf"), "--cas-dir", cas, "--attestations-dir", att)
+        assert rc == 74, f"Expected 74 for missing source, got {rc}"
+        rc, stdout, stderr = run_cli("admit", "--", FIXTURES, "--cas-dir", cas, "--attestations-dir", att)
+        assert rc == 74, f"Expected 74 for directory source, got {rc}"
+        if hasattr(os, "mkfifo"):
+            fifo = os.path.join(td, "fifo.gguf")
+            os.mkfifo(fifo)
+            rc, stdout, stderr = run_cli("admit", "--", fifo, "--cas-dir", cas, "--attestations-dir", att)
+            assert rc == 74, f"Expected 74 for FIFO source, got {rc}"
+            data = json.loads(stdout)
+            assert data["error_code"] == "E_FILE_STAT_FAILED", data
+
+        assert os.listdir(cas) == [], os.listdir(cas)
+
+    print("  [ok] admit usage/dash-path tests passed.")
+
+def test_admit_orphan_cas_on_attestation_failure():
+    print("Running admit orphan-CAS-on-attestation-failure test (exit 74, CAS kept)...")
+    import tempfile
+
+    valid = os.path.join(FIXTURES, "valid.gguf")
+    digest = sha256_file(valid)
+
+    with tempfile.TemporaryDirectory() as td:
+        cas = os.path.join(td, "validated")
+        att = os.path.join(td, "attestations")
+        os.makedirs(cas)
+        os.makedirs(att)
+        # Block the attestation rename with a directory at the final name: the
+        # CAS publish succeeds, the attestation write fails.
+        os.makedirs(os.path.join(att, digest + ".json"))
+
+        rc, stdout, stderr = run_cli("admit", "--", valid, "--cas-dir", cas, "--attestations-dir", att)
+        assert rc == 74, f"Expected 74, got {rc}: {stdout} {stderr}"
+        data = json.loads(stdout)
+        assert data["status"] == "ERROR", data
+        assert data["error_code"] == "E_IoError", data
+        assert data["stage"] == "attestation", data
+
+        # The orphan CAS entry is kept and complete; no pin, no temp leftovers.
+        cas_entry = os.path.join(cas, digest)
+        assert os.path.isfile(cas_entry), "orphan CAS entry was rolled back"
+        assert open(cas_entry, "rb").read() == open(valid, "rb").read()
+        assert not os.path.isfile(os.path.join(att, digest + ".sha256"))
+        leftovers = [n for n in os.listdir(att) if n.endswith(".tmp")]
+        assert leftovers == [], leftovers
+        assert not [n for n in os.listdir(cas) if n.startswith(".admit-stage")], os.listdir(cas)
+
+    print("  [ok] admit orphan-CAS test passed.")
+
+def test_admit_inspect_parity():
+    print("Running admit/inspect shared-defaults parity tests...")
+    import tempfile
+
+    cases = [
+        ("valid.gguf", [], 0, None),
+        ("gap.gguf", ["--profile", "llama-cpp"], 2, "E_NonContiguousTensorOffset"),
+        ("hyphen_key.gguf", [], 2, "E_InvalidKeyFormat"),
+        ("hyphen_key.gguf", ["--key-policy", "lenient"], 0, None),
+        ("version_2.gguf", ["--profile", "gguf-spec"], 2, "E_UnsupportedVersion"),
+        ("version_2.gguf", [], 0, None),
+        ("valid.gguf", ["--max-work-budget", "1"], 2, "E_ResourceLimitExceeded"),
+        ("big_endian_v3.gguf", ["--endian", "auto", "--profile", "gguf-spec"], 0, None),
+        ("element_product_overflow.gguf", ["--profile", "llama-cpp"], 2, "E_CompatibilityViolation"),
+    ]
+    for fixture, flags, want_rc, want_code in cases:
+        path = os.path.join(FIXTURES, fixture)
+        rc_i, out_i, err_i = run_cli("inspect", path, "--format", "json", *flags)
+        assert rc_i == want_rc, f"inspect {fixture} {flags}: expected {want_rc}, got {rc_i}: {err_i}"
+        with tempfile.TemporaryDirectory() as td:
+            cas = os.path.join(td, "validated")
+            att = os.path.join(td, "attestations")
+            os.makedirs(cas)
+            os.makedirs(att)
+            rc_a, out_a, err_a = run_cli("admit", "--", path, "--cas-dir", cas, "--attestations-dir", att, *flags)
+            assert rc_a == want_rc, f"admit {fixture} {flags}: expected {want_rc}, got {rc_a}: {err_a}"
+            if want_code is not None:
+                assert json.loads(out_i)["error_code"] == want_code, (fixture, flags, out_i)
+                assert json.loads(out_a)["error_code"] == want_code, (fixture, flags, out_a)
+
+    # Environment-sourced defaults are shared too (SAFEGGUF_KEY_POLICY).
+    hyphen = os.path.join(FIXTURES, "hyphen_key.gguf")
+    rc_i, _, _ = run_cli("inspect", hyphen, env={"SAFEGGUF_KEY_POLICY": "lenient"})
+    with tempfile.TemporaryDirectory() as td:
+        cas = os.path.join(td, "validated")
+        att = os.path.join(td, "attestations")
+        os.makedirs(cas)
+        os.makedirs(att)
+        rc_a, _, _ = run_cli(
+            "admit", "--", hyphen, "--cas-dir", cas, "--attestations-dir", att,
+            env={"SAFEGGUF_KEY_POLICY": "lenient"},
+        )
+    assert rc_i == 0 and rc_a == 0, (rc_i, rc_a)
+
+    print("  [ok] admit/inspect parity tests passed.")
+
 if __name__ == "__main__":
     if not os.path.exists(BINARY):
         print(f"Error: binary {BINARY} does not exist. Run zig build first.")
@@ -661,4 +968,9 @@ if __name__ == "__main__":
     test_endian_auto()
     test_resource_limits()
     test_fail_closed_arg_and_open_regressions()
+    test_admit_publish_and_script_byte_identity()
+    test_admit_reject_and_size_cap()
+    test_admit_usage_and_dash_paths()
+    test_admit_orphan_cas_on_attestation_failure()
+    test_admit_inspect_parity()
     print("\nAll CLI end-to-end integration tests PASSED successfully!")

@@ -12,11 +12,26 @@
 # before calling this workflow. The former push-tags and workflow_dispatch
 # triggers were dropped because they published without that gate, so a v* tag
 # now publishes exactly once, through the CI call.
+#
+# The caller forwards the release tag as the required `version` input; both
+# jobs strip the leading v and pass it as SAFEGGUF_VERSION, so the binary's
+# embedded version and the image's org.opencontainers.image.version label
+# report the tag instead of the Dockerfile's 0.3.7-dev fallback.
 
 name: Container Release Pipeline
 
 on:
   workflow_call:
+    inputs:
+      version:
+        description: >-
+          Release version embedded in the binary and stamped on the image's
+          org.opencontainers.image.version label. Accepts the tag form
+          (v1.2.3) or the bare form (1.2.3); a leading v is stripped.
+          Required: a release must never silently fall back to the
+          Dockerfile default.
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -45,6 +60,22 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # Release version for the smoke image: derived from the tag forwarded by
+      # the caller (v1.2.3 -> 1.2.3), mirroring the release job's `-Dversion`
+      # handling in ci.yml. Never the Dockerfile default.
+      - name: Resolve release version (strip leading v from tag)
+        id: release-version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${VERSION_INPUT#v}"
+          if [ -z "$version" ]; then
+            echo "ERROR: empty release version input" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
@@ -60,6 +91,8 @@ jobs:
           load: true
           push: false
           tags: safegguf-smoke:${{ matrix.arch }}
+          build-args: |
+            SAFEGGUF_VERSION=${{ steps.release-version.outputs.version }}
 
       - name: Generate GGUF smoke fixtures
         run: |
@@ -84,10 +117,19 @@ jobs:
           docker image inspect --format 'image platform: {{.Os}}/{{.Architecture}}' "$image"
 
       - name: Run CLI contract on the built image
+        env:
+          EXPECTED_VERSION: ${{ steps.release-version.outputs.version }}
         run: |
           set -euo pipefail
           image="safegguf-smoke:${{ matrix.arch }}"
-          docker run --rm --platform ${{ matrix.platform }} "$image" --version
+          # The binary must self-report the tag-derived version passed as a
+          # build-arg, not the Dockerfile fallback (version-drift regression).
+          reported="$(docker run --rm --platform ${{ matrix.platform }} "$image" --version | head -n1)"
+          echo "$reported"
+          if [ "$reported" != "SafeGGUF $EXPECTED_VERSION" ]; then
+            echo "version drift: expected 'SafeGGUF $EXPECTED_VERSION', got '$reported'"
+            exit 1
+          fi
 
           docker run --rm --platform ${{ matrix.platform }} \
             -v "$PWD/smoke-run:/smoke:ro" "$image" \
@@ -115,6 +157,22 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
+
+      # Release version for the published image: derived from the tag forwarded
+      # by the caller (v1.2.3 -> 1.2.3), mirroring the release job's
+      # `-Dversion` handling in ci.yml. Never the Dockerfile default.
+      - name: Resolve release version (strip leading v from tag)
+        id: release-version
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${VERSION_INPUT#v}"
+          if [ -z "$version" ]; then
+            echo "ERROR: empty release version input" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
@@ -155,6 +213,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           provenance: mode=max
           sbom: true
+          build-args: |
+            SAFEGGUF_VERSION=${{ steps.release-version.outputs.version }}
 
       - name: Sign container image with Cosign (Keyless OIDC)
         if: ${{ github.event_name != 'pull_request' }}
