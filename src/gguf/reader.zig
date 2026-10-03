@@ -218,3 +218,54 @@ pub const FileIdentity = struct {
         if (!eql(self, after)) return error.FileChanged;
     }
 };
+
+/// Result of opening a path whose resolved target is a regular file.
+pub const OpenedRegularFile = struct {
+    file: std.fs.File,
+    size: u64,
+};
+
+/// Shared open error set: the platform open errors plus the two post-open
+/// checks. The CLI (src/main.zig) and the C ABI (src/c_api.zig) surface the
+/// same target policy through `openRegularFile`.
+pub const OpenRegularFileError = std.fs.File.OpenError || error{
+    /// The opened descriptor could not be queried.
+    StatFailed,
+    /// The resolved target is not a regular file (directory, FIFO, socket,
+    /// character/block device, ...).
+    NotRegularFile,
+};
+
+/// Opens `path` and returns it only when the resolved target is a regular
+/// file. Shared by the CLI (src/main.zig) and the C ABI (src/c_api.zig) so
+/// both enforce the same target policy and the same blocking behavior.
+///
+/// Symlink policy: symlinks are followed (std.fs.Dir.openFile resolves links).
+/// The kind decision applies to the resolved target, so a symlink to a regular
+/// model is accepted while a symlink to a directory/FIFO/device is rejected.
+/// O_NOFOLLOW is deliberately not used: parity is defined on the resolved
+/// target, and the non-blocking kind check makes the follow safe.
+///
+/// Blocking policy: on POSIX the open uses O_NONBLOCK so a FIFO with no writer
+/// (or any target whose open would otherwise wait) returns immediately and is
+/// then rejected by the kind check; O_NONBLOCK has no effect on regular-file
+/// reads, so validation semantics are unchanged. O_NOCTTY avoids acquiring a
+/// controlling terminal. The kind is taken from fstat on the just-opened
+/// descriptor, so a concurrent path swap cannot bypass the policy.
+pub fn openRegularFile(path: []const u8) OpenRegularFileError!OpenedRegularFile {
+    if (builtin.os.tag == .windows) {
+        // Windows has no O_NONBLOCK equivalent for path opens; stat.kind is
+        // still the regular-file decision.
+        const file = std.fs.cwd().openFile(path, .{}) catch |e| return e;
+        errdefer file.close();
+        const stat = file.stat() catch return error.StatFailed;
+        if (stat.kind != .file) return error.NotRegularFile;
+        return .{ .file = file, .size = stat.size };
+    }
+    const fd = std.posix.open(path, .{ .NONBLOCK = true, .NOCTTY = true, .CLOEXEC = true }, 0) catch |e| return e;
+    const file = std.fs.File{ .handle = fd };
+    errdefer file.close();
+    const stat = file.stat() catch return error.StatFailed;
+    if (stat.kind != .file) return error.NotRegularFile;
+    return .{ .file = file, .size = stat.size };
+}

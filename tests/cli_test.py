@@ -363,6 +363,56 @@ def test_usage_and_flags():
 
     print("  [ok] All usage tests passed with exit code 64.")
 
+def test_fail_closed_arg_and_open_regressions():
+    print("Running fail-closed regressions (dash paths, '--', FIFO open, digest gate order)...")
+
+    valid = os.path.join(FIXTURES, "valid.gguf")
+    dash_probe = "-safegguf-dash-arg-probe.gguf"
+
+    # 1. A dash-leading positional path is a usage error without '--'; the
+    #    top-level help contract (exit 0) is unchanged.
+    rc, stdout, stderr = run_cli("inspect", "-h")
+    assert rc == 64, f"Expected 64 for 'inspect -h', got {rc}\nStdout: {stdout}\nStderr: {stderr}"
+    rc, stdout, stderr = run_cli("inspect", dash_probe)
+    assert rc == 64, f"Expected 64 for a dash-leading path, got {rc}\nStdout: {stdout}\nStderr: {stderr}"
+    rc, stdout, stderr = run_cli("--help")
+    assert rc == 0, f"Expected 0 for top-level --help, got {rc}"
+
+    # 2. '--' admits a dash-leading path: it is opened (and fails closed as a
+    #    missing file), instead of being read as a flag.
+    rc, stdout, stderr = run_cli("inspect", "--", dash_probe, "--format", "json")
+    assert rc == 74, f"Expected 74 for '-- {dash_probe}', got {rc}: {stderr}"
+    data = json.loads(stdout)
+    assert data["error_code"] == "E_FILE_OPEN_FAILED", data
+
+    # 3. Non-regular path targets must not block: a FIFO with no writer is
+    #    rejected immediately (exit 74, E_FILE_STAT_FAILED), not left hanging
+    #    in open(2). os.mkfifo is POSIX-only.
+    if hasattr(os, "mkfifo"):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            fifo_path = os.path.join(td, "target.gguf")
+            os.mkfifo(fifo_path)
+            rc, stdout, stderr = run_cli("inspect", fifo_path, "--format", "json")
+            assert rc == 74, f"Expected 74 for FIFO, got {rc}: {stderr}"
+            data = json.loads(stdout)
+            assert data["error_code"] == "E_FILE_STAT_FAILED", data
+
+    # 4. The --max-file-size-bytes admission gate runs before the --log-json
+    #    digest: an oversized input rejects with an empty digest, so the log
+    #    can never describe bytes the validator did not admit.
+    rc, stdout, stderr = run_cli("inspect", valid, "--max-file-size-bytes", "1", "--format", "json", "--log-json")
+    assert rc == 2, f"Expected 2 for oversized input, got {rc}: {stdout} {stderr}"
+    data = json.loads(stdout)
+    assert data["error_code"] == "E_FileTooLarge", data
+    assert data["stage"] == "admission", data
+    log_record = json.loads(stderr.strip().splitlines()[-1])
+    assert log_record["error_code"] == "E_FileTooLarge", log_record
+    assert log_record["stage"] == "admission", log_record
+    assert log_record["digest"] == "", f"digest computed before the admission gate: {log_record}"
+
+    print("  [ok] Fail-closed argument, open, and digest-order regressions passed.")
+
 def write_oversize_string_fixture(path, value_len):
     """Writes a minimal metadata-only GGUF v3 whose single metadata entry is
     `big.string: string` with `value_len` ASCII bytes (default cap is 65536)."""
@@ -610,4 +660,5 @@ if __name__ == "__main__":
     test_help()
     test_endian_auto()
     test_resource_limits()
+    test_fail_closed_arg_and_open_regressions()
     print("\nAll CLI end-to-end integration tests PASSED successfully!")

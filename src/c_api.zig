@@ -359,58 +359,6 @@ fn validateInternal(
     return 0; // PASS
 }
 
-/// Result of opening a path whose resolved target is a regular file.
-const OpenedRegularFile = struct {
-    file: std.fs.File,
-    size: u64,
-};
-
-const OpenRegularFileError = error{
-    /// open(2) / CreateFile failed (missing path, permissions, socket node, ...).
-    OpenFailed,
-    /// The opened descriptor could not be queried.
-    StatFailed,
-    /// The resolved target is not a regular file (directory, FIFO, socket,
-    /// character/block device, ...).
-    NotRegularFile,
-};
-
-/// Opens `path` and returns it only when the resolved target is a regular
-/// file, mirroring the CLI's `stat.kind != .file` policy (src/main.zig).
-///
-/// Symlink policy: symlinks are followed, matching both the previous C ABI
-/// behavior and the CLI (`std.fs.Dir.openFile` resolves links). The kind
-/// decision applies to the resolved target, so a symlink to a regular model
-/// is accepted while a symlink to a directory/FIFO/device is rejected.
-/// O_NOFOLLOW is deliberately not used: CLI parity is defined on the resolved
-/// target, and the non-blocking kind check makes the follow safe.
-///
-/// Blocking policy: on POSIX the open uses O_NONBLOCK so a FIFO with no
-/// writer (or any target whose open would otherwise wait) returns immediately
-/// and is then rejected by the kind check; O_NONBLOCK has no effect on
-/// regular-file reads, so validation semantics are unchanged. O_NOCTTY avoids
-/// acquiring a controlling terminal. The kind is taken from fstat on the
-/// just-opened descriptor, so a concurrent path swap cannot bypass the policy.
-fn openRegularFile(path: []const u8) OpenRegularFileError!OpenedRegularFile {
-    const builtin = @import("builtin");
-    if (builtin.os.tag == .windows) {
-        // Windows has no O_NONBLOCK equivalent for path opens; stat.kind is
-        // still the regular-file decision (CLI parity; main.zig uses the same
-        // kind check).
-        const file = std.fs.cwd().openFile(path, .{}) catch return error.OpenFailed;
-        errdefer file.close();
-        const stat = file.stat() catch return error.StatFailed;
-        if (stat.kind != .file) return error.NotRegularFile;
-        return .{ .file = file, .size = stat.size };
-    }
-    const fd = std.posix.open(path, .{ .NONBLOCK = true, .NOCTTY = true, .CLOEXEC = true }, 0) catch return error.OpenFailed;
-    const file = std.fs.File{ .handle = fd };
-    errdefer file.close();
-    const stat = file.stat() catch return error.StatFailed;
-    if (stat.kind != .file) return error.NotRegularFile;
-    return .{ .file = file, .size = stat.size };
-}
-
 /// Fstats a descriptor supplied by a foreign C caller. `std.posix.fstat`
 /// treats EBADF as `unreachable` (a process abort), so an untrusted descriptor
 /// must not be handed to the wrapper: the raw fstat call is issued here and
@@ -467,11 +415,11 @@ pub export fn safegguf_validate_path_v1(
     // targets have no meaningful size for the sliding-window reader and would
     // otherwise surface as an opaque mid-parse I/O error; reject them up front
     // on the stat-failure path (exit 74, E_FILE_STAT_FAILED).
-    const opened = openRegularFile(path_slice) catch |e| {
+    const opened = reader_mod.openRegularFile(path_slice) catch |e| {
         switch (e) {
-            error.OpenFailed => populateResult(out_result, 74, "E_FILE_OPEN_FAILED", "io", "filesystem", "Failed to open file on disk"),
             error.StatFailed => populateResult(out_result, 74, "E_FILE_STAT_FAILED", "io", "filesystem", "Failed to query file metadata / stat"),
             error.NotRegularFile => populateResult(out_result, 74, "E_FILE_STAT_FAILED", "io", "filesystem", "Not a regular file"),
+            else => populateResult(out_result, 74, "E_FILE_OPEN_FAILED", "io", "filesystem", "Failed to open file on disk"),
         }
         return 74;
     };
@@ -549,7 +497,7 @@ pub export fn safegguf_validate_path(
     if (path_slice.len == 0 or path_slice.len > 4096) return 74;
 
     // Same regular-file target policy as the v1 entry point (CLI parity).
-    const opened = openRegularFile(path_slice) catch return 74;
+    const opened = reader_mod.openRegularFile(path_slice) catch return 74;
     defer opened.file.close();
     return validateInternal(opened.file, opened.size, null, profile_id, endian_id, null);
 }
