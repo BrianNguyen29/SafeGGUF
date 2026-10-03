@@ -44,6 +44,7 @@ def run_triage(
     fmt: Optional[str] = "json",
     extra_args: Optional[List[str]] = None,
     env: Optional[Dict[str, str]] = None,
+    unset_env: Optional[List[str]] = None,
 ) -> Tuple[int, str, str]:
     cmd = [sys.executable, str(TRIAGE_SCRIPT)]
     if file_path is not None:
@@ -60,6 +61,10 @@ def run_triage(
     run_env = os.environ.copy()
     if env:
         run_env.update(env)
+    # `env` can only add/overwrite: explicitly remove inherited variables so
+    # tests can isolate the TYPESAFE_API_KEY contract on any host.
+    for key in unset_env or []:
+        run_env.pop(key, None)
 
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=run_env)
     return p.returncode, p.stdout, p.stderr
@@ -327,8 +332,7 @@ class TestTriageModesAndFallback(unittest.TestCase):
 
     def test_auto_fallback_without_api_key(self):
         fixture = FIXTURES_DIR / "valid.gguf"
-        clean_env = {k: v for k, v in os.environ.items() if k != "TYPESAFE_API_KEY"}
-        rc, stdout, stderr = run_triage(str(fixture), mode="auto", env=clean_env)
+        rc, stdout, stderr = run_triage(str(fixture), mode="auto", unset_env=["TYPESAFE_API_KEY"])
         self.assertEqual(rc, 0, f"Expected rc 0, got {rc}. Stderr: {stderr}")
         data = json.loads(stdout)
         self.assertEqual(data["triage"]["engine"], "deterministic_rule_classifier")
@@ -342,19 +346,60 @@ class TestTriageModesAndFallback(unittest.TestCase):
 
     def test_online_mode_without_api_key_fails_cleanly(self):
         fixture = FIXTURES_DIR / "valid.gguf"
-        clean_env = {k: v for k, v in os.environ.items() if k != "TYPESAFE_API_KEY"}
-        rc, stdout, stderr = run_triage(str(fixture), mode="online", env=clean_env)
+        rc, stdout, stderr = run_triage(str(fixture), mode="online", unset_env=["TYPESAFE_API_KEY"])
         self.assertEqual(rc, 64, f"Expected rc 64, got {rc}")
         self.assertIn("TYPESAFE_API_KEY", stderr)
 
-    def test_auto_fallback_with_unreachable_api(self):
+    def test_auto_mode_is_offline_only_even_with_api_key(self):
+        """P0: --mode auto (default) must never egress; only --mode online does."""
         fixture = FIXTURES_DIR / "valid.gguf"
         env = {"TYPESAFE_API_KEY": "sk-unreachable-test-key"}
         rc, stdout, stderr = run_triage(str(fixture), mode="auto", env=env)
         self.assertEqual(rc, 0, f"Expected rc 0, got {rc}. Stderr: {stderr}")
         data = json.loads(stdout)
-        self.assertEqual(data["triage"]["engine"], "offline_deterministic_fallback")
-        self.assertIn("fallback to offline rule classifier", data["triage"]["rationale"])
+        self.assertEqual(data["triage"]["engine"], "deterministic_rule_classifier")
+        self.assertNotIn("fallback", data["triage"]["rationale"].lower())
+
+    def test_egress_payload_strips_paths_and_tensor_names(self):
+        """P0: the outbound request body must carry no file paths or tensor/key names."""
+        from unittest.mock import patch
+        sys.path.insert(0, str(TRIAGE_SCRIPT.parent))
+        import safegguf_triage
+
+        captured = {}
+
+        def fake_urlopen(req, context=None, timeout=None):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            raise ConnectionError("network disabled in test")
+
+        state = {
+            "exit_code": 2,
+            "error_code": "E_NonContiguousTensorOffset",
+            "category": "compatibility",
+            "message": "Tensor offsets are not strictly contiguous",
+            "file": "/private/models/secret-model.gguf",
+            "tensor": "blk.0.attn_q.weight",
+            "key": "general.secret",
+            "findings": [
+                {"code": "E_TensorOverlap", "tensor": "blk.1.ffn_up.weight", "key": "general.hidden", "message": "Tensor data ranges overlap"}
+            ],
+        }
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            with self.assertRaises(ConnectionError):
+                safegguf_triage.online_jev_triage(state, api_key="sk-test", allow_fallback=False)
+
+        sent = json.dumps(captured["body"])
+        for leaked in ["secret-model.gguf", "/private/models", "blk.0.attn_q.weight", "blk.1.ffn_up.weight", "general.secret", "general.hidden"]:
+            self.assertNotIn(leaked, sent, f"egress payload leaked {leaked!r}")
+        self.assertEqual(captured["body"]["state"]["exit_code"], 2)
+        self.assertEqual(captured["body"]["state"]["error_code"], "E_NonContiguousTensorOffset")
+
+    def test_relative_safegguf_bin_fails_closed(self):
+        """P0: a non-absolute SAFEGGUF_BIN is a usage error, not a silent fallback."""
+        fixture = FIXTURES_DIR / "valid.gguf"
+        rc, stdout, stderr = run_triage(str(fixture), env={"SAFEGGUF_BIN": "relative/safegguf"})
+        self.assertEqual(rc, 64, f"Expected rc 64, got {rc}. Stderr: {stderr}")
+        self.assertIn("SAFEGGUF_BIN", stderr)
 
     def test_online_mode_with_unreachable_api_fails_cleanly(self):
         fixture = FIXTURES_DIR / "valid.gguf"

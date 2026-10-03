@@ -3,42 +3,66 @@
 safegguf-triage: Production Hybrid Model Admission & Semantic Security Triage Tool.
 
 Integrates SafeGGUF deterministic verification with TypeSafe Jev (System One) semantic
-risk scoring. Supports seamless automatic fallback to the Offline Deterministic Rule
-Engine for air-gapped, zero-cloud production environments.
+risk scoring. Runs the Offline Deterministic Rule Engine by default; network egress to
+the TypeSafe API happens only when --mode online is selected explicitly.
 """
 
 import os
+import stat
 import sys
 import json
 import argparse
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, List, Optional
+
+def _is_executable_regular_file(path: Path) -> bool:
+    """True only for an existing executable regular file: directories, FIFOs,
+    devices, and non-executable files are never accepted as the binary."""
+    try:
+        st = path.stat()
+    except OSError:
+        return False
+    if not stat.S_ISREG(st.st_mode):
+        return False
+    return os.access(path, os.X_OK)
 
 def find_safegguf_binary() -> str:
+    # An explicit SAFEGGUF_BIN is a trust decision: it must be an absolute path
+    # to an executable regular file, and an invalid value fails closed instead
+    # of silently falling back to a search path.
     env_bin = os.environ.get("SAFEGGUF_BIN")
-    if env_bin and os.path.exists(env_bin):
-        return env_bin
+    if env_bin:
+        candidate = Path(env_bin)
+        if not candidate.is_absolute():
+            raise FileNotFoundError("SAFEGGUF_BIN must be an absolute path to the SafeGGUF binary.")
+        if not _is_executable_regular_file(candidate):
+            raise FileNotFoundError(f"SAFEGGUF_BIN is not an executable regular file: {env_bin}")
+        return str(candidate)
 
+    # Only the build output adjacent to this checkout is trusted implicitly.
+    # The current working directory is never a search location, so a planted
+    # ./zig-out/bin/safegguf cannot be picked up by running from a hostile cwd.
     repo_root = Path(__file__).resolve().parents[2]
     candidates = [
         repo_root / "zig-out" / "bin" / "safegguf.exe",
         repo_root / "zig-out" / "bin" / "safegguf",
-        Path.cwd() / "zig-out" / "bin" / "safegguf.exe",
-        Path.cwd() / "zig-out" / "bin" / "safegguf",
     ]
     for c in candidates:
-        if c.exists():
+        if _is_executable_regular_file(c):
             return str(c)
 
-    # Search in PATH
+    # PATH fallback: skip empty and relative entries (on POSIX an empty PATH
+    # entry means the current directory) and require an executable regular file.
     for path_dir in os.environ.get("PATH", "").split(os.pathsep):
+        if not path_dir or not os.path.isabs(path_dir):
+            continue
         for name in ["safegguf.exe", "safegguf"]:
             cand = Path(path_dir) / name
-            if cand.exists():
+            if _is_executable_regular_file(cand):
                 return str(cand)
 
-    raise FileNotFoundError("SafeGGUF binary not found. Build with 'zig build' or set SAFEGGUF_BIN.")
+    raise FileNotFoundError("SafeGGUF binary not found. Build with 'zig build' or set SAFEGGUF_BIN to an absolute path.")
 
 def run_safegguf(binary: str, file_path: str, profile: str = "llama-cpp") -> Dict[str, Any]:
     cmd = [binary, "inspect", str(file_path), "--profile", profile, "--format", "json", "--endian", "auto"]
@@ -276,13 +300,47 @@ def offline_rule_triage(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
 # Backward compatibility alias
 offline_bayesian_triage = offline_rule_triage
 
+# Egress minimization: the outbound state must not disclose local file paths or
+# model-internal names. These keys are dropped wherever they appear, and any
+# occurrence of the target path or its basename is scrubbed from the remaining
+# strings (an I/O fallback message can embed the path).
+_EGRESS_DENIED_KEYS = frozenset({"file", "tensor", "key", "tensor_name", "raw_stdout"})
+
+def _scrub_egress_value(value: Any, secrets: List[str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            k: _scrub_egress_value(v, secrets)
+            for k, v in value.items()
+            if k not in _EGRESS_DENIED_KEYS
+        }
+    if isinstance(value, list):
+        return [_scrub_egress_value(v, secrets) for v in value]
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "<redacted>")
+        return value
+    return value
+
+def sanitize_state_for_egress(safegguf_res: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of the SafeGGUF result safe to send off-host: local file
+    paths and tensor/key names are removed, not merely relabeled."""
+    secrets: List[str] = []
+    raw_path = safegguf_res.get("file")
+    if isinstance(raw_path, str) and raw_path:
+        secrets.append(raw_path)
+        base = os.path.basename(raw_path)
+        if base:
+            secrets.append(base)
+    return _scrub_egress_value(safegguf_res, secrets)
+
 def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback: bool = True) -> Dict[str, Any]:
     """
     Online TypeSafe Jev System One evaluation when API key is present.
     Dispatches live HTTP POST request to TypeSafe API endpoint over verified TLS.
-    If allow_fallback is True (auto mode) and network call fails,
+    If allow_fallback is True (opt-in callers) and network call fails,
     gracefully falls back to offline deterministic rule classifier with engine 'offline_deterministic_fallback'.
-    If allow_fallback is False (online mode) and network call fails,
+    If allow_fallback is False (CLI --mode online) and network call fails,
     raises ConnectionError.
     """
     import urllib.request
@@ -301,7 +359,7 @@ def online_jev_triage(safegguf_res: Dict[str, Any], api_key: str, allow_fallback
 
     req_data = {
         "model": "jev-latest",
-        "state": safegguf_res,
+        "state": sanitize_state_for_egress(safegguf_res),
         "questions": {
             "risk_score": {"primitive": "score", "dimension": "security_risk_severity"},
             "threat_category": {
@@ -399,13 +457,10 @@ def triage_model(file_path: str, profile: str = "llama-cpp", mode: str = "auto")
         if not api_key:
             raise ValueError("Mode 'online' selected but TYPESAFE_API_KEY environment variable is not set.")
         triage_info = online_jev_triage(raw_res, api_key, allow_fallback=False)
-    elif mode == "offline":
+    else:
+        # "auto" (the default) and "offline" are strictly offline: no network
+        # egress happens unless --mode online is passed explicitly.
         triage_info = offline_rule_triage(raw_res)
-    else:  # auto
-        if api_key:
-            triage_info = online_jev_triage(raw_res, api_key, allow_fallback=True)
-        else:
-            triage_info = offline_rule_triage(raw_res)
 
     exit_code = raw_res.get("exit_code", 2)
     err_code = raw_res.get("error_code") or ""
@@ -434,7 +489,7 @@ def main():
     parser = TriageArgumentParser(description="SafeGGUF Hybrid Admission & Semantic Triage Tool")
     parser.add_argument("file", help="Path to GGUF model file")
     parser.add_argument("--profile", choices=["llama-cpp", "gguf-spec"], default="llama-cpp", help="Validation profile (default: llama-cpp)")
-    parser.add_argument("--mode", choices=["auto", "online", "offline"], default="auto", help="Triage mode (default: auto)")
+    parser.add_argument("--mode", choices=["auto", "online", "offline"], default="auto", help="Triage mode: auto/offline are local-only; online performs TypeSafe API egress (default: auto)")
     parser.add_argument("--format", choices=["json", "text"], default="text", help="Output format (default: text)")
 
     args = parser.parse_args()

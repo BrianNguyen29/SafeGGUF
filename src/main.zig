@@ -58,15 +58,27 @@ fn run() anyerror!void {
         std.process.exit(64);
     }
 
-    const file_path = args.next() orelse {
+    // Positional path after `inspect`. A token starting with '-' is never
+    // accepted as a path without an explicit `--` separator: a dash-leading
+    // filename must not be silently read as a flag (fail closed, exit 64).
+    const first_arg = args.next() orelse {
         try stderr.print("Error: Missing GGUF file path\n\n", .{});
         try printUsage(stderr);
         std.process.exit(64);
     };
-
-    if (std.mem.eql(u8, file_path, "--help") or std.mem.eql(u8, file_path, "-h")) {
-        try printUsage(stdout);
-        std.process.exit(0);
+    var file_path: []const u8 = undefined;
+    if (std.mem.eql(u8, first_arg, "--")) {
+        file_path = args.next() orelse {
+            try stderr.print("Error: Missing GGUF file path after '--'\n\n", .{});
+            try printUsage(stderr);
+            std.process.exit(64);
+        };
+    } else if (first_arg.len > 0 and first_arg[0] == '-') {
+        try stderr.print("Error: file path '{s}' starts with '-' and requires a '--' separator\n\n", .{first_arg});
+        try printUsage(stderr);
+        std.process.exit(64);
+    } else {
+        file_path = first_arg;
     }
 
     var endian: std.builtin.Endian = .little;
@@ -272,62 +284,62 @@ fn run() anyerror!void {
         if (tenant_id_arg) |tenant_id| obs.setTenantId(tenant_id);
     }
 
-    const file = std.fs.cwd().openFile(file_path, .{}) catch |e| {
+    // Open policy is shared with the C ABI (reader.openRegularFile): POSIX
+    // opens use O_NONBLOCK so a FIFO/device without a counterpart returns
+    // immediately instead of blocking in open(2), and the regular-file kind
+    // check runs on the just-opened descriptor (directories, FIFOs, devices,
+    // sockets have no meaningful size for the sliding-window reader and are
+    // rejected up front on the existing stat-failure path).
+    const opened = reader_mod.openRegularFile(file_path) catch |e| {
+        const is_stat_failure = e == error.StatFailed or e == error.NotRegularFile;
+        const kind_error = if (e == error.NotRegularFile) "NotRegularFile" else @errorName(e);
+        if (is_stat_failure) {
+            const message = if (e == error.NotRegularFile) "Not a regular file" else "Failed to stat file";
+            if (format == .json) {
+                try stdout.print(
+                    \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","canonical_error_code":"{s}","message":"{s}"}}
+                    \\
+                , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, kind_error, err_types.public_codes.file_stat_failed, message });
+            } else {
+                try stderr.print("Error: {s} '{s}': {s}\n", .{ message, file_path, kind_error });
+            }
+            obs.finish(74, .err, "E_FILE_STAT_FAILED", "io"); // EX_IOERR
+        }
         if (format == .json) {
             try stdout.print(
                 \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_OPEN_FAILED","canonical_error_code":"{s}","message":"Failed to open file"}}
                 \\
-            , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e), err_types.public_codes.file_open_failed });
+            , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, kind_error, err_types.public_codes.file_open_failed });
         } else {
-            try stderr.print("Error: Failed to open file '{s}': {s}\n", .{ file_path, @errorName(e) });
+            try stderr.print("Error: Failed to open file '{s}': {s}\n", .{ file_path, kind_error });
         }
         obs.finish(74, .err, "E_FILE_OPEN_FAILED", "io"); // EX_IOERR
     };
+    const file = opened.file;
     defer file.close();
 
-    const stat = file.stat() catch |e| {
-        if (format == .json) {
-            try stdout.print(
-                \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","canonical_error_code":"{s}","message":"Failed to stat file"}}
-                \\
-            , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, @errorName(e), err_types.public_codes.file_stat_failed });
-        } else {
-            try stderr.print("Error: Failed to stat file '{s}': {s}\n", .{ file_path, @errorName(e) });
-        }
-        obs.finish(74, .err, "E_FILE_STAT_FAILED", "io"); // EX_IOERR
-    };
+    obs.file_size = opened.size;
 
-    obs.file_size = stat.size;
-
-    // Non-regular path targets (directories, FIFOs, devices, sockets) have no
-    // meaningful size for the sliding-window reader and would otherwise surface
-    // as an opaque mid-parse I/O error; reject them up front on the existing
-    // stat-failure path (exit 74, E_FILE_STAT_FAILED).
-    if (stat.kind != .file) {
-        const kind_error = "NotRegularFile";
-        if (format == .json) {
-            try stdout.print(
-                \\{{"schema_version":{d},"status":"ERROR","{s}":{{"project":"ggml","version":"{s}","commit":"{s}"}},"error":"{s}","error_code":"E_FILE_STAT_FAILED","canonical_error_code":"{s}","message":"Not a regular file"}}
-                \\
-            , .{ safegguf.json_schema_version, target_field_name, types.GGML_PINNED_VERSION, types.GGML_PINNED_COMMIT, kind_error, err_types.public_codes.file_stat_failed });
-        } else {
-            try stderr.print("Error: Not a regular file '{s}': {s}\n", .{ file_path, kind_error });
-        }
-        obs.finish(74, .err, "E_FILE_STAT_FAILED", "io"); // EX_IOERR
+    // Admission gate: the configured input-size ceiling is enforced before any
+    // O(file-size) work, in particular the opt-in --log-json SHA-256 digest
+    // below, which otherwise reads the whole file. Mirrors the validator's own
+    // admission check (parser.parseDocument) so an oversized input is rejected
+    // without being hashed: same legacy code, category, stage, and exit code.
+    if (opened.size > limit.max_file_size_bytes) {
+        var admission_ctx = err_types.ParseContext{};
+        admission_ctx.beginPhase("admission");
+        try emitRejection(profile_str, target_field_name, error.FileTooLarge, &admission_ctx, format, stdout, stderr);
+        obs.finish(2, .reject, "E_FileTooLarge", "admission"); // REJECT
     }
-
-    // Structured logging wants a content digest; computed here (opt-in only)
-    // with an independent pread loop, so it cannot disturb the validation
-    // reader. Failure leaves the digest empty - the log is diagnostic and must
-    // never change the verdict.
-    if (emit_log) obs.setDigest(file);
 
     // Optional stable-file check (--require-stable-file): snapshot the open
     // handle's identity before validation so it can be re-verified afterwards.
-    // Off by default, so existing behavior is unchanged. The check operates on
-    // the already-open handle (never re-opens by path) and bounds
-    // dev/inode/size/mtime/ctime mutation; it is not cryptographic
-    // immutability (see reader.FileIdentity for the exact limits).
+    // Captured before the digest so the digest is computed inside the window
+    // the post-validation identity check covers. Off by default, so existing
+    // behavior is unchanged. The check operates on the already-open handle
+    // (never re-opens by path) and bounds dev/inode/size/mtime/ctime mutation;
+    // it is not cryptographic immutability (see reader.FileIdentity for the
+    // exact limits).
     var stable_identity: ?reader_mod.FileIdentity = null;
     if (require_stable_file) {
         stable_identity = reader_mod.FileIdentity.capture(file) catch |e| {
@@ -343,8 +355,14 @@ fn run() anyerror!void {
         };
     }
 
+    // Structured logging wants a content digest; computed here (opt-in only)
+    // with an independent pread loop, so it cannot disturb the validation
+    // reader. Failure leaves the digest empty - the log is diagnostic and must
+    // never change the verdict.
+    if (emit_log) obs.setDigest(file);
+
     // Sliding-window buffered reader to mitigate syscall-heavy DoS attacks
-    var buffered_reader = reader_mod.BufferedReader.init(file, stat.size);
+    var buffered_reader = reader_mod.BufferedReader.init(file, opened.size);
     const r = buffered_reader.reader();
 
     // High-level Validator automatically manages QuotaAllocator and WorkBudget
@@ -798,6 +816,7 @@ fn printUsage(writer: anytype) !void {
     try writer.print("  --log-json                      Emit one structured JSON log record to stderr (adds a SHA-256 file digest)\n", .{});
     try writer.print("  --request-id <id>               Request correlation id for --log-json (default: random per run)\n", .{});
     try writer.print("  --tenant-id <id>                Tenant id for --log-json; logged only as a SHA-256 pseudonym\n", .{});
+    try writer.print("  --                              Separator required before a file path starting with '-'\n", .{});
     try writer.print("  --help, -h                      Display this help message and exit\n", .{});
     try writer.print("  --version                       Print version and build provenance and exit\n", .{});
 }
