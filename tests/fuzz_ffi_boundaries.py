@@ -402,7 +402,7 @@ def fuzz_appended_options_controls():
     )
 
     # --- max_file_size_bytes admission boundaries (path entry point) ---
-    # Inclusive ceiling: size == limit PASSes, size == limit - 1 rejects with
+    # Inclusive ceiling: size == limit PASSes, size == limit + 1 rejects with
     # the documented resource code. 0 is the default (unlimited), max uint is
     # effectively unlimited too.
     boundary_cases = [

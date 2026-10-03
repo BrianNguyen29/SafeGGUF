@@ -240,13 +240,13 @@ def suite_network_adversarial():
     # To test actual unit network paths with mocked urllopen or urllib without monkeypatching DNS:
     # We can use unittest.mock in a subprocess or python -c runner!
     
-    # Test A: Auto mode with unreachable host (real network error)
+    # Test A: Auto mode with unreachable host -> strictly offline, no egress attempt
     env_unreachable = {"TYPESAFE_API_KEY": "test_key_xyz"}
     rc, data, err = run_json([str(FIXTURES_DIR / "valid.gguf"), "--mode", "auto"], env=env_unreachable)
     t = data.get("triage", {})
     record(
-        "NET-AUTO-UNREACHABLE-FALLBACK",
-        rc == 0 and t.get("engine") == "offline_deterministic_fallback" and "fallback" in t.get("rationale", "").lower(),
+        "NET-AUTO-UNREACHABLE-OFFLINE-ONLY",
+        rc == 0 and t.get("engine") == "deterministic_rule_classifier" and "fallback" not in t.get("rationale", "").lower(),
         f"engine={t.get('engine')}, rc={rc}"
     )
 
@@ -267,6 +267,8 @@ def suite_network_adversarial():
     )
 
     # Test D: Deep mock injection via python -c to test socket timeout, 502 HTML, corrupted JSON, missing keys
+    # Under the current contract, --mode auto is strictly offline: the injected
+    # mock is never consulted and the engine is always deterministic_rule_classifier.
     test_cases_mock = [
         # (name, mode_arg, side_effect_code, exp_rc, exp_engine_or_err)
         (
@@ -274,7 +276,7 @@ def suite_network_adversarial():
             "auto",
             "import socket\nside_effect = socket.timeout('socket timed out')",
             0,
-            "offline_deterministic_fallback"
+            "deterministic_rule_classifier"
         ),
         (
             "NET-MOCK-SOCKET-TIMEOUT-ONLINE",
@@ -288,7 +290,7 @@ def suite_network_adversarial():
             "auto",
             "import urllib.error\nside_effect = urllib.error.HTTPError('https://api.typesafe.ai', 502, 'Bad Gateway', {}, None)",
             0,
-            "offline_deterministic_fallback"
+            "deterministic_rule_classifier"
         ),
         (
             "NET-MOCK-502-BAD-GATEWAY-ONLINE",
@@ -302,7 +304,7 @@ def suite_network_adversarial():
             "auto",
             "class MockResp:\n    def read(self): return b'<html>502 Bad Gateway</html>'\n    def __enter__(self): return self\n    def __exit__(self,*a): pass\nresp = MockResp()",
             0,
-            "offline_deterministic_fallback"
+            "deterministic_rule_classifier"
         ),
         (
             "NET-MOCK-HTML-BODY-ONLINE",
@@ -316,7 +318,7 @@ def suite_network_adversarial():
             "auto",
             "class MockResp:\n    def read(self): return b'{\"answers\": {\"risk_score\": {\"score\": \"invalid\"}}}'\n    def __enter__(self): return self\n    def __exit__(self,*a): pass\nresp = MockResp()",
             0,
-            "offline_deterministic_fallback"
+            "deterministic_rule_classifier"
         ),
         (
             "NET-MOCK-INVALID-TYPES-ONLINE",
@@ -330,7 +332,7 @@ def suite_network_adversarial():
             "auto",
             "class MockResp:\n    def read(self): return b'{\"answers\": {}}'\n    def __enter__(self): return self\n    def __exit__(self,*a): pass\nresp = MockResp()",
             0,
-            "online_jev_system_one"  # Fallback defaults to score 0.010, cat "Benign"
+            "deterministic_rule_classifier"  # auto is offline-only: mock response is never consulted
         ),
         (
             "NET-MOCK-SUCCESS-ONLINE",

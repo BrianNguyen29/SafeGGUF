@@ -420,17 +420,18 @@ def probe_env_and_fallback():
         ok = ok and (j["triage"]["engine"] in ("deterministic_rule_classifier", "offline_rule_classifier"))
     except Exception:
         ok = False
-    record("Auto mode with empty TYPESAFE_API_KEY falls back to offline engine", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
+    record("Auto mode with empty TYPESAFE_API_KEY stays on the offline engine", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
 
-    # 5.2 Invalid / garbage TYPESAFE_API_KEY with auto mode
+    # 5.2 Invalid / garbage TYPESAFE_API_KEY with auto mode: still strictly offline (no egress)
     rc, out, err = run_triage([str(VALID_GGUF), "--mode", "auto", "--format", "json"], env={"TYPESAFE_API_KEY": "bogus_key_12345"})
     ok = (rc == 0)
     try:
         j = json.loads(out)
-        ok = ok and (j["triage"]["engine"] in ("online_jev_system_one", "offline_deterministic_fallback"))
+        ok = ok and (j["triage"]["engine"] == "deterministic_rule_classifier")
+        ok = ok and "fallback" not in j["triage"].get("rationale", "").lower()
     except Exception:
         ok = False
-    record("Auto mode with dummy key executes without crash", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
+    record("Auto mode with dummy key stays offline (no egress attempt)", ok, f"rc={rc}, engine={j.get('triage', {}).get('engine') if 'j' in locals() else 'error'}")
 
     # 5.3 Explicit offline mode ignores key
     rc, out, err = run_triage([str(VALID_GGUF), "--mode", "offline", "--format", "json"], env={"TYPESAFE_API_KEY": "should_be_ignored"})
@@ -449,10 +450,10 @@ def probe_env_and_fallback():
     ok = (rc == 64 and "TYPESAFE_API_KEY" in err)
     record("Online mode without API key exits with 64 (usage/config error)", ok, f"rc={rc}, err_snippet={err.strip()}")
 
-    # 5.5 SAFEGGUF_BIN invalid path fallback
+    # 5.5 Invalid SAFEGGUF_BIN fails closed (no silent fallback to a search path)
     rc, out, err = run_triage([str(VALID_GGUF), "--format", "json"], env={"SAFEGGUF_BIN": "C:/nonexistent/safegguf.exe"})
-    ok = (rc == 0)
-    record("Nonexistent SAFEGGUF_BIN falls back to project binary without failure", ok, f"rc={rc}")
+    ok = (rc == 64 and "SAFEGGUF_BIN" in err)
+    record("Invalid SAFEGGUF_BIN fails closed with exit 64", ok, f"rc={rc}, err_snippet={err.strip()}")
 
 
 # ==============================================================================
