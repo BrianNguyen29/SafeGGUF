@@ -20,7 +20,7 @@ pub fn build(b: *std.Build) void {
     // `version-consistency` CI job (scripts/version_consistency.py).
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", b.option([]const u8, "version", "Version reported by `safegguf --version`") orelse "0.3.7-dev");
-    build_options.addOption([]const u8, "source_commit", sourceCommit(b));
+    build_options.addOption([]const u8, "source_commit", b.option([]const u8, "source-commit", "Source commit for exported/container builds") orelse sourceCommit(b));
     build_options.addOption([]const u8, "zig_version", @import("builtin").zig_version_string);
     build_options.addOption([]const u8, "build_mode", @tagName(optimize));
     build_options.addOption([]const u8, "target", targetString(b, target));

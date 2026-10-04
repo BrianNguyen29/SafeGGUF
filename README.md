@@ -101,6 +101,10 @@ safegguf inspect /path/to/model.gguf --profile llama-cpp --format json    # JSON
 safegguf inspect /path/to/model.gguf --max-file-size-bytes 17179869184 --require-stable-file  # v1.1 controls
 safegguf inspect /path/to/model.gguf --max-string-bytes 131072 --key-policy lenient           # v1.2 relief (opt-in)
 safegguf inspect /path/to/model.gguf --emit-metrics --log-json --request-id req-123 --tenant-id tenant-a  # stderr
+
+# Prepare private, trusted output directories, then publish validated bytes.
+mkdir -p /srv/safegguf/validated /srv/safegguf/attestations
+safegguf admit /path/to/model.gguf --cas-dir /srv/safegguf/validated --attestations-dir /srv/safegguf/attestations
 ```
 
 The CLI defaults match the C ABI and Python bindings: `--profile llama-cpp`
@@ -173,9 +177,9 @@ source builds report the embedded default version (CI checks it against the late
 
 | Flag | Default | Description |
 | :--- | :--- | :--- |
-| `--endian <little\|big\|auto>` | `little` | Byte order. `auto` detects from the magic/version bytes. |
+| `--endian <little\|big\|auto>` | `auto` | Byte order. `auto` detects from the magic/version bytes. |
 | `--format <text\|json>` | `text` | Output format. |
-| `--profile <gguf-spec\|llama-cpp>` | `gguf-spec` | Validation profile; see [Profiles](#profiles). |
+| `--profile <gguf-spec\|llama-cpp>` | `llama-cpp` | Validation profile; see [Profiles](#profiles). |
 | `--max-variable-array-elements <N>` | `1000000` | Cap on string and nested-array elements. Accepted range `1..10000000`. |
 | `--max-memory-mb <N>` | `128` | Maximum validator-managed allocation quota, in MiB. |
 | `--max-work-budget <N>` | `10000000` | Maximum logical work units. |
@@ -203,13 +207,15 @@ CLI flags override environment values; malformed environment values are ignored.
 
 | Profile | GGUF versions | Tensor layout | Nested metadata arrays | Alignment | Endianness |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `gguf-spec` (default) | v3 only | Arbitrary descriptor order and gaps allowed | Allowed, depth ≤ 16 | Multiple of 8 | `little`, `big`, or `auto` |
-| `llama-cpp` | v2 and v3 | Strictly contiguous in descriptor order, with checked trailing padding | Rejected | Power of two | Host-native only; non-native byte order is rejected |
+| `gguf-spec` (opt-in) | v3 only | Arbitrary descriptor order and gaps allowed | Allowed, depth ≤ 16 | Multiple of 8 | `little`, `big`, or `auto` |
+| `llama-cpp` (default) | v2 and v3 | Strictly contiguous in descriptor order, with checked trailing padding | Rejected | Power of two | Host-native only; non-native byte order is rejected |
 
 The GGML type table is pinned to ggml 0.23.0 (`e91ded11`): 43 slots, 35 active
 types; deprecated slots and IDs ≥ 43 are rejected. Zero-filled descriptor padding
 is enforced in both profiles (anti-tamper; stricter than runtimes that align past
 those bytes).
+The llama-cpp profile also rejects embedded NUL bytes in tensor names so
+different length-delimited names cannot alias a single upstream C-string name.
 
 ### Resource Budgets
 
@@ -233,9 +239,8 @@ record (verdict, timing, budgets, SHA-256 digest, request/tenant ids — tenant 
 ## Deployment
 
 ```
-  upload             stage              validate             CAS by digest           load
-model.gguf ------> private staging ----> safegguf inspect ----> validated/<sha256> ----> llama.cpp
-(mutable)          (exact copy)         (fail-closed)          (sha256 -c gate)        (digest-pinned)
+model.gguf ------> safegguf admit ----> validated/<sha256> ----> checksum gate ----> llama.cpp
+                   copy/hash/validate   protected CAS          sha256 -c            digest-pinned
 ```
 
 ### Docker
@@ -255,20 +260,35 @@ docker run --rm -v "$(pwd)/models:/models:ro" safegguf:latest \
 ### Kubernetes
 
 [`deploy/k8s/safegguf-initcontainer.yaml`](deploy/k8s/safegguf-initcontainer.yaml)
-implements the stage → validate → digest-pin → load flow: the upload is copied
-once into private staging, validated, then hashed and atomically renamed to
-`validated/<sha256>`; the serving container loads only the digest-named CAS
-entry, never the mutable upload path. Read-only mounts, `runAsNonRoot` UID 65532
-contexts, and seccomp profiles are in the manifest; the companion script
-[`deploy/k8s/attestation_handoff.sh`](deploy/k8s/attestation_handoff.sh)
-provides the same handoff outside Kubernetes.
+is a release template. The container workflow emits a rendered deployment
+artifact using the digest of its signed image; it never guesses an unpublished
+development tag. Operators can render it with
+[`scripts/render_k8s_manifest.py`](scripts/render_k8s_manifest.py), supplying a
+verified `ghcr.io/owner/image:VERSION@sha256:DIGEST` and matching `--version`.
+Do not apply the unrendered template. Configure the namespace, PVC, registry
+access and serving lifecycle for the actual environment.
 
 | Phase | Container | Action |
 | :--- | :--- | :--- |
-| 0 | `safegguf-staging-copy` | Copy the upload once into `/private-stage/model.gguf` |
-| 1 | `safegguf-pre-admission-validator` (`ghcr.io/briannguyen29/safegguf:v0.3.7-dev` at HEAD; substitute a release tag) | `inspect /private-stage/model.gguf --profile llama-cpp --format json --endian auto` |
-| 2 | `safegguf-attestation-generator` | SHA-256 the validated bytes, atomically rename to `validated/<sha256>`, write the digest to `/attestation/model.gguf.sha256` |
-| load | `llama-cpp-server` | Verify with `sha256sum -c`, then load `/validated/$DIGEST` |
+| 0 | `safegguf-prepare-directories` | Prepare the private CAS and attestation directories. |
+| 1 | `safegguf-pre-admission-validator` | `admit` copies/hashes once, validates its staged inode, and publishes the CAS object plus admission v2 statement. |
+| load | `llama-cpp-server` | Require one checksum pin, verify with `sha256sum -c`, then load `/validated/$DIGEST`. |
+
+All containers run without root with restricted capabilities and seccomp;
+serving mounts the output read-only. The handoff script
+[`deploy/k8s/attestation_handoff.sh`](deploy/k8s/attestation_handoff.sh)
+delegates to the same native publisher outside Kubernetes.
+
+### Admission Documents
+
+`admit` success emits one admission **schema v2** document on stdout and saves
+the same bytes as `<attestations-dir>/<digest>.json`. It binds all effective
+limits (including environment overrides), key policy, requested/resolved endian,
+profile and build/type-table provenance. `cas.relative_path` is the digest,
+resolved from **`--cas-dir`**; the directory may have any name. Diagnostics from
+`inspect`, and admission failures, retain diagnostic schema v1. See
+[`docs/admission-attestation.md`](docs/admission-attestation.md) for migration,
+policy replay, trust boundaries and publication failure semantics.
 
 ## API
 
@@ -314,35 +334,27 @@ Tagged releases publish binaries, `SHA256SUMS.txt`, a keyless Sigstore bundle
 GitHub artifact attestations cover the binaries, and container images are signed
 with keyless Cosign (commands in [SECURITY.md](SECURITY.md), "Release Verification").
 
-### Historical Verification Snapshot
-
-Historical snapshot of the internal multi-agent campaign (18 suites, more than
-76,000 checks, all meeting expected verdicts) in the
-[archived audit report](docs/archive/production_audit_report.md); not live CI.
-
-| # | Suite / security domain | Scope | Scale | Result |
-| :---: | :--- | :--- | :--- | :--- |
-| 01 | Zig unit & fuzz sweep | 35 active GGML types, limits, memory, sliding-window reader, checked arithmetic, fuzz corpus | 78 / 78 tests | PASS |
-| 03 | Negative corpus suite | 6 synthetic bug classes; 3 advisory placeholders (manifest-only) | 15 / 15 cases | REJECT (exit 2) |
-| 04 | BigInt arithmetic oracle | alignUp, product, and tensorBytes cross-checked against Python BigInt | 74,626 ops | PASS |
-| 10 | C-ABI adversarial probes | NULL, invalid handles, TOCTOU | 57 / 57 probes | PASS |
-| 18 | Cloud-native packaging audit | Distroless nonroot image, K8s manifest, docs completeness | 18 / 18 checks | PASS |
-
 ## Documentation
 
 | Document | Contents |
 | :--- | :--- |
 | [`docs/production_deployment.md`](docs/production_deployment.md) | Production deployment and integration guide |
+| [`docs/admission-attestation.md`](docs/admission-attestation.md) | Admission v2 fields, policy replay, CAS path resolution and migration |
+| [`docs/release-notes-0.3.7.md`](docs/release-notes-0.3.7.md) | Unreleased 0.3.7 preparation notes and compatibility changes |
 | [`docs/error-codes.md`](docs/error-codes.md) | Canonical `SGGUF_E_*` namespace and JSON schema versioning policy |
-| [`docs/runbooks/README.md`](docs/runbooks/README.md) | Incident runbooks: validator crash, false reject, false accept/downstream crash, fuzz nightly red |
 | [`SECURITY.md`](SECURITY.md) | Threat model, security invariants, release verification, vulnerability reporting |
-| [`docs/archive/production_audit_report.md`](docs/archive/production_audit_report.md) | Archived internal audit report (historical) |
 | [`AGENTS.md`](AGENTS.md) | Repository invariants, toolchain pinning, command reference |
 
 ## Contributing
 
 Contributions are welcome via GitHub issues and pull requests; keep the
 repository invariants in [`AGENTS.md`](AGENTS.md) intact.
+
+Public documentation covers the product's interfaces, security contract and
+generic integration examples. Keep local session notes, incident runbooks,
+audit reports and maintainer release records outside the tracked source tree.
+Before committing, stage explicit paths and run
+`python3 scripts/check_public_tree.py`; CI checks the same publication boundary.
 
 ### Development and Testing
 

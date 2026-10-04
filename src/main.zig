@@ -612,7 +612,7 @@ const CommonOptions = struct {
     tenant_id_arg: ?[]const u8 = null,
 };
 
-/// `admit` v1 admission ceiling: 16 GiB, matching the K8s handoff script and
+/// `admit` admission ceiling: 16 GiB, matching the K8s handoff script and
 /// the staging volume sizeLimit. Still overridable via --max-file-size-bytes.
 const admit_default_max_file_size_bytes: u64 = 17179869184;
 
@@ -922,9 +922,12 @@ fn renderAttestation(
     digest_hex: []const u8,
     size_bytes: u64,
     profile_str: []const u8,
-    max_file_size_bytes: u64,
+    opts: CommonOptions,
+    resolved_endian: std.builtin.Endian,
 ) !void {
-    try w.print("{{\"schema_version\":{d},\"digest\":{{\"algorithm\":\"sha256\",\"value\":", .{safegguf.json_schema_version});
+    // Admission schema is independent of inspect's diagnostics schema. v2
+    // changes relative_path to be relative to the supplied CAS directory.
+    try w.print("{{\"schema_version\":{d},\"document_type\":\"safegguf-admission\",\"digest\":{{\"algorithm\":\"sha256\",\"value\":", .{safegguf.attestation_schema_version});
     try writeJsonString(w, digest_hex);
     try w.print("}},\"size_bytes\":{d},\"verdict\":{{\"status\":\"PASS\",\"validator_exit_code\":0}},\"validator\":{{\"version\":", .{size_bytes});
     try writeJsonString(w, build_info.version);
@@ -932,7 +935,28 @@ fn renderAttestation(
     try writeJsonString(w, build_info.source_commit);
     try w.writeAll(",\"profile\":");
     try writeJsonString(w, profile_str);
-    try w.print(",\"limits\":{{\"max_file_size_bytes\":{d},\"require_stable_file\":true}}}},\"cas\":{{\"relative_path\":\"validated/", .{max_file_size_bytes});
+    try w.writeAll(",\"endian\":");
+    try writeJsonString(w, if (opts.auto_endian) "auto" else @tagName(opts.endian));
+    try w.writeAll(",\"resolved_endian\":");
+    try writeJsonString(w, @tagName(resolved_endian));
+    try w.writeAll(",\"zig_version\":");
+    try writeJsonString(w, build_info.zig_version);
+    try w.writeAll(",\"build_mode\":");
+    try writeJsonString(w, build_info.build_mode);
+    try w.writeAll(",\"target\":");
+    try writeJsonString(w, build_info.target);
+    try w.writeAll(",\"type_layout_source\":");
+    try std.json.stringify(types.CompatibilityTarget{}, .{}, w);
+    try w.writeAll(",\"limits\":{");
+    // Emit every effective Limits field, including environment overrides and
+    // fixed parser ceilings. New limit fields are captured automatically.
+    inline for (@typeInfo(limits.Limits).Struct.fields, 0..) |field, i| {
+        if (i > 0) try w.writeByte(',');
+        try writeJsonString(w, field.name);
+        try w.writeByte(':');
+        try std.json.stringify(@field(opts.limit, field.name), .{}, w);
+    }
+    try w.writeAll(",\"require_stable_file\":true}},\"cas\":{\"relative_to\":\"cas-dir\",\"relative_path\":\"");
     try w.writeAll(digest_hex);
     try w.writeAll("\",\"sha256\":");
     try writeJsonString(w, digest_hex);
@@ -948,7 +972,7 @@ fn writeFileAtomic(dir: std.fs.Dir, final_name: []const u8, bytes: []const u8) !
     std.crypto.random.bytes(&rand);
     var name_buf: [160]u8 = undefined;
     const temp_name = std.fmt.bufPrint(&name_buf, ".{s}.{s}.tmp", .{ final_name, std.fmt.fmtSliceHexLower(&rand) }) catch return error.NameTooLong;
-    const temp = try dir.createFile(temp_name, .{ .truncate = true });
+    const temp = try dir.createFile(temp_name, .{ .truncate = false, .exclusive = true });
     var temp_open = true;
     errdefer {
         if (temp_open) temp.close();
@@ -1043,7 +1067,8 @@ const AdmitStage = struct {
     }
 };
 
-/// `safegguf admit` (v1): single-process publish. Copies the untrusted source
+/// `safegguf admit`: single-process publish (admission document schema v2).
+/// Copies the untrusted source
 /// once into the private staging file inside --cas-dir, hashing the copy
 /// stream inline; validates that same inode through its still-open descriptor
 /// under a mandatory pre/post FileIdentity window; then atomically publishes
@@ -1056,9 +1081,9 @@ const AdmitStage = struct {
 /// Residual (honest limit): FileIdentity bounds mutation of the staging inode
 /// (dev/inode/size/mtime/ctime), but a writer inside the trust boundary that
 /// can rewrite the 0600 temp file and restore its size and timestamps is not
-/// detectable. The digest, verdict, and published bytes still all describe the
-/// same copied stream, so such a writer cannot desynchronize verdict from
-/// digest; it can only defeat the identity check itself.
+/// detectable. The owned staging/CAS directories and files must be inaccessible to
+/// untrusted writers. A privileged or same-identity writer can invalidate the
+/// digest/verdict binding; descriptor validation alone does not prevent it.
 fn runAdmit(
     args: *std.process.ArgIterator,
     allocator: std.mem.Allocator,
@@ -1299,12 +1324,11 @@ fn runAdmit(
     };
     stage.cleanup();
 
-    // Canonical one-line attestation, byte-compatible with
-    // deploy/k8s/attestation_handoff.sh (same field order and values, same
-    // trailing newline, require_stable_file always true).
+    // Canonical one-line admission v2 document. The handoff wrapper calls this
+    // publisher directly, so its statement bytes cannot drift independently.
     var attestation = std.ArrayList(u8).init(allocator);
     defer attestation.deinit();
-    try renderAttestation(attestation.writer(), &digest_hex, copied, profile_str, common.limit.max_file_size_bytes);
+    try renderAttestation(attestation.writer(), &digest_hex, copied, profile_str, common, val.endian);
     var attestation_name_buf: [80]u8 = undefined;
     const attestation_name = std.fmt.bufPrint(&attestation_name_buf, "{s}.json", .{digest_hex}) catch unreachable;
     writeFileAtomic(attestations_dir, attestation_name, attestation.items) catch {

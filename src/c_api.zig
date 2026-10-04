@@ -24,7 +24,7 @@ pub export fn safegguf_canonical_error_code(error_code: ?[*:0]const u8) [*:0]con
     const unknown = safegguf.error_types.public_codes.unknown;
     const ptr = error_code orelse return unknown.ptr;
     const span = std.mem.span(ptr);
-    if (safegguf.error_types.isPublicCode(span)) return ptr;
+    if (safegguf.error_types.canonicalCodeRef(span)) |canonical| return canonical.ptr;
     const canonical = safegguf.error_types.canonicalFromLegacy(span) orelse return unknown.ptr;
     return canonical.ptr;
 }

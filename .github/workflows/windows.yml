@@ -110,3 +110,6 @@ jobs:
 
       - name: Run FFI Boundary Fuzzing Suite
         run: python tests/fuzz_ffi_boundaries.py
+
+      - name: Verify Offline Release Deployment Rendering
+        run: python tests/test_release_deployment.py

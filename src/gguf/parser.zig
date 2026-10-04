@@ -258,6 +258,13 @@ pub fn parseDocument(
         if (!std.unicode.utf8ValidateSlice(name_buf)) {
             return err.ParseError.InvalidUtf8;
         }
+        // ggml stores tensor names as C strings. Reject embedded NULs in the
+        // compatibility profile so distinct byte strings cannot alias one
+        // upstream name (e.g. "a\x00x" and "a\x00y"). The spec profile
+        // retains its length-delimited string semantics.
+        if (profile == .llama_cpp and std.mem.indexOfScalar(u8, name_buf, 0) != null) {
+            return err.ParseError.InvalidTensorName;
+        }
 
         const n_dims = try reader.readInt(u32, cur, endian);
         cur += 4;

@@ -67,6 +67,7 @@ jobs:
         id: release-version
         env:
           VERSION_INPUT: ${{ inputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           version="${VERSION_INPUT#v}"
@@ -74,6 +75,16 @@ jobs:
             echo "ERROR: empty release version input" >&2
             exit 1
           fi
+          export RELEASE_VERSION="$version"
+          # Validate rendering inputs before any push/sign operation. This
+          # digest is a syntax-only sentinel, never a published image reference.
+          python3 - <<'PY'
+          import os, runpy
+          render = runpy.run_path('scripts/render_k8s_manifest.py')['render']
+          version = os.environ['RELEASE_VERSION']
+          image = 'ghcr.io/' + os.environ['RELEASE_REPOSITORY'].lower() + ':' + version + '@sha256:' + '0' * 64
+          render(image, version)
+          PY
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
@@ -93,6 +104,7 @@ jobs:
           tags: safegguf-smoke:${{ matrix.arch }}
           build-args: |
             SAFEGGUF_VERSION=${{ steps.release-version.outputs.version }}
+            SAFEGGUF_SOURCE_COMMIT=${{ github.sha }}
 
       - name: Generate GGUF smoke fixtures
         run: |
@@ -100,6 +112,7 @@ jobs:
           python3 tests/generate_fixtures.py
           mkdir -p smoke-run
           cp tests/fixtures/valid.gguf smoke-run/valid.gguf
+          cp tests/fixtures/nul_tensor_alias.gguf smoke-run/nul_tensor_alias.gguf
           # 7-byte bad magic: malformed input must exit 2 (REJECT), not crash.
           printf 'NOTGGUF' > smoke-run/malformed.gguf
 
@@ -147,6 +160,42 @@ jobs:
           fi
           grep -Eq '"status": ?"REJECT"' reject.json
           echo "runtime smoke passed: $image (${{ matrix.platform }})"
+
+      - name: Verify single-process admission in the nonroot container
+        env:
+          EXPECTED_VERSION: ${{ steps.release-version.outputs.version }}
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p smoke-admit/cas smoke-admit/attestations smoke-reject/cas smoke-reject/attestations
+          chmod 0777 smoke-admit/cas smoke-admit/attestations smoke-reject/cas smoke-reject/attestations
+          image="safegguf-smoke:${{ matrix.arch }}"
+          docker run --rm --platform ${{ matrix.platform }} --network none --read-only \
+            --cap-drop ALL --security-opt no-new-privileges --memory 256m \
+            -v "$PWD/smoke-run:/smoke:ro" -v "$PWD/smoke-admit:/output" "$image" \
+            admit /smoke/valid.gguf --cas-dir /output/cas --attestations-dir /output/attestations > admit.json
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          data = json.loads(Path('admit.json').read_text())
+          assert data['schema_version'] == 2
+          assert data['validator']['version'] == os.environ['EXPECTED_VERSION']
+          assert data['validator']['source_commit'] == os.environ['EXPECTED_COMMIT']
+          assert data['validator']['limits']['key_policy'] == 'strict'
+          assert data['cas']['relative_to'] == 'cas-dir'
+          digest = data['digest']['value']
+          assert data['cas']['relative_path'] == digest
+          blob = Path('smoke-admit/cas') / digest
+          assert hashlib.sha256(blob.read_bytes()).hexdigest() == digest
+          assert (Path('smoke-admit/attestations') / (digest + '.json')).read_bytes() == Path('admit.json').read_bytes()
+          PY
+          rc=0
+          docker run --rm --platform ${{ matrix.platform }} --network none --read-only \
+            -v "$PWD/smoke-run:/smoke:ro" -v "$PWD/smoke-reject:/output" "$image" \
+            admit /smoke/nul_tensor_alias.gguf --cas-dir /output/cas --attestations-dir /output/attestations > nul-reject.json || rc=$?
+          test "$rc" -eq 2
+          grep -q 'E_InvalidTensorName' nul-reject.json
+          test -z "$(find smoke-reject -type f -print -quit)"
 
   build-and-sign:
     name: Build, SBOM, Provenance & Cosign Sign
@@ -215,6 +264,7 @@ jobs:
           sbom: true
           build-args: |
             SAFEGGUF_VERSION=${{ steps.release-version.outputs.version }}
+            SAFEGGUF_SOURCE_COMMIT=${{ github.sha }}
 
       - name: Sign container image with Cosign (Keyless OIDC)
         if: ${{ github.event_name != 'pull_request' }}
@@ -222,6 +272,7 @@ jobs:
           DIGEST: ${{ steps.build-push.outputs.digest }}
           IMAGE_URI: ghcr.io/${{ github.repository }}
         run: |
+          IMAGE_URI="${IMAGE_URI,,}"
           echo "Signing container image at digest: ${IMAGE_URI}@${DIGEST}"
           cosign sign --yes "${IMAGE_URI}@${DIGEST}"
 
@@ -231,9 +282,29 @@ jobs:
           DIGEST: ${{ steps.build-push.outputs.digest }}
           IMAGE_URI: ghcr.io/${{ github.repository }}
         run: |
+          IMAGE_URI="${IMAGE_URI,,}"
           echo "Verifying cosign signature..."
           cosign verify \
             --certificate-identity-regexp="https://github.com/${{ github.repository }}/.github/workflows/.*" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
             "${IMAGE_URI}@${DIGEST}"
           echo "[SUCCESS] Image signature and SLSA provenance cryptographically verified."
+
+      - name: Render deployment from the signed release digest
+        env:
+          DIGEST: ${{ steps.build-push.outputs.digest }}
+          IMAGE_URI: ghcr.io/${{ github.repository }}
+          VERSION: ${{ steps.release-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMAGE_URI="${IMAGE_URI,,}"
+          python3 scripts/render_k8s_manifest.py \
+            --validator-image "${IMAGE_URI}:${VERSION}@${DIGEST}" \
+            --version "$VERSION" --output "safegguf-k8s-${VERSION}.yaml"
+
+      - name: Upload digest-pinned deployment example
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: safegguf-k8s-${{ steps.release-version.outputs.version }}
+          path: safegguf-k8s-*.yaml
+          if-no-files-found: error

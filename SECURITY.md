@@ -75,32 +75,35 @@ SafeGGUF enforces pre-admission defense-in-depth before untrusted model files ar
    - `74`: File I/O or filesystem stat error.
 4. **Time-of-Check to Time-of-Use (TOCTOU):**
    SafeGGUF provides in-process descriptor validation (`safegguf_validate_fd` / `safegguf.validate_fd`). To achieve TOCTOU-resistance:
-   - Downstream inference loaders must consume the exact same open file descriptor (`O_RDONLY`), OR
+   - Downstream inference loaders must consume the exact same open file descriptor (`O_RDONLY`) whose inode is protected from untrusted writers, OR
    - Deployers must validate files stored in immutable Content-Addressable Storage (CAS) and hand off the verified cryptographic digest (e.g. SHA-256) directly to downstream inference runtimes.
    Path-based validation (`safegguf_validate_path`) alone cannot prevent external file swapping if an attacker possesses write permissions on the file path between validation and loader ingestion.
 5. **`PASS` Scope:** `PASS` means the file satisfies the selected SafeGGUF structural, arithmetic, and resource-policy checks. It is not a trust or malware verdict for model behavior, templates, or downstream runtime code.
 
 ### Immutable CAS Example (Stage, Validate, Digest-Pin, Load)
 
-The TOCTOU controls in invariant 4 mean the digest must describe the same immutable bytes that were validated. Stage the untrusted upload once, validate that staged copy, pin the SHA-256 of exactly those bytes, and admit to the runtime by digest only:
+The digest must describe the same protected bytes that passed validation. Use
+the single-process publisher in a private workspace controlled by the service:
 
 ```bash
-# 1. Stage the untrusted upload once into immutable, content-addressable
-#    storage (illustrative path; substitute your CAS backend).
-install -m 0444 /uploads/model.gguf /cas/models/model.gguf
-
-# 2. Validate the staged artifact and fail closed on a non-zero exit.
-safegguf inspect /cas/models/model.gguf --profile llama-cpp --format json > verdict.json
-
-# 3. Record the SHA-256 of exactly the bytes that were just validated.
-sha256sum /cas/models/model.gguf > model.sha256
-
-# 4. The runtime loads only by digest; its loader resolves the digest to the
-#    immutable object and re-verifies the bytes before mapping them.
-load "sha256:$(cut -d' ' -f1 model.sha256)"
+mkdir -p /srv/safegguf/validated /srv/safegguf/attestations
+safegguf admit /uploads/model.gguf \
+  --cas-dir /srv/safegguf/validated \
+  --attestations-dir /srv/safegguf/attestations \
+  --profile llama-cpp --max-file-size-bytes 17179869184 > admission.json
+# Continue only after exit 0. Resolve cas.relative_path from the CAS directory,
+# verify the digest, and load that object from a protected read-only mount.
 ```
 
-Never validate and hash a mutable path separately — for example `safegguf inspect /mnt/pvc/model.gguf && sha256sum /mnt/pvc/model.gguf`. A writer with access to that volume can replace the file between the verdict and the digest, so the runtime would load bytes SafeGGUF never inspected. On mutable storage, pin the digest obtained from the staged, validated copy (or re-run the whole stage → validate → pin sequence whenever the object changes).
+Never validate and hash a mutable upload path separately. The handoff wrapper
+and Kubernetes template both use `admit`. Descriptor identity checks do not
+make an inode immutable; 0444 mode does not prevent its owner from changing
+permissions or a directory writer from replacing the path. Exclude untrusted
+same-UID/privileged writers from staging and CAS, and give serving read-only
+mounts. Admission statements are unsigned unless a trusted signing layer signs
+them; image/release signatures are separate from model-admission signatures.
+See [admission v2](docs/admission-attestation.md) and the
+[deployment guide](docs/production_deployment.md).
 
 ### Deployment Limits (Hostile Multi-Tenant Uploads)
 

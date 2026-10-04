@@ -686,21 +686,38 @@ def test_admit_publish_and_script_byte_identity():
             assert stat_mod.S_IMODE(os.stat(cas_entry).st_mode) == 0o444, "CAS entry not 0444"
 
         data = json.loads(stdout)
-        assert data["schema_version"] == 1, data
+        assert data["schema_version"] == 2, data
+        assert data["document_type"] == "safegguf-admission", data
         assert data["digest"] == {"algorithm": "sha256", "value": digest}, data
         assert data["size_bytes"] == os.path.getsize(valid), data
         assert data["verdict"] == {"status": "PASS", "validator_exit_code": 0}, data
         assert data["validator"]["profile"] == "llama-cpp", data
         assert data["validator"]["limits"] == {
+            "max_tensors": 1000000,
+            "max_metadata_entries": 1000000,
+            "max_string_bytes": 65536,
+            "key_policy": "strict",
+            "max_tensor_name_bytes": 64,
+            "max_dimensions": 4,
+            "max_array_elements": 10000000,
+            "max_variable_array_elements": 1000000,
+            "max_metadata_depth": 16,
+            "max_total_alloc_bytes": 134217728,
+            "max_work_units": 10000000,
+            "max_scanned_bytes": 268435456,
             "max_file_size_bytes": 17179869184,
             "require_stable_file": True,
         }, data
         assert data["cas"] == {
-            "relative_path": "validated/" + digest,
+            "relative_to": "cas-dir",
+            "relative_path": digest,
             "sha256": digest,
         }, data
         assert data["validator"]["version"], data
         assert data["validator"]["source_commit"], data
+        assert data["validator"]["endian"] == "auto", data
+        assert data["validator"]["resolved_endian"] == sys.byteorder, data
+        assert data["validator"]["type_layout_source"] == GGML_PROVENANCE, data
 
         # --log-json digest is the copy-stream digest.
         log_record = json.loads(stderr.strip().splitlines()[-1])
@@ -747,6 +764,71 @@ def test_admit_publish_and_script_byte_identity():
         assert data2["validator"]["limits"]["max_file_size_bytes"] == 1048576, data2
 
     print("  [ok] admit publication, layout, and script byte-identity tests passed.")
+
+def test_nul_tensor_names():
+    print("Running NUL tensor identity regressions...")
+    for filename in ("nul_tensor_alias.gguf", "nul_tensor_name.gguf"):
+        path = os.path.join(FIXTURES, filename)
+        rc, out, _ = run_cli("inspect", path, "--format", "json")
+        assert rc == 2 and json.loads(out)["error_code"] == "E_InvalidTensorName", out
+        assert run_cli("inspect", path, "--profile", "gguf-spec")[0] == 0
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            cas = os.path.join(td, "objects")
+            att = os.path.join(td, "statements")
+            os.mkdir(cas)
+            os.mkdir(att)
+            rc, out, _ = run_cli("admit", path, "--cas-dir", cas, "--attestations-dir", att)
+            assert rc == 2 and json.loads(out)["error_code"] == "E_InvalidTensorName", out
+            assert os.listdir(cas) == [] and os.listdir(att) == []
+    assert run_cli("inspect", os.path.join(FIXTURES, "tensor_name_control.gguf"))[0] == 0
+
+
+def test_admit_effective_policy():
+    print("Running admission policy binding, replay, and arbitrary CAS-directory tests...")
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        cas = os.path.join(td, "objects")
+        att = os.path.join(td, "statements")
+        os.mkdir(cas)
+        os.mkdir(att)
+        path = os.path.join(FIXTURES, "hyphen_key.gguf")
+        env = {"SAFEGGUF_MAX_ALLOC_BYTES": "8388608", "SAFEGGUF_MAX_WORK_UNITS": "12345",
+               "SAFEGGUF_MAX_SCANNED_BYTES": "54321", "SAFEGGUF_KEY_POLICY": "lenient",
+               "SAFEGGUF_MAX_STRING_BYTES": "131072"}
+        rc, out, _ = run_cli("admit", path, "--cas-dir", cas, "--attestations-dir", att,
+                             "--max-variable-array-elements", "100", env=env)
+        assert rc == 0, out
+        data = json.loads(out)
+        policy = data["validator"]
+        lim = policy["limits"]
+        assert lim["key_policy"] == "lenient" and lim["max_string_bytes"] == 131072, lim
+        assert lim["max_total_alloc_bytes"] == 8388608 and lim["max_work_units"] == 12345, lim
+        assert lim["max_scanned_bytes"] == 54321 and lim["max_variable_array_elements"] == 100, lim
+        assert data["cas"]["relative_to"] == "cas-dir", data
+        object_path = os.path.join(cas, data["cas"]["relative_path"])
+        assert os.path.isfile(object_path) and sha256_file(object_path) == data["digest"]["value"]
+        # Default strict policy rejects the admitted object; recorded policy replays PASS.
+        assert run_cli("inspect", object_path, "--key-policy", "strict")[0] == 2
+        replay_env = {"SAFEGGUF_MAX_ALLOC_BYTES": str(lim["max_total_alloc_bytes"]),
+                      "SAFEGGUF_MAX_WORK_UNITS": str(lim["max_work_units"]),
+                      "SAFEGGUF_MAX_SCANNED_BYTES": str(lim["max_scanned_bytes"])}
+        assert run_cli("inspect", object_path, "--profile", policy["profile"],
+                       "--endian", policy["resolved_endian"], "--key-policy", lim["key_policy"],
+                       "--max-string-bytes", str(lim["max_string_bytes"]),
+                       "--max-variable-array-elements", str(lim["max_variable_array_elements"]),
+                       "--max-file-size-bytes", str(lim["max_file_size_bytes"]),
+                       "--require-stable-file", env=replay_env)[0] == 0
+        # Explicit endian and CLI policy override are captured as effective values.
+        rc, out, _ = run_cli("admit", os.path.join(FIXTURES, "big_endian_v3.gguf"),
+                             "--cas-dir", cas, "--attestations-dir", att,
+                             "--profile", "gguf-spec", "--endian", "big",
+                             "--key-policy", "strict", env=env)
+        assert rc == 0, out
+        policy = json.loads(out)["validator"]
+        assert policy["endian"] == policy["resolved_endian"] == "big", policy
+        assert policy["limits"]["key_policy"] == "strict", policy
+
 
 def test_admit_reject_and_size_cap():
     print("Running admit reject/size-cap tests (nothing published)...")
@@ -973,4 +1055,6 @@ if __name__ == "__main__":
     test_admit_usage_and_dash_paths()
     test_admit_orphan_cas_on_attestation_failure()
     test_admit_inspect_parity()
+    test_nul_tensor_names()
+    test_admit_effective_policy()
     print("\nAll CLI end-to-end integration tests PASSED successfully!")

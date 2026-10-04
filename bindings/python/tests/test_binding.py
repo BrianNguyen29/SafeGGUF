@@ -578,7 +578,19 @@ def main():
     )
     print("     [PASS] Legacy libraries fail closed on set controls, no-control calls stay usable, detection restores.")
 
-    print("\nAll Python binding tests passed successfully! (18/18 suites passed)")
+    print("  19. Testing NUL tensor identity across path/fd and the native C ABI...")
+    for name in ("nul_tensor_alias.gguf", "nul_tensor_name.gguf"):
+        path = valid_file.parent / name
+        assert safegguf.validate_path(str(path)).exit_code == 2
+        assert safegguf.validate_path(str(path), profile="gguf-spec").exit_code == 0
+        assert lib.safegguf_validate_path(os.fsencode(path), 1, 2) == 2
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            assert safegguf.validate_fd(fd).exit_code == 2
+        finally:
+            os.close(fd)
+    assert safegguf.validate_path(str(valid_file.parent / "tensor_name_control.gguf")).is_valid
+    print("\nAll Python binding tests passed successfully! (19/19 suites passed)")
 
 if __name__ == "__main__":
     main()

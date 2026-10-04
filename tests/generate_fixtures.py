@@ -590,7 +590,24 @@ def build_element_product_overflow():
         f.write(b)
 
 
+def build_tensor_name_regressions():
+    cases = {
+        "nul_tensor_alias.gguf": (b"a\x00x", b"a\x00y"),
+        "nul_tensor_name.gguf": (b"a\x00x",),
+        "tensor_name_control.gguf": (b"ax", b"ay"),
+    }
+    for filename, names in cases.items():
+        data = bytearray(b"GGUF" + struct.pack("<IQQ", 3, len(names), 0))
+        for i, name in enumerate(names):
+            data += struct.pack("<Q", len(name)) + name
+            data += struct.pack("<IQIQ", 1, 1, 0, i * 32)
+        data += bytes((-len(data)) % 32) + bytes(32 * len(names))
+        with open(os.path.join(DIR, filename), "wb") as handle:
+            handle.write(data)
+
+
 if __name__ == "__main__":
+    build_tensor_name_regressions()
     build_valid()
     build_type40_false_pass()
     build_overflow()
@@ -618,12 +635,10 @@ if __name__ == "__main__":
     build_signed_dim_overflow()
     build_element_product_overflow()
 
-    # Generate deterministic security testbed fixtures
-    try:
-        from tests.generate_security_testbed import generate_security_fixtures
-        generate_security_fixtures()
-    except Exception as e:
-        print(f"Warning: could not run generate_security_fixtures: {e}")
+    # This script's directory is on sys.path when invoked from the repo root.
+    # A generation failure must fail the command instead of hiding coverage.
+    from generate_security_testbed import generate_security_fixtures
+    generate_security_fixtures()
 
     # Populate seed corpus directory for fuzzing
     corpus_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "corpus")

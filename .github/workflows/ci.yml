@@ -30,6 +30,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Verify Public Source Contents
+        run: |
+          python scripts/check_public_tree.py
+          python tests/test_public_tree.py
+
       - name: Verify Code Formatting
         run: zig fmt --check src/ build.zig tests/*.zig
 
@@ -81,6 +86,9 @@ jobs:
 
       - name: Run FFI Boundary Fuzzing Suite
         run: python tests/fuzz_ffi_boundaries.py
+
+      - name: Verify Offline Release Deployment Rendering
+        run: python tests/test_release_deployment.py
 
   # Version metadata guard: `build.zig` embeds the default version that source
   # builds report (`safegguf --version`). It must track the latest release tag,

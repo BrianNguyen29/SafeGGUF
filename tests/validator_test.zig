@@ -9,6 +9,31 @@ const parser = safegguf.parser;
 const arithmetic = safegguf.arithmetic;
 const structural = safegguf.structural;
 
+test "profile: llama-cpp rejects NUL tensor names; gguf-spec preserves byte strings" {
+    for ([_][]const u8{ "\x00x", "x\x00", "a\x00x" }) |name| {
+        var buffer: [128]u8 = [_]u8{0} ** 128;
+        var stream = std.io.fixedBufferStream(&buffer);
+        const w = stream.writer();
+        try w.writeAll("GGUF");
+        try w.writeInt(u32, 3, .little);
+        try w.writeInt(u64, 1, .little);
+        try w.writeInt(u64, 0, .little);
+        try w.writeInt(u64, name.len, .little);
+        try w.writeAll(name);
+        try w.writeInt(u32, 1, .little);
+        try w.writeInt(u64, 1, .little);
+        try w.writeInt(u32, 0, .little);
+        try w.writeInt(u64, 0, .little);
+        const r = reader_mod.SliceReader.init(&buffer);
+        var val = safegguf.Validator.init(std.testing.allocator, .{}, .llama_cpp);
+        try std.testing.expectError(error.InvalidTensorName, val.validate(r.reader()));
+        val.profile = .gguf_spec;
+        var doc = try val.validate(r.reader());
+        defer val.deinitDocument(&doc);
+        try std.testing.expectEqualStrings(name, doc.tensors[0].name);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. Upstream-Derived Exhaustive Type Oracle Test (ggml 0.23.0 / e91ded11)
 // ---------------------------------------------------------------------------

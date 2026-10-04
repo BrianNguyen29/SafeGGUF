@@ -236,6 +236,16 @@ fn setResultField(dest: []u8, value: []const u8) void {
     @memcpy(dest[0..value.len], value);
 }
 
+test "ffi: canonical code pointers outlive the caller's mutable buffer" {
+    var caller_buffer: [64:0]u8 = [_:0]u8{0} ** 64;
+    const code = "SGGUF_E_ARITHMETIC_OVERFLOW";
+    @memcpy(caller_buffer[0..code.len], code);
+    const result = cabi.safegguf_canonical_error_code(&caller_buffer);
+    try std.testing.expect(@intFromPtr(result) != @intFromPtr(&caller_buffer));
+    @memset(caller_buffer[0..], 'X');
+    try std.testing.expectEqualStrings(code, std.mem.span(result));
+}
+
 test "ffi: result accessor resolves the context-dependent dimension-overflow detail" {
     var res: cabi.Result = undefined;
     @memset(std.mem.asBytes(&res), 0);

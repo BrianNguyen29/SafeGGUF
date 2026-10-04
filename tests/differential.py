@@ -38,6 +38,18 @@ FIXTURES_DIR = os.path.join(SCRIPT_DIR, "fixtures")
 # Explicit, full expected matrix for all fixtures across:
 # (SafeGGUF llama-cpp, Upstream --load-data, Upstream --no-load, Description/Rationale)
 EXPECTED_MATRIX = {
+    "nul_tensor_alias.gguf": (
+        "REJECT", "REJECT", "REJECT",
+        "Embedded NUL aliases two names to the same upstream C string.",
+    ),
+    "nul_tensor_name.gguf": (
+        "REJECT", "PASS", "PASS",
+        "SafeGGUF llama-cpp rejects NUL names rather than admitting truncated C-string identities.",
+    ),
+    "tensor_name_control.gguf": (
+        "PASS", "PASS", "PASS",
+        "Distinct NUL-free names remain accepted by both validators.",
+    ),
     "truncated_header_padding_zero_tensors.gguf": (
         "PASS", "PASS", "PASS",
         "SafeGGUF llama-cpp mirrors upstream zero-tensor non-seek; gguf-spec strictly rejects.",

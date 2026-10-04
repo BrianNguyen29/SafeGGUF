@@ -23,6 +23,7 @@ ARG SAFEGGUF_VERSION
 # buildx automatic platform argument: the CPU architecture the published
 # image targets (linux/amd64 or linux/arm64).
 ARG TARGETARCH
+ARG SAFEGGUF_SOURCE_COMMIT=unknown
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget xz-utils ca-certificates git python3 && \
@@ -49,7 +50,7 @@ RUN set -eux; \
       arm64) zig_target="aarch64-linux-musl" ;; \
       *) echo "Unsupported TARGETARCH: '${TARGETARCH}' (expected amd64 or arm64)" >&2; exit 1 ;; \
     esac; \
-    zig build -Doptimize=ReleaseSafe -Dtarget="${zig_target}" -Dversion="${SAFEGGUF_VERSION}"
+    zig build -Doptimize=ReleaseSafe -Dtarget="${zig_target}" -Dversion="${SAFEGGUF_VERSION}" -Dsource-commit="${SAFEGGUF_SOURCE_COMMIT}"
 
 # Stage 2: Final minimal distroless runtime container.
 # Pinned to the multi-arch manifest list digest of

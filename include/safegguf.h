@@ -203,8 +203,9 @@ const char* safegguf_version(void);
  *
  * Accepts the implementation identifiers ("ArithmeticOverflow") and
  * compatibility codes ("E_FILE_OPEN_FAILED") emitted by this library, plus
- * canonical codes already in the namespace (returned unchanged). The returned
- * pointer is a static string that must not be freed; NULL and unmapped input
+ * canonical codes already in the namespace (same string value). The returned
+ * pointer is library-owned static storage, independent of the input buffer,
+ * and must not be freed; NULL and unmapped input
  * return SGGUF_E_UNKNOWN.
  *
  * This maps the legacy error_code alone. For a result whose legacy code is

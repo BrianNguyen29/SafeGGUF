@@ -18,3 +18,6 @@ pub const OwnedValidationState = validator.OwnedValidationState;
 /// change increments it. Mirrored by `SAFEGGUF_SCHEMA_VERSION` in
 /// include/safegguf.h.
 pub const json_schema_version: u32 = 1;
+/// Admission documents v2 bind effective policy and resolve CAS paths from
+/// --cas-dir. Independent of inspect diagnostics (schema version 1).
+pub const attestation_schema_version: u32 = 2;

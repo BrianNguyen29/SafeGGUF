@@ -1,3 +1,6 @@
+# Release template: render with scripts/render_k8s_manifest.py.
+# The signed container workflow emits a rendered, digest-pinned artifact.
+# Do not apply this template directly.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -6,62 +9,70 @@ metadata:
   labels:
     app: llama-cpp-serving
     security.policy: safegguf-validated
+  annotations:
+    safegguf.release-version: "SAFEGGUF_RELEASE_VERSION"
 spec:
-  # Fail-closed bound on the whole Pod (staging copy -> validation ->
-  # attestation -> serving): a hung copy or validator cannot occupy the node
-  # indefinitely. The deadline also covers the serving window; a production
-  # serving workload should run under a Deployment/StatefulSet controller so
-  # the Pod is recreated after the deadline instead of staying Failed.
-  activeDeadlineSeconds: 3600
+  securityContext:
+    runAsNonRoot: true
+    runAsGroup: 65532
+    fsGroup: 65532
   volumes:
-    # Untrusted upload source. Mounted read-only by exactly one init container
-    # (the one-time staging copy) and by no other container in this Pod.
     - name: unvalidated-source-volume
       persistentVolumeClaim:
         claimName: unvalidated-models-pvc
-    # Private per-Pod staging + content-addressed store (CAS). The staged copy
-    # lives here with no writer after the copy step, so validation, hashing, and
-    # the CAS rename all operate on bytes the untrusted source cannot reach.
-    # staging/ and validated/ share this filesystem, which makes publishing to
-    # validated/<sha256> an atomic rename.
-    # sizeLimit must be >= the largest expected model artifact.
     - name: private-staging-volume
       emptyDir:
         sizeLimit: 16Gi
-    # Digest attestation only (tiny); memory-backed, written by init, read-only
-    # for serving.
     - name: attestation-volume
       emptyDir:
         medium: Memory
         sizeLimit: 10Mi
-
-  # ============================================================================
-  # SafeGGUF Pre-Admission Firewall & Immutable Digest Handoff Pipeline
-  # Fails closed (exit code 2): if the staged model is malformed, tampered, or
-  # contains arithmetic integer wraps, the Pod terminates before any bytes are
-  # mapped into the production inference container.
-  #
-  # Anti-pattern removed (TOCTOU): the previous flow ran `safegguf inspect` and
-  # then `sha256sum` against the same mutable /models/model.gguf upload path,
-  # and the serving container mounted that mutable upload volume and loaded from
-  # it. A writer with access to the upload could swap the file after validation,
-  # so the digest could attest bytes SafeGGUF never inspected. The source is now
-  # read exactly once, into private staging; every later step consumes the
-  # digest-named CAS entry, which has no remaining writer.
-  # ============================================================================
   initContainers:
-    # Phase 0: One-time copy of the untrusted upload into private staging.
-    - name: safegguf-staging-copy
+    # Preparation only. Admission is performed entirely by the next container.
+    - name: safegguf-prepare-directories
       image: busybox:1.36-musl
-      imagePullPolicy: IfNotPresent
-      command:
-        - /bin/sh
-        - -c
+      command: ["/bin/sh", "-c"]
+      args:
         - |
-          set -euo pipefail
-          mkdir -p /private-stage
-          cp /models/model.gguf /private-stage/model.gguf
-          echo "[SafeGGUF Staging] Source copied once into private staging; the source path is never read again."
+          set -eu
+          mkdir -p /private-stage/validated /attestation
+      resources:
+        limits:
+          cpu: "100m"
+          memory: "32Mi"
+      volumeMounts:
+        - name: private-staging-volume
+          mountPath: /private-stage
+        - name: attestation-volume
+          mountPath: /attestation
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 65532
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+    # One process copies, hashes, validates, and publishes the same staged inode.
+    # Kubernetes init ordering prevents serving after a non-zero admission exit.
+    - name: safegguf-pre-admission-validator
+      image: "SAFEGGUF_RELEASE_IMAGE"
+      imagePullPolicy: IfNotPresent
+      command: ["/usr/local/bin/safegguf"]
+      args:
+        - admit
+        - /models/model.gguf
+        - --cas-dir
+        - /private-stage/validated
+        - --attestations-dir
+        - /attestation
+        - --profile
+        - llama-cpp
+        - --endian
+        - auto
+        - --max-file-size-bytes
+        - "17179869184"
       resources:
         limits:
           cpu: "1000m"
@@ -75,133 +86,36 @@ spec:
           readOnly: true
         - name: private-staging-volume
           mountPath: /private-stage
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        runAsNonRoot: true
-        runAsUser: 65534 # nobody
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-
-    # Phase 1: Structural & arithmetic pre-admission validation of the STAGED
-    # bytes. The untrusted source path is not mounted in this container.
-    - name: safegguf-pre-admission-validator
-      # NOTE (unresolved image reference): CI publishes container tags only for
-      # `v*` git tags, through docker/metadata-action semver patterns, so a
-      # published tag has no `v` prefix (`0.3.6`, `0.3`, `latest` -- see
-      # .github/workflows/container-release.yml and README "Docker"). No
-      # released image contains this commit's `--max-file-size-bytes` /
-      # `--require-stable-file` flags (added after v0.3.6), and
-      # ghcr.io/briannguyen29/safegguf denies anonymous manifest access, so no
-      # digest could be resolved. Substitute a verified release image (tag +
-      # digest) built from this commit before production use.
-      image: ghcr.io/briannguyen29/safegguf:v0.3.7-dev
-      imagePullPolicy: IfNotPresent
-      command:
-        - /usr/local/bin/safegguf
-        - inspect
-        - /private-stage/model.gguf
-        - --profile
-        - llama-cpp
-        - --format
-        - json
-        - --endian
-        - auto
-        - --max-file-size-bytes
-        - "17179869184" # 16 GiB; matches the staging volume sizeLimit
-        - --require-stable-file
-      resources:
-        limits:
-          cpu: "1000m"
-          memory: "256Mi"
-        requests:
-          cpu: "100m"
-          memory: "64Mi"
-      volumeMounts:
-        - name: private-staging-volume
-          mountPath: /private-stage
-          readOnly: true
-      securityContext:
-        allowPrivilegeEscalation: false
-        readOnlyRootFilesystem: true
-        runAsNonRoot: true
-        runAsUser: 65532 # nonroot
-        capabilities:
-          drop:
-            - ALL
-        seccompProfile:
-          type: RuntimeDefault
-
-    # Phase 2: Digest the staged validated bytes and publish them to the CAS.
-    # Executed strictly AFTER SafeGGUF exits 0 (STRUCTURALLY_ACCEPTED). Hashing
-    # exactly the bytes that passed validation and atomically renaming them to
-    # /private-stage/validated/<sha256> pins the digest to those bytes.
-    - name: safegguf-attestation-generator
-      image: busybox:1.36-musl
-      imagePullPolicy: IfNotPresent
-      command:
-        - /bin/sh
-        - -c
-        - |
-          set -euo pipefail
-          STAGED=/private-stage/model.gguf
-          DIGEST="$(sha256sum "$STAGED" | awk '{print $1}')"
-          mkdir -p /private-stage/validated
-          mv "$STAGED" "/private-stage/validated/$DIGEST"
-          chmod 0444 "/private-stage/validated/$DIGEST"
-          printf '%s  %s\n' "$DIGEST" "$DIGEST" > /attestation/model.gguf.sha256
-          echo "[SafeGGUF Attestation] Published immutable CAS entry sha256:$DIGEST (staged path consumed)."
-      resources:
-        limits:
-          cpu: "500m"
-          memory: "64Mi"
-        requests:
-          cpu: "50m"
-          memory: "32Mi"
-      volumeMounts:
-        - name: private-staging-volume
-          mountPath: /private-stage
         - name: attestation-volume
           mountPath: /attestation
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
         runAsNonRoot: true
-        runAsUser: 65534 # nobody
+        runAsUser: 65532
         capabilities:
-          drop:
-            - ALL
+          drop: ["ALL"]
         seccompProfile:
           type: RuntimeDefault
-
-  # ============================================================================
-  # Downstream Production Inference Serving Container (e.g. llama.cpp / vLLM)
-  # Digest-pinned load: reads only the SHA-256 digest from the attestation
-  # volume, re-verifies the CAS bytes against it, then loads /validated/<digest>.
-  # It never mounts the upload source, nor references its path.
-  # ============================================================================
   containers:
     - name: llama-cpp-server
-      # Upstream moved from ghcr.io/ggerganov/llama.cpp (no `server` tag
-      # remains there) to ghcr.io/ggml-org/llama.cpp. Pinned by the multi-arch
-      # index digest resolved from the registry on 2026-10-03; update only via
-      # a reviewed digest bump. The entrypoint of this image is
-      # /app/llama-server (verified from the image config), not /server.
       image: ghcr.io/ggml-org/llama.cpp:server@sha256:970168341efef973da5666ea5c362fa428ee66ba0dfa621b0f69bf3feb3320f7
       imagePullPolicy: IfNotPresent
-      command:
-        - /bin/sh
-        - -c
+      command: ["/bin/sh", "-c"]
+      args:
         - |
-          set -euo pipefail
-          DIGEST="$(awk '{print $1}' /attestation/model.gguf.sha256)"
-          echo "[Inference Gate] Digest-pinned artifact: sha256:$DIGEST"
-          cd /validated
-          sha256sum -c /attestation/model.gguf.sha256
-          echo "[Inference Gate] Bytes match the validated digest; loading immutable CAS entry..."
+          set -eu
+          # Exactly one complete checksum pin must be present.
+          set -- /attestation/*.sha256
+          [ "$#" -eq 1 ] && [ -f "$1" ]
+          PIN="$1"
+          DIGEST="${PIN##*/}"
+          DIGEST="${DIGEST%.sha256}"
+          [ "${#DIGEST}" -eq 64 ]
+          case "$DIGEST" in *[!0-9a-f]*) exit 2 ;; esac
+          (cd /validated && sha256sum -c "$PIN")
+          # The pinned runtime resolves bundled libraries relative to /app.
+          cd /app
           exec /app/llama-server -m "/validated/$DIGEST" -c 4096 --host 0.0.0.0 --port 8080
       ports:
         - containerPort: 8080
@@ -221,17 +135,15 @@ spec:
         requests:
           cpu: "2000m"
           memory: "8Gi"
-      # Hardened to the same standard as the init containers: the inference
-      # process never needs root, never writes outside its read-only mounts,
-      # cannot gain privileges, and runs under the RuntimeDefault seccomp
-      # profile. The CAS entry it reads is mode 0444 and mounted read-only.
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
         runAsNonRoot: true
-        runAsUser: 65534 # nobody
+        runAsUser: 65534
         capabilities:
-          drop:
-            - ALL
+          drop: ["ALL"]
         seccompProfile:
           type: RuntimeDefault
+# This is a Pod integration example. A production serving controller must set
+# its own rollout, readiness, storage and admission timeout policy. Do not use
+# activeDeadlineSeconds as an admission-only timer: it also stops serving.

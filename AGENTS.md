@@ -47,7 +47,7 @@ python tests/fuzz_mutation.py --iterations 2000   # 4,000 executions across both
 ## Entrypoints
 
 - `src/root.zig` — library root; re-exports all public modules (import as `safegguf`).
-- `src/main.zig` — only CLI: `safegguf inspect <file> [--endian little|big] [--format text|json] [--profile gguf-spec|llama-cpp] [--max-variable-array-elements N]`; fail-closed (unknown args exit 64). `N` caps `array[string]`/nested-array elements (default 1,000,000; accepted range 1..10,000,000).
+- `src/main.zig` — CLI: `inspect <file>` and `admit <file> --cas-dir <dir> --attestations-dir <dir>`. Both default to `llama-cpp` + `--endian auto`; fail-closed (unknown args exit 64). `--max-variable-array-elements N` caps `array[string]`/nested-array elements (default 1,000,000; range 1..10,000,000). Admission success emits schema v2; inspect diagnostics remain schema v1.
 - `src/gguf/` — `types.zig` (pinned ggml type table + `Profile`), `error.zig`, `limits.zig` (quota/budget config), `reader.zig` (64 KiB sliding window), `metadata.zig`, `parser.zig`.
 - `src/validate/` — `arithmetic.zig` (checked ops), `structural.zig` (profile rules), `validator.zig` (facade managing QuotaAllocator + WorkBudget).
 - `tests/validator_test.zig` + `tests/fuzz_target.zig` — Zig test roots wired in `build.zig` (`zig build test` runs both; `zig build fuzz` runs the corpus sweep only). Python harnesses live in `tests/*.py`.
@@ -68,8 +68,20 @@ REJECT/ERROR JSON carries rich diagnostics: `error_code`, `category` (format|com
 
 Every JSON output (PASS/REJECT/ERROR) also carries pinned-ggml provenance — `compatibility_target` (`llama-cpp`) / `type_layout_source` (`gguf-spec`) = `{project: "ggml", version, commit}` from `GGML_PINNED_*` (`src/main.zig`) — naming the type-table source the profile's layout rules derive from.
 
+Admission documents have a separate version (`attestation_schema_version` in
+`src/root.zig`). v2 binds every effective Limits field, requested/resolved
+endianness and build provenance. `cas.relative_path` is relative to `--cas-dir`,
+never its parent. The shell handoff delegates to `admit`; do not reintroduce a
+separate inspect/hash/publish sequence. `scripts/render_k8s_manifest.py` renders
+the Kubernetes template only from a version-matching digest-pinned release
+image. `python tests/test_release_deployment.py` checks rendering offline.
+
+Public source checks: `python scripts/check_public_tree.py` inspects staged
+paths and Markdown links. Keep session notes, incident runbooks, archived audit
+reports and local release records untracked; do not force-add ignored records.
+
 ## Profiles
 
-- `gguf-spec` (default): GGUF v3 only; arbitrary tensor order and gaps allowed; nested arrays allowed (depth ≤ 16); alignment multiple of 8.
-- `llama-cpp`: GGUF v2+v3; strictly contiguous descriptors + checked trailing padding; nested arrays rejected; alignment power-of-two.
+- `gguf-spec` (opt-in): GGUF v3 only; arbitrary tensor order and gaps allowed; nested arrays allowed (depth ≤ 16); alignment multiple of 8; length-delimited tensor names.
+- `llama-cpp` (default): GGUF v2+v3; strictly contiguous descriptors + checked trailing padding; nested arrays rejected; alignment power-of-two; embedded NUL tensor names rejected to prevent C-string aliasing.
 - GGML type table is pinned to ggml 0.23.0 @ `e91ded11` (`src/gguf/types.zig` `GGML_PINNED_*`); deprecated slots and IDs ≥ 43 are rejected. The Zig table must stay in sync with pinned upstream — enforced by `test_oracle_types.py` and `differential.py`.

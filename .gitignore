@@ -23,3 +23,22 @@ bindings/python/build/
 bindings/python/*.egg-info/
 
 tests/fuzz-artifacts/
+
+# Local maintainer records; keep them out of the public source tree.
+/SESSION.md
+*:[Zz]one.Identifier
+/docs/archive/
+/docs/runbooks/
+/docs/private/
+/docs/internal/
+/docs/release-readiness.md
+/docs/release-validation-*.md
+/SafeGGUF_*_Plan.md
+/production_audit_report.md
+/test_report.md
+/security-review-package.md
+/deep-review-fix-plan.md
+/assurance-roadmap-issues.md
+/remediation-*-exec-plan.md
+.env
+.env.*
