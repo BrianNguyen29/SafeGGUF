@@ -17,6 +17,39 @@ SPEC.loader.exec_module(renderer)
 
 
 class ReleaseDeploymentTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "Bash container smoke contract")
+    def test_container_version_check_consumes_output_and_preserves_failure(self):
+        workflow = (ROOT / ".github/workflows/container-release.yml").read_text()
+        step = workflow.split("      - name: Run CLI contract on the built image\n", 1)[1]
+        script = textwrap.dedent(step.split("        run: |\n", 1)[1]).split('echo "$reported"', 1)[0]
+        script = script.replace("${{ matrix.arch }}", "arm64").replace("${{ matrix.platform }}", "linux/arm64")
+        script += 'printf "%s\\n" "$reported"\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            marker = directory / "output-complete"
+            docker = directory / "docker"
+            docker.write_text(
+                f"#!{sys.executable}\n"
+                "import os, pathlib, sys, time\n"
+                "print('SafeGGUF 0.1.0', flush=True)\n"
+                "time.sleep(0.05)\n"
+                "print('source_commit: test-commit', flush=True)\n"
+                "pathlib.Path(os.environ['TEST_OUTPUT_MARKER']).write_text('complete')\n"
+                "sys.exit(int(os.environ.get('TEST_LATE_EXIT', '0')))\n",
+                encoding="utf-8",
+            )
+            docker.chmod(0o755)
+            env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                       TEST_OUTPUT_MARKER=str(marker))
+            result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "SafeGGUF 0.1.0")
+            self.assertEqual(marker.read_text(), "complete")
+            env["TEST_LATE_EXIT"] = "74"
+            result = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 74, result.stderr)
+            self.assertEqual(result.stdout, "")
+
     @unittest.skipUnless(os.name == "posix" and shutil.which("sha256sum"), "POSIX checksum handoff")
     def test_serving_gate_checks_bytes_and_restores_runtime_directory(self):
         source = renderer.TEMPLATE.read_text(encoding="utf-8")

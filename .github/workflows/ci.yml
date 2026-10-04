@@ -313,7 +313,8 @@ jobs:
     # windows-gate is equally fail-closed: a failed or skipped Windows runtime
     # gate skips this job, so safegguf-x86_64-windows.exe is never published
     # without native validation of the tagged commit.
-    needs: [core, version-consistency, oracle, fuzz, bench, real-corpus, windows-gate]
+    # Container verification must finish before binary artifacts are published.
+    needs: [core, version-consistency, oracle, fuzz, bench, real-corpus, windows-gate, container-release]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:

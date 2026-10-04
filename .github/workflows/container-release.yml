@@ -137,7 +137,8 @@ jobs:
           image="safegguf-smoke:${{ matrix.arch }}"
           # The binary must self-report the tag-derived version passed as a
           # build-arg, not the Dockerfile fallback (version-drift regression).
-          reported="$(docker run --rm --platform ${{ matrix.platform }} "$image" --version | head -n1)"
+          version_output="$(docker run --rm --platform ${{ matrix.platform }} "$image" --version)"
+          reported="${version_output%%$'\n'*}"
           echo "$reported"
           if [ "$reported" != "SafeGGUF $EXPECTED_VERSION" ]; then
             echo "version drift: expected 'SafeGGUF $EXPECTED_VERSION', got '$reported'"
