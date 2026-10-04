@@ -178,9 +178,8 @@ def read_native_version(lib_path):
 def pep440_version(version):
     """Normalize the native version string for distribution metadata.
 
-    The embedded development default (``0.3.7-dev`` in build.zig) becomes
-    ``0.3.7.dev0``. ``__version__`` inside the wheel keeps the exact native
-    string.
+    Stable versions such as ``0.1.0`` are unchanged. Development suffixes are
+    normalized for packaging; ``__version__`` keeps the exact native string.
     """
     try:
         return str(Version(version))

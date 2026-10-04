@@ -1,145 +1,62 @@
 #!/usr/bin/env python3
-"""Fail when the embedded build default drifts from the latest release tag.
+"""Check source metadata and require release tags to match VERSION.
 
-`build.zig` embeds the default version reported by source builds; the release
-workflow overrides it per tag with `-Dversion=<value>`. If the embedded default
-does not match the newest `v*` tag, a plain `zig build` from `main` reports a
-different release than the one published -- the drift this check catches.
-
-Usage: python3 scripts/version_consistency.py
-Exit:  0 when the embedded default matches the latest tag, 1 on drift, an
-       unparseable build.zig, or a shallow checkout that hides the tags.
+VERSION declares the intended source release, independently of historical tag
+numbers. Tagged publication must use that exact version. Source checks do not
+claim that the release has already been published.
 """
+from __future__ import annotations
 
+import argparse
+import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-BUILD_ZIG = REPO_ROOT / "build.zig"
-VERSION_FALLBACK_RE = re.compile(
-    r'addOption\(\[\]const u8, "version"[^;]*?orelse\s+"([^"]+)"'
-)
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SEMVER = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 
 
-def git(*args):
-    """Run git in the repository root; return stdout, or None on any failure."""
+def check(root: Path, release_ref: str = "") -> list[str]:
+    findings = []
+    version = (root / "VERSION").read_text(encoding="utf-8").strip()
+    if not SEMVER.fullmatch(version):
+        return ["VERSION must contain a stable semantic version such as 0.1.0"]
+    build = (root / "build.zig").read_text(encoding="utf-8")
+    if not re.search(r'addOption\(\[\]const u8, "version"[^;]*@embedFile\("VERSION"\)', build):
+        findings.append("build.zig must derive the default version from VERSION")
+    docker = (root / "Dockerfile").read_text(encoding="utf-8")
+    default = re.search(r"^ARG SAFEGGUF_VERSION=(\S+)$", docker, re.MULTILINE)
+    if default is None or default.group(1) != version:
+        findings.append("Dockerfile SAFEGGUF_VERSION must match VERSION")
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    if f"Source version: **{version}**" not in readme:
+        findings.append("README source version must match VERSION")
+    if not (root / "docs" / f"release-notes-{version}.md").is_file():
+        findings.append("Release notes for VERSION are missing")
+    if release_ref.startswith("refs/tags/") and release_ref != f"refs/tags/v{version}":
+        findings.append(f"Release tag must be refs/tags/v{version}; received {release_ref}")
+    return findings
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=REPO_ROOT)
+    parser.add_argument("--ref", default=os.environ.get("GITHUB_REF", ""))
+    args = parser.parse_args()
     try:
-        result = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), *args],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout
-
-
-def embedded_default_version():
-    match = VERSION_FALLBACK_RE.search(BUILD_ZIG.read_text(encoding="utf-8"))
-    return match.group(1) if match else None
-
-
-def latest_release_tag():
-    output = git("tag", "--list", "v*", "--sort=-v:refname")
-    if output is None:
-        return None
-    tags = [line.strip() for line in output.splitlines() if line.strip()]
-    return tags[0] if tags else None
-
-
-def is_shallow_checkout():
-    output = git("rev-parse", "--is-shallow-repository")
-    return output is not None and output.strip() == "true"
-
-
-def is_valid_version_progression(embedded: str, tag: str) -> bool:
-    """Check whether embedded version is either exactly equal to the latest tag
-    or represents a valid next-development step (patch, minor, or major)."""
-    expected = tag[1:] if tag.startswith("v") else tag
-    if embedded == expected:
-        return True
-
-    tag_match = re.match(r"^(\d+)\.(\d+)\.(\d+)$", expected)
-    if not tag_match:
-        return False
-    t_maj, t_min, t_pat = map(int, tag_match.groups())
-
-    dev_match = re.match(r"^(\d+)\.(\d+)\.(\d+)-dev$", embedded)
-    if not dev_match:
-        return False
-    e_maj, e_min, e_pat = map(int, dev_match.groups())
-
-    # Valid transitions for next development iteration:
-    # Next patch: (t_maj, t_min, t_pat + 1)
-    # Next minor: (t_maj, t_min + 1, 0)
-    # Next major: (t_maj + 1, 0, 0)
-    if (e_maj, e_min, e_pat) == (t_maj, t_min, t_pat + 1):
-        return True
-    if (e_maj, e_min, e_pat) == (t_maj, t_min + 1, 0):
-        return True
-    if (e_maj, e_min, e_pat) == (t_maj + 1, 0, 0):
-        return True
-
-    return False
-
-
-def expected_next_dev(tag: str) -> str:
-    expected = tag[1:] if tag.startswith("v") else tag
-    m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", expected)
-    if m:
-        maj, minr, pat = map(int, m.groups())
-        return f"{maj}.{minr}.{pat + 1}-dev"
-    return f"{expected}-dev"
-
-
-def main():
-    if not BUILD_ZIG.is_file():
-        print(f"FAIL: build.zig not found at {BUILD_ZIG}", file=sys.stderr)
+        findings = check(args.root, args.ref)
+    except (OSError, UnicodeError) as exc:
+        print(f"FAIL: release metadata could not be read ({type(exc).__name__})", file=sys.stderr)
         return 1
-
-    embedded = embedded_default_version()
-    if embedded is None:
-        print(
-            'FAIL: could not find the embedded version fallback in build.zig '
-            '(expected `addOption([]const u8, "version", ... orelse "<version>")`)',
-            file=sys.stderr,
-        )
+    if findings:
+        for finding in findings:
+            print(f"FAIL: {finding}", file=sys.stderr)
         return 1
-    print(f"embedded default version (build.zig): {embedded}")
-
-    tag = latest_release_tag()
-    if tag is None:
-        if is_shallow_checkout():
-            print(
-                "FAIL: shallow checkout hides the release tags; fetch them first "
-                "(`git fetch --tags`, or use actions/checkout with fetch-depth: 0)",
-                file=sys.stderr,
-            )
-            return 1
-        print("SKIP: no git repository or no v* tags to compare against")
-        return 0
-
-    if is_valid_version_progression(embedded, tag):
-        print(f"OK: embedded version '{embedded}' is valid (tracks latest release tag {tag})")
-        return 0
-
-    print(
-        f"FAIL: embedded default version '{embedded}' is not a valid progression from latest release tag '{tag}'",
-        file=sys.stderr,
-    )
-    print(
-        "  A source build must either match the latest tag or be the valid next "
-        f"patch/minor/major -dev version (e.g. '{expected_next_dev(tag)}'). "
-        "Arbitrary versions like '99.99.99-dev' are rejected.",
-        file=sys.stderr,
-    )
-    return 1
+    version = (args.root / "VERSION").read_text(encoding="utf-8").strip()
+    print(f"PASS: source metadata agrees on {version}; release tag matches when provided.")
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

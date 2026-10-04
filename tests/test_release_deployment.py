@@ -60,18 +60,18 @@ class ReleaseDeploymentTests(unittest.TestCase):
             self.assertFalse(marker.exists())
 
     def test_pinned_release_and_version_must_match(self):
-        image = "ghcr.io/briannguyen29/safegguf:0.3.7@sha256:" + "a" * 64
-        document = renderer.render(image, "0.3.7")
+        image = "ghcr.io/briannguyen29/safegguf:0.1.0@sha256:" + "a" * 64
+        document = renderer.render(image, "0.1.0")
         self.assertIn(image, document)
         self.assertNotIn("SAFEGGUF_RELEASE_", document)
-        prerelease = image.replace("0.3.7", "0.3.7-rc.1")
-        self.assertIn(prerelease, renderer.render(prerelease, "0.3.7-rc.1"))
-        for bad in (image.split("@")[0], image.replace("0.3.7", "latest"),
+        prerelease = image.replace("0.1.0", "0.1.0-rc.1")
+        self.assertIn(prerelease, renderer.render(prerelease, "0.1.0-rc.1"))
+        for bad in (image.split("@")[0], image.replace("0.1.0", "latest"),
                     image.replace("a" * 64, "z" * 64), image.replace("brian", "Brian")):
             with self.assertRaises(ValueError):
-                renderer.render(bad, "0.3.7")
+                renderer.render(bad, "0.1.0")
         with self.assertRaises(ValueError):
-            renderer.render(image, "0.3.8")
+            renderer.render(image, "0.1.1")
 
     def test_existing_output_is_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -79,8 +79,8 @@ class ReleaseDeploymentTests(unittest.TestCase):
             output.write_text("existing user artifact", encoding="utf-8")
             result = subprocess.run(
                 [sys.executable, str(ROOT / "scripts/render_k8s_manifest.py"),
-                 "--validator-image", "ghcr.io/briannguyen29/safegguf:0.3.7@sha256:" + "a" * 64,
-                 "--version", "0.3.7", "--output", str(output)],
+                 "--validator-image", "ghcr.io/briannguyen29/safegguf:0.1.0@sha256:" + "a" * 64,
+                 "--version", "0.1.0", "--output", str(output)],
                 capture_output=True, timeout=10,
             )
             self.assertNotEqual(result.returncode, 0)

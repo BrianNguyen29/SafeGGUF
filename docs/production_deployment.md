@@ -137,7 +137,7 @@ Triage chạy offline mặc định; chỉ mode online mới gọi API bên ngo�
 từ diagnostics là phân loại theo quy tắc, không phải xác suất đã hiệu chỉnh
 hay phân tích hành vi của weights. Không dùng Structural-Pass làm nhãn tin cậy.
 
-Xem [release notes](release-notes-0.3.7.md)
+Xem [release notes](release-notes-0.1.0.md)
 và [SECURITY.md](../SECURITY.md). Chạy inference smoke trong môi trường thử nghiệm
 đã xác định trước khi rollout production; các kiểm tra static/local không
 thay thế CI đa nền tảng hay xác minh trên cluster thực tế.

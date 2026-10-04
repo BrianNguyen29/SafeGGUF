@@ -13,13 +13,10 @@ pub fn build(b: *std.Build) void {
     // `safegguf --version` via src/build_info.zig). Derived from the source
     // tree and toolchain only - deliberately no wall-clock timestamp, so the
     // same commit/toolchain/options produce identical build metadata.
-    // Embedded default for source builds. Policy: track the latest release tag
-    // so a plain `zig build` never reports an older release than the published
-    // one; release builds override it per tag with -Dversion=<value>. Drift
-    // between this default and the newest `v*` tag fails the
-    // `version-consistency` CI job (scripts/version_consistency.py).
+    // VERSION is the source version. CI checks the Docker default and release
+    // tag against it; release builds can inject the same value with -Dversion.
     const build_options = b.addOptions();
-    build_options.addOption([]const u8, "version", b.option([]const u8, "version", "Version reported by `safegguf --version`") orelse "0.3.7-dev");
+    build_options.addOption([]const u8, "version", b.option([]const u8, "version", "Version reported by `safegguf --version`") orelse std.mem.trim(u8, @embedFile("VERSION"), " \t\r\n"));
     build_options.addOption([]const u8, "source_commit", b.option([]const u8, "source-commit", "Source commit for exported/container builds") orelse sourceCommit(b));
     build_options.addOption([]const u8, "zig_version", @import("builtin").zig_version_string);
     build_options.addOption([]const u8, "build_mode", @tagName(optimize));

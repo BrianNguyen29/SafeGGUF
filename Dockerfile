@@ -7,10 +7,10 @@
 # org.opencontainers.image.version label. A single value feeds both the
 # embedded build metadata (`zig build -Dversion`) and the label, so the label
 # can never drift from the binary it ships. The default tracks build.zig's
-# embedded fallback, guarded against the latest release tag by
+# source VERSION, checked against the release tag by
 # scripts/version_consistency.py; release builds override it with
 # `--build-arg SAFEGGUF_VERSION=<version>`.
-ARG SAFEGGUF_VERSION=0.3.7-dev
+ARG SAFEGGUF_VERSION=0.1.0
 
 # Stage 1: Build static musl binary with Zig 0.13.0.
 # The builder always runs on the build platform (never under QEMU): the pinned

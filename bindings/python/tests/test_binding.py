@@ -27,7 +27,8 @@ def main():
         pass
 
     print(f"Testing SafeGGUF Python Binding (Engine version: {safegguf.version()})...")
-    assert safegguf.version().startswith("0.3."), f"Unexpected version: {safegguf.version()}"
+    expected = (Path(__file__).resolve().parents[3] / "VERSION").read_text().strip()
+    assert safegguf.version() == expected, f"Unexpected version: {safegguf.version()}"
 
     valid_file = repo_root / "tests" / "fixtures" / "valid.gguf"
     cve_file = repo_root / "tests" / "fixtures" / "negative" / "cve-2025-53630-cumulative-overflow.gguf"

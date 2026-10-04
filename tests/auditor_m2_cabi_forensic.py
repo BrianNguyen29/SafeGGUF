@@ -29,7 +29,8 @@ def run_c_abi_direct_tests(dll_path: str):
     # 1. Version check
     ver = lib.safegguf_version().decode("utf-8")
     print(f"    Version returned: {ver}")
-    assert ver in ("0.3.6", "0.3.7-dev"), f"Expected version 0.3.6 or 0.3.7-dev, got {ver}"
+    expected = (Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
+    assert ver == expected, f"Expected version {expected}, got {ver}"
 
     # 2. safegguf_validate_path NULL checks
     print("    [Test 1] Passing NULL pointer to safegguf_validate_path...")

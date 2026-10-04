@@ -90,10 +90,8 @@ jobs:
       - name: Verify Offline Release Deployment Rendering
         run: python tests/test_release_deployment.py
 
-  # Version metadata guard: `build.zig` embeds the default version that source
-  # builds report (`safegguf --version`). It must track the latest release tag,
-  # or a plain `zig build` from `main` claims an older release than the one
-  # published. Needs a full-history checkout so `git tag` sees every release.
+  # VERSION is the canonical source version. Check build/container/document
+  # metadata and require an exact tag match before release publication.
   version-consistency:
     name: Embedded Version vs Latest Tag
     runs-on: ubuntu-24.04
@@ -109,8 +107,10 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Verify Embedded Default Version Tracks the Latest Release Tag
-        run: python scripts/version_consistency.py
+      - name: Verify Source and Release Version Consistency
+        run: |
+          python scripts/version_consistency.py
+          python tests/test_version_consistency.py
 
   # Tier-1 real-corpus gate (F-04/B1): evaluates manifest-selected entries
   # against the ReleaseSafe binary and enforces the runner's coverage floors (a
@@ -300,7 +300,7 @@ jobs:
       id-token: write
     # Tag-derived release version: the called workflow strips the leading v and
     # passes it as the image build-arg, so the binary and the OCI version label
-    # report the release tag instead of the Dockerfile's 0.3.7-dev fallback.
+    # report the release version declared in VERSION.
     uses: ./.github/workflows/container-release.yml
     with:
       version: ${{ github.ref_name }}
@@ -492,7 +492,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag_name="${GITHUB_REF#refs/tags/}"
+          version="${tag_name#v}"
+          notes="docs/release-notes-${version}.md"
+          test -f "$notes"
           echo "Ensuring release $tag_name exists..."
-          gh release view "$tag_name" >/dev/null 2>&1 || gh release create "$tag_name" --title "$tag_name" --generate-notes
+          gh release view "$tag_name" >/dev/null 2>&1 || gh release create "$tag_name" --title "SafeGGUF ${version}" --notes-file "$notes"
+          gh release edit "$tag_name" --title "SafeGGUF ${version}" --notes-file "$notes" --latest
           echo "Uploading assets to release $tag_name..."
           gh release upload "$tag_name" dist/* --clobber

@@ -163,7 +163,7 @@ test "log: record renders exactly the required fields with their values" {
         .verdict = "REJECT",
         .error_code = "E_TensorOverlap",
         .stage = "structural",
-        .version = "0.3.7-dev",
+        .version = "0.1.0",
         .commit = "deadbeef",
     };
 
@@ -185,7 +185,7 @@ test "log: record renders exactly the required fields with their values" {
     try std.testing.expectEqualStrings("REJECT", obj.get("verdict").?.string);
     try std.testing.expectEqualStrings("E_TensorOverlap", obj.get("error_code").?.string);
     try std.testing.expectEqualStrings("structural", obj.get("stage").?.string);
-    try std.testing.expectEqualStrings("0.3.7-dev", obj.get("version").?.string);
+    try std.testing.expectEqualStrings("0.1.0", obj.get("version").?.string);
     try std.testing.expectEqualStrings("deadbeef", obj.get("commit").?.string);
 }
 

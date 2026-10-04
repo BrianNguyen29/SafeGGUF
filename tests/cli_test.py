@@ -3,11 +3,13 @@ import os
 import struct
 import subprocess
 import sys
+from pathlib import Path
 
 BINARY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "zig-out", "bin", "safegguf")
 if sys.platform == "win32" and not BINARY.endswith(".exe") and os.path.exists(BINARY + ".exe"):
     BINARY += ".exe"
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+SOURCE_VERSION = (Path(__file__).resolve().parents[1] / "VERSION").read_text().strip()
 
 # Pinned ggml provenance carried by every JSON output (PASS/REJECT/ERROR).
 # Emitted as "compatibility_target" under --profile llama-cpp and as
@@ -525,7 +527,7 @@ def test_help():
         rc, stdout, stderr = run_cli(flag)
         assert rc == 0, f"Expected returncode 0 for {flag}, got {rc}"
         output = stdout + stderr
-        assert "SafeGGUF v0.3." in output, f"Version missing in help: {output}"
+        assert f"SafeGGUF v{SOURCE_VERSION} -" in output, f"Version missing in help: {output}"
         assert "--endian <little|big|auto>" in output, f"Accurate endian flag missing in help: {output}"
         assert "--profile <gguf-spec|llama-cpp>" in output, f"Accurate profile flag missing in help: {output}"
         assert "default: auto" in output, f"Default auto endian missing in help: {output}"

@@ -16,7 +16,7 @@
 # The caller forwards the release tag as the required `version` input; both
 # jobs strip the leading v and pass it as SAFEGGUF_VERSION, so the binary's
 # embedded version and the image's org.opencontainers.image.version label
-# report the tag instead of the Dockerfile's 0.3.7-dev fallback.
+# report the release version declared in VERSION.
 
 name: Container Release Pipeline
 

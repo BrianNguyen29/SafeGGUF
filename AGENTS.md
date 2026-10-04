@@ -6,6 +6,7 @@ SafeGGUF: memory-safe GGUF v3 structural/arithmetic validator (Zig). Keep these 
 
 - Zig **0.13.0** pinned in CI only — no `.zig-version` file; install 0.13.0 yourself. Code uses 0.13.0 std APIs; do not "modernize" to newer Zig idioms.
 - No `build.zig.zon` — zero Zig package dependencies, std only. Don't add packages.
+- `VERSION` is the canonical source version; Docker metadata and release tags must match it. Run `python scripts/version_consistency.py` after changing release metadata.
 - Python 3 for fixture generation and test harnesses; CMake + C++ compiler only for the upstream oracle.
 
 ## Commands (run from repo root, in this order — matches CI)

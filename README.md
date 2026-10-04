@@ -1,392 +1,237 @@
 # SafeGGUF
 
 [![CI](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/ci.yml/badge.svg)](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/ci.yml)
-[![Zig 0.13.0](https://img.shields.io/badge/Zig-0.13.0-orange.svg?style=flat-square&logo=zig)](https://ziglang.org/download/0.13.0/release-notes.html)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
-[![Release: v0.3.7-dev](https://img.shields.io/badge/release-v0.3.7--dev-blue.svg?style=flat-square)](https://github.com/BrianNguyen29/SafeGGUF/releases)
-[![ggml 0.23.0 (e91ded11)](https://img.shields.io/badge/ggml-0.23.0%20%28e91ded11%29-blueviolet.svg?style=flat-square)](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226)
-[![Container: Distroless](https://img.shields.io/badge/container-distroless-2496ED.svg?style=flat-square&logo=docker)](Dockerfile)
+[![Windows](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/windows.yml/badge.svg)](https://github.com/BrianNguyen29/SafeGGUF/actions/workflows/windows.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-SafeGGUF is a memory-safe, overflow-checked structural and arithmetic validator
-for GGUF model files — a fail-closed pre-admission gate for untrusted uploads,
-written in Zig with no external package dependencies.
+SafeGGUF validates GGUF model files before an inference runtime loads them.
+Written in Zig, it checks file structure, tensor layout, arithmetic bounds and
+resource limits through a CLI, C API and Python bindings.
 
-This tree is the development snapshot for **0.3.7-dev**; the latest tagged
-release is **v0.3.6** (2026-09-15). Only released artifacts are supported — see
-[SECURITY.md](SECURITY.md).
+Source version: **0.1.0**. Signed release artifacts are available through
+[GitHub Releases](https://github.com/BrianNguyen29/SafeGGUF/releases).
+Use the release's checksums and provenance to verify downloaded artifacts.
 
-## Table of Contents
-
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Configuration](#configuration)
-- [Deployment](#deployment)
-- [API](#api)
-- [Security](#security)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [License](#license)
+A PASS verdict means the file satisfies the selected validation policy. Model
+authenticity, weight behavior and inference compatibility require separate
+verification.
 
 ## Features
 
-- **Checked arithmetic on attacker-controlled values.** Dimensions, offsets,
-  alignments, and sizes use `checkedAdd`/`checkedMul`/`checkedAlignUp`; overflow
-  exits `2`. Exercised by regression, the pinned ggml differential oracle, and
-  mutation fuzzing; a fixture covers CVE-2025-53630 / GHSA-vgg9-87g3-85w8
-  (`llama-cpp` profile).
-- **Bounded memory, fail-closed admission.** A 64 KiB sliding-window reader;
-  `QuotaAllocator` (128 MiB default) and `WorkBudget` (10,000,000 units, 256 MiB
-  scanned bytes) cap validator-managed work; exit taxonomy `0`/`2`/`64`/`70`/`74`;
-  descriptor validation (`safegguf_validate_fd_v1` / `safegguf.validate_fd`) or a
-  CAS digest handoff ([Kubernetes example](#kubernetes)).
-- **Profiles and interfaces.** `llama-cpp` (unified default across the CLI,
-  C ABI, and Python bindings: v2/v3 pre-admission subset, differential-tested
-  against pinned ggml 0.23.0 `e91ded11`) and `gguf-spec` (GGUF v3 safe subset;
-  opt in with `--profile gguf-spec`); CLI, C ABI, Python bindings; metrics/JSON
-  logs on stderr; distroless container, K8s init pattern, hybrid triage
-  ([deployment guide](docs/production_deployment.md)).
-
-## Quick Start
-
-Requires Zig 0.13.0.
-
-```bash
-git clone https://github.com/BrianNguyen29/SafeGGUF.git && cd SafeGGUF
-zig build -Doptimize=ReleaseSafe
-./zig-out/bin/safegguf inspect /path/to/model.gguf --profile llama-cpp --endian auto --format json
-```
-
-Exit `0` passed, `2` rejected ([Exit Codes](#exit-codes)); `--version` prints provenance.
+- Checked arithmetic for dimensions, offsets, alignments and tensor sizes.
+- Configurable allocation, logical-work, scanned-byte and input-size limits.
+- `llama-cpp` and `gguf-spec` profiles with explicit compatibility rules.
+- Single-process admission to content-addressed storage, with policy-bound JSON
+  statements and checksum pins.
+- Stable exit codes, JSON diagnostics, canonical error codes, optional metrics
+  and structured logs.
+- Nonroot containers for Linux amd64/arm64 and a Kubernetes integration example.
+- No external Zig package dependencies.
 
 ## Installation
 
-Requires Zig 0.13.0 (pinned in CI and the Dockerfile); Python 3 only for fixtures
-and Python test harnesses, CMake and a C++ compiler only for the optional
-upstream ggml oracle; no Zig package dependencies — std only.
+### Build from source
+
+Install **Zig 0.13.0**, then build with runtime safety checks enabled:
+
+```bash
+git clone https://github.com/BrianNguyen29/SafeGGUF.git
+cd SafeGGUF
+zig build -Doptimize=ReleaseSafe
+./zig-out/bin/safegguf --version
+```
+
+The build produces the CLI under `zig-out/bin` and shared/static C libraries
+under `zig-out/lib`. Source builds support Linux, macOS and Windows.
+
+Release binaries target x86_64/aarch64 Linux and macOS, and x86_64 Windows.
+See [SECURITY.md](SECURITY.md) for artifact verification.
+
+### Python bindings
+
+Build the native library first, then install the bindings:
 
 ```bash
 zig build -Doptimize=ReleaseSafe
-python3 -m pip install ./bindings/python   # or: python3 -m pip wheel ./bindings/python --no-deps -w dist
+python3 -m pip install ./bindings/python
 ```
 
-| Artifact | Contents |
-| :--- | :--- |
-| `zig-out/bin/safegguf` | CLI executable |
-| `zig-out/lib/libsafegguf.so`, `libsafegguf.a` | C ABI shared/static libraries (`libsafegguf.dylib` on macOS, `safegguf.dll` on Windows) |
-
-The multi-stage [`Dockerfile`](Dockerfile) cross-compiles with Zig and ships on
-`gcr.io/distroless/static-debian12:nonroot` (multi-arch manifest digest, UID
-65532 `nonroot`, target under 5 MB); build/run commands are under [Docker](#docker).
-The wheel bundles the native library built from the same commit and reports its
-version. Tagged releases publish cross-platform binaries (`x86_64-linux`,
-`aarch64-linux`, `x86_64-macos`, `aarch64-macos`, `x86_64-windows`),
-`SHA256SUMS.txt`, a keyless Sigstore bundle, and an SPDX 2.3 SBOM (GitHub
-attestations cover the binaries; [SECURITY.md](SECURITY.md)). Source builds run
-on Linux/macOS/Windows, release binaries on x86_64/aarch64 Linux and macOS plus
-x86_64 Windows, and containers on `linux/amd64`/`linux/arm64`.
-
-## Usage
-
-### CLI
-
-```
-safegguf inspect <path_to_model.gguf> [options]
-```
-
-```bash
-safegguf inspect /path/to/model.gguf --profile llama-cpp --endian auto     # text (default)
-safegguf inspect /path/to/model.gguf --profile llama-cpp --format json    # JSON on stdout
-safegguf inspect /path/to/model.gguf --max-file-size-bytes 17179869184 --require-stable-file  # v1.1 controls
-safegguf inspect /path/to/model.gguf --max-string-bytes 131072 --key-policy lenient           # v1.2 relief (opt-in)
-safegguf inspect /path/to/model.gguf --emit-metrics --log-json --request-id req-123 --tenant-id tenant-a  # stderr
-
-# Prepare private, trusted output directories, then publish validated bytes.
-mkdir -p /srv/safegguf/validated /srv/safegguf/attestations
-safegguf admit /path/to/model.gguf --cas-dir /srv/safegguf/validated --attestations-dir /srv/safegguf/attestations
-```
-
-The CLI defaults match the C ABI and Python bindings: `--profile llama-cpp`
-and `--endian auto` (byte order is detected, falling back to little-endian).
-Opt into the resource-bounded GGUF v3 safe subset with `--profile gguf-spec`,
-or pin `--endian little|big` explicitly.
-
-Relief flags are opt-in and leave the defaults fail-closed:
-`--max-string-bytes <N>` raises the 65536-byte metadata key/string cap, and
-`--key-policy lenient` admits `-` and uppercase ASCII letters in metadata keys.
-Both are also available as `SAFEGGUF_MAX_STRING_BYTES` / `SAFEGGUF_KEY_POLICY`,
-as the appended C ABI `max_string_bytes` / `key_policy` option fields (v1.2),
-and as Python `validate_path` / `validate_fd` parameters; the same file yields
-the same default verdict through every surface.
-
-> **Change note (0.3.7-dev).** The CLI default flipped from `gguf-spec` /
-> little-endian to `llama-cpp` / auto to match the C ABI and Python defaults.
-> C ABI callers passing `NULL` options always had llama-cpp + auto; a
-> zero-initialized options struct still means gguf-spec + little. Pin
-> `--profile` / `--endian` (or set the struct fields explicitly) if you relied
-> on the old CLI default. The legacy `error_code` strings are unchanged; the
-> llama.cpp dimension-product guard now resolves to the canonical detail
-> `SGGUF_E_DIMENSION_OVERFLOW` (`canonical_error_code` in JSON,
-> `safegguf_result_canonical_error_code()` in the C ABI) while its
-> `error_code` stays `E_CompatibilityViolation`.
-
-### Exit Codes
-
-| Exit | Constant (`include/safegguf.h`) | Meaning |
-| :---: | :--- | :--- |
-| `0` | `SAFEGGUF_OK` | PASS: the file satisfies the selected profile's structural, arithmetic, and resource checks |
-| `2` | `SAFEGGUF_REJECT` | REJECT: malformed input, checked-arithmetic overflow, or validator-managed quota exhaustion |
-| `64` | `SAFEGGUF_EX_USAGE` | Usage/argument error, including unknown flags and invalid option values |
-| `70` | `SAFEGGUF_EX_SOFTWARE` | Internal software error or host OOM (not a REJECT) |
-| `74` | `SAFEGGUF_EX_IOERR` | File open, stat, or read I/O error |
-
-### JSON Diagnostics
-
-Every ERROR/REJECT object carries `schema_version`, `status`, `error_code`
-(compatibility identifier), `canonical_error_code` (stable `SGGUF_E_*`),
-`category`, `stage`, and context fields when known; PASS objects carry `checks`
-and an empty `findings` array. The CLI emits one line; this REJECT is
-pretty-printed:
-
-```json
-{"schema_version": 1, "status": "REJECT", "profile": "llama-cpp",
- "compatibility_target": {"project": "ggml", "version": "0.23.0", "commit": "e91ded11bdcd78c42f9c8d3978ff6686eb4c1226"},
- "error": "ArithmeticOverflow", "error_code": "E_ArithmeticOverflow", "canonical_error_code": "SGGUF_E_ARITHMETIC_OVERFLOW",
- "category": "arithmetic", "stage": "structural", "message": "Checked arithmetic overflow while computing tensor layout",
- "tensor_index": 1, "tensor": "cve-2025-53630-cumulative-1", "offset": 9223372036854775808, "expected_offset": 9223372036854775808, "findings": [{"code": "E_ArithmeticOverflow", "severity": "reject"}]}
-```
-
-Policy engines should key on `canonical_error_code` — or map
-`safegguf_result_t.error_code` via `safegguf_canonical_error_code()` over the
-C ABI. Legacy `error_code` is unchanged; additive fields keep `schema_version`
-1, a breaking change increments it ([`docs/error-codes.md`](docs/error-codes.md)).
-
-### Build Provenance
-
-`--version` reports `SafeGGUF 0.3.7-dev`, source commit, `zig: 0.13.0`,
-`build_mode: ReleaseSafe`, target, and pinned `ggml_target: 0.23.0` /
-`ggml_commit: e91ded11bdcd78c42f9c8d3978ff6686eb4c1226` (source tree/toolchain
-only; no wall-clock timestamp). JSON outputs carry the same provenance under
-`compatibility_target` (`llama-cpp`) or `type_layout_source` (`gguf-spec`);
-source builds report the embedded default version (CI checks it against the latest tag), release artifacts the built tag.
-
-## Configuration
-
-### CLI Flags
-
-| Flag | Default | Description |
-| :--- | :--- | :--- |
-| `--endian <little\|big\|auto>` | `auto` | Byte order. `auto` detects from the magic/version bytes. |
-| `--format <text\|json>` | `text` | Output format. |
-| `--profile <gguf-spec\|llama-cpp>` | `llama-cpp` | Validation profile; see [Profiles](#profiles). |
-| `--max-variable-array-elements <N>` | `1000000` | Cap on string and nested-array elements. Accepted range `1..10000000`. |
-| `--max-memory-mb <N>` | `128` | Maximum validator-managed allocation quota, in MiB. |
-| `--max-work-budget <N>` | `10000000` | Maximum logical work units. |
-| `--max-file-size-bytes <N>` | no limit | Reject files larger than `N` bytes before the first read. |
-| `--require-stable-file` | off | Reject a PASS verdict if the open file's dev/inode/size/mtime/ctime change during validation. A bounded identity check, not cryptographic immutability. |
-| `--emit-metrics` | off | Emit per-run metrics JSON to stderr. |
-| `--log-json` | off | Emit one structured JSON log record to stderr (adds a SHA-256 file digest). |
-| `--request-id <id>` | random per run | Correlation id for `--log-json`. |
-| `--tenant-id <id>` | unset | Tenant id for `--log-json`; logged only as a SHA-256 pseudonym. |
-| `--help`, `-h` / `--version` | — | Print usage, or version and build provenance, and exit `0`. |
-
-### Environment Variables
-
-| Variable | Effect | Default |
-| :--- | :--- | :--- |
-| `SAFEGGUF_MAX_MEMORY_MB` | Allocation quota in MiB. | `128` |
-| `SAFEGGUF_MAX_ALLOC_BYTES` | Allocation quota in bytes; applied after `SAFEGGUF_MAX_MEMORY_MB`. | 128 MiB |
-| `SAFEGGUF_MAX_WORK_BUDGET` | Logical work-unit budget. | `10000000` |
-| `SAFEGGUF_MAX_WORK_UNITS` | Logical work-unit budget; applied after `SAFEGGUF_MAX_WORK_BUDGET`. | `10000000` |
-| `SAFEGGUF_MAX_SCANNED_BYTES` | Scanned-byte budget for streaming string, UTF-8, and boolean scans. | 256 MiB |
-
-CLI flags override environment values; malformed environment values are ignored.
-
-### Profiles
-
-| Profile | GGUF versions | Tensor layout | Nested metadata arrays | Alignment | Endianness |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| `gguf-spec` (opt-in) | v3 only | Arbitrary descriptor order and gaps allowed | Allowed, depth ≤ 16 | Multiple of 8 | `little`, `big`, or `auto` |
-| `llama-cpp` (default) | v2 and v3 | Strictly contiguous in descriptor order, with checked trailing padding | Rejected | Power of two | Host-native only; non-native byte order is rejected |
-
-The GGML type table is pinned to ggml 0.23.0 (`e91ded11`): 43 slots, 35 active
-types; deprecated slots and IDs ≥ 43 are rejected. Zero-filled descriptor padding
-is enforced in both profiles (anti-tamper; stricter than runtimes that align past
-those bytes).
-The llama-cpp profile also rejects embedded NUL bytes in tensor names so
-different length-delimited names cannot alias a single upstream C-string name.
-
-### Resource Budgets
-
-| Budget | Default | Scope |
-| :--- | :--- | :--- |
-| Allocation quota (`QuotaAllocator`) | 128 MiB | Parser tables, metadata structures, strings, sorting buffers |
-| Work budget (`WorkBudget`) | 10,000,000 units | Parser and structural-validator operations |
-| Scanned-byte budget | 256 MiB | Streaming string, UTF-8, and boolean scans |
-
-Validator-managed quotas only — not process RSS, page cache, stack, CPU time, or
-kernel overhead. For hostile multi-tenant uploads add OS/container limits
-(cgroup memory, CPU quota + wall-clock timeout, file-size limit, read-only FS,
-seccomp); see [SECURITY.md](SECURITY.md), "Deployment Limits".
-
-### Observability
-
-Metrics counters are recorded every run; JSON emission is opt-in and always
-stderr (stdout stays one result document). `--log-json` writes one structured
-record (verdict, timing, budgets, SHA-256 digest, request/tenant ids — tenant pseudonymized); emission failures never change a verdict or exit code.
-
-## Deployment
-
-```
-model.gguf ------> safegguf admit ----> validated/<sha256> ----> checksum gate ----> llama.cpp
-                   copy/hash/validate   protected CAS          sha256 -c            digest-pinned
-```
+Packaged wheels bundle the native shared library and derive their version from
+it. See [Python packaging](bindings/python/pyproject.toml) for build requirements.
 
 ### Docker
 
-The [container release pipeline](.github/workflows/container-release.yml) builds
-`linux/amd64`/`linux/arm64` images (arm64 run under QEMU), emits an SBOM and SLSA
-provenance (`provenance: mode=max`), signs the image digest with keyless Cosign
-OIDC, and publishes `ghcr.io/briannguyen29/safegguf` for `v*` tags after every
-validation job passes (tags: release version, `major.minor`, `latest`).
-
 ```bash
-docker build -t safegguf:latest .
-docker run --rm -v "$(pwd)/models:/models:ro" safegguf:latest \
-  inspect /models/model.gguf --profile llama-cpp --format json
+docker build -t safegguf:0.1.0 .
+docker run --rm -v "$PWD/models:/models:ro" safegguf:0.1.0 \
+  inspect /models/model.gguf --format json
 ```
 
-### Kubernetes
+The [Dockerfile](Dockerfile) builds a static binary and uses a digest-pinned
+distroless runtime. Published images are available at
+`ghcr.io/briannguyen29/safegguf`; verify their signatures and pin the digest
+before deployment.
 
-[`deploy/k8s/safegguf-initcontainer.yaml`](deploy/k8s/safegguf-initcontainer.yaml)
-is a release template. The container workflow emits a rendered deployment
-artifact using the digest of its signed image; it never guesses an unpublished
-development tag. Operators can render it with
-[`scripts/render_k8s_manifest.py`](scripts/render_k8s_manifest.py), supplying a
-verified `ghcr.io/owner/image:VERSION@sha256:DIGEST` and matching `--version`.
-Do not apply the unrendered template. Configure the namespace, PVC, registry
-access and serving lifecycle for the actual environment.
+## Usage
 
-| Phase | Container | Action |
-| :--- | :--- | :--- |
-| 0 | `safegguf-prepare-directories` | Prepare the private CAS and attestation directories. |
-| 1 | `safegguf-pre-admission-validator` | `admit` copies/hashes once, validates its staged inode, and publishes the CAS object plus admission v2 statement. |
-| load | `llama-cpp-server` | Require one checksum pin, verify with `sha256sum -c`, then load `/validated/$DIGEST`. |
+### Inspect a model
 
-All containers run without root with restricted capabilities and seccomp;
-serving mounts the output read-only. The handoff script
-[`deploy/k8s/attestation_handoff.sh`](deploy/k8s/attestation_handoff.sh)
-delegates to the same native publisher outside Kubernetes.
+```bash
+safegguf inspect model.gguf --format json
+safegguf inspect model.gguf --profile llama-cpp --endian auto
+safegguf inspect model.gguf --max-file-size-bytes 17179869184 --require-stable-file
+```
 
-### Admission Documents
+The default profile is `llama-cpp`; byte order defaults to `auto`.
+Use `--` before a path that starts with a dash.
 
-`admit` success emits one admission **schema v2** document on stdout and saves
-the same bytes as `<attestations-dir>/<digest>.json`. It binds all effective
-limits (including environment overrides), key policy, requested/resolved endian,
-profile and build/type-table provenance. `cas.relative_path` is the digest,
-resolved from **`--cas-dir`**; the directory may have any name. Diagnostics from
-`inspect`, and admission failures, retain diagnostic schema v1. See
-[`docs/admission-attestation.md`](docs/admission-attestation.md) for migration,
-policy replay, trust boundaries and publication failure semantics.
+JSON diagnostics use schema v1 and include the verdict, profile and pinned
+upstream type-table provenance. Rejections include `error_code`,
+`canonical_error_code`, category, stage and available context. Use canonical
+codes for programmatic decisions; see [error codes](docs/error-codes.md).
 
-## API
+### Admit a model
 
-### Python Bindings
+Prepare output directories controlled by the admission service, then run:
 
-The `safegguf` package exposes `validate_path` and `validate_fd`
-(descriptor-based, anti-TOCTOU), with the same profiles, endianness options,
-and resource controls as the CLI, including the v1.1 `max_file_size_bytes` and
-`require_stable_file` controls and the v1.2 `max_string_bytes` /
-`key_policy` relief parameters (both default to the engine defaults, so
-omitting them is fail-closed); `safegguf.version()` returns the native library
-version. Library lookup: `SAFEGGUF_LIB_PATH` (absolute regular file), packaged
-wheel, source `zig-out`, platform search; unenforceable controls fail closed
-with `E_USAGE_UNSUPPORTED_OPTIONS` (exit `64`). See [`bindings/python`](bindings/python).
+```bash
+umask 077
+mkdir -p /srv/safegguf/validated /srv/safegguf/attestations
+safegguf admit model.gguf \
+  --cas-dir /srv/safegguf/validated \
+  --attestations-dir /srv/safegguf/attestations \
+  --profile llama-cpp --endian auto > admission.json
+```
 
-### C ABI
+`admit` copies and hashes the input into private staging, validates the same
+staged inode, then publishes the validated bytes under their SHA-256 digest.
+Continue only after exit code `0`.
 
-[`include/safegguf.h`](include/safegguf.h) exports `safegguf_validate_path_v1` /
-`safegguf_validate_fd_v1` (legacy `safegguf_validate_path` /
-`safegguf_validate_fd`), `safegguf_version`, `safegguf_canonical_error_code`,
-and `safegguf_result_canonical_error_code` (resolves context-dependent
-canonical details such as `SGGUF_E_DIMENSION_OVERFLOW` from a whole result),
-with exit constants `SAFEGGUF_OK`, `SAFEGGUF_REJECT`, `SAFEGGUF_EX_USAGE`,
-`SAFEGGUF_EX_SOFTWARE`, `SAFEGGUF_EX_IOERR` and option enums
-`SAFEGGUF_PROFILE_LLAMA_CPP` / `SAFEGGUF_ENDIAN_AUTO`. `safegguf_options_v1_t`
-is caller-owned; `struct_size` gates appended fields, so a v1.0-layout caller
-keeps the legacy defaults (`max_file_size_bytes = 0`, `require_stable_file = 0`)
-and a v1.1-layout caller keeps the default string cap and strict key grammar,
-unknown sizes exit `64`; concurrent calls are safe if the struct is not mutated
-mid-call. `NULL` options select the engine defaults (llama-cpp + auto), while a
-zero-initialized struct means gguf-spec + little.
+The admission schema v2 document records effective limits, key policy,
+requested/resolved byte order and build provenance. Its `cas.relative_path`
+resolves from `--cas-dir`. Successful stdout matches the saved JSON statement.
+Protect outputs from untrusted writers and verify the checksum before loading.
+
+See the [admission contract](docs/admission-attestation.md) for fields, policy
+replay and partial-publication failure semantics.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | PASS, or successful help/version output |
+| `2` | Rejected input or validator-managed resource exhaustion |
+| `64` | Invalid arguments or options |
+| `70` | Internal error or host out-of-memory |
+| `74` | File access, read or publication error |
+
+## Validation policy
+
+| Profile | GGUF versions | Tensor layout | Metadata arrays | Alignment |
+| --- | --- | --- | --- | --- |
+| `llama-cpp` (default) | v2/v3 | Contiguous in descriptor order; checked trailing padding | Nested arrays rejected | Power of two |
+| `gguf-spec` | v3 | Descriptor order and gaps allowed | Nesting up to depth 16 | Multiple of 8 |
+
+Both profiles use the type table from **ggml 0.23.0**, commit
+[`e91ded11`](https://github.com/ggml-org/ggml/tree/e91ded11bdcd78c42f9c8d3978ff6686eb4c1226),
+and enforce zero-filled descriptor padding. The `llama-cpp` profile requires
+host-native byte order and rejects embedded NUL tensor names. Profiles define
+a bounded safe subset; acceptance does not guarantee every downstream runtime
+or model architecture can load the file.
+
+### Resource controls
+
+| Control | Default |
+| --- | --- |
+| Validator-managed allocation | 128 MiB |
+| Logical work | 10,000,000 units |
+| Scanned string/UTF-8/boolean bytes | 256 MiB |
+| Variable-array elements | 1,000,000 |
+| Metadata key/string length | 65,536 bytes |
+| Input size | Unlimited for `inspect`; 16 GiB for `admit` |
+| Metadata key policy | `strict` |
+
+Use `--max-memory-mb`, `--max-work-budget`, `--max-variable-array-elements`,
+`--max-string-bytes` and `--max-file-size-bytes` to set the corresponding
+limits. `--key-policy lenient` explicitly permits additional metadata key
+characters. Run `safegguf --help` for complete options.
+
+Environment controls include `SAFEGGUF_MAX_ALLOC_BYTES`,
+`SAFEGGUF_MAX_WORK_UNITS`, `SAFEGGUF_MAX_SCANNED_BYTES`,
+`SAFEGGUF_MAX_STRING_BYTES` and `SAFEGGUF_KEY_POLICY`.
+CLI flags override the corresponding environment settings; malformed
+environment values are ignored.
+
+These quotas apply to validator-managed operations. Apply OS/container limits
+for process memory, CPU, wall-clock time and staging disk usage when processing
+untrusted uploads.
+
+## Integration
+
+The C API supports paths and open descriptors through
+`safegguf_validate_path_v1` and `safegguf_validate_fd_v1`; definitions and
+ownership rules are in [safegguf.h](include/safegguf.h). A `NULL` options pointer
+uses `llama-cpp` and `auto`; a zero-initialized options structure selects
+`gguf-spec` and little-endian. Initialize the desired fields explicitly.
+
+Python exposes `validate_path`, `validate_fd` and `version` using the same
+native engine. Keep validated bytes protected throughout downstream use:
+a file descriptor preserves inode identity, but does not prevent another writer
+from changing its contents.
+
+The [Kubernetes template](deploy/k8s/safegguf-initcontainer.yaml) runs admission
+before serving and verifies the checksum before the runtime loads the digest
+object. Render it with [render_k8s_manifest.py](scripts/render_k8s_manifest.py)
+using a verified, version-matching image digest. Configure storage, resource
+limits, readiness and lifecycle for the target environment.
+
+Optional metrics and structured logs go to stderr through `--emit-metrics`
+and `--log-json`; stdout remains the result document. `--version` reports
+the version, source commit, toolchain, build mode, target and ggml baseline.
+Release version, C API layout version and JSON schema version are independent.
 
 ## Security
 
-Threat model, security invariants, release verification, supported versions, and
-vulnerability reporting live in [SECURITY.md](SECURITY.md); regression coverage
-includes the CVE-2025-53630 advisory fixture (see [Features](#features)). `PASS`
-is a structural/arithmetic/resource-policy verdict, not a trust or malware
-verdict.
+See [SECURITY.md](SECURITY.md) for the threat model, supported releases,
+artifact verification and private vulnerability reporting.
 
-Tagged releases publish binaries, `SHA256SUMS.txt`, a keyless Sigstore bundle
-(`SHA256SUMS.txt.sigstore.json`), and an SPDX 2.3 SBOM (`safegguf.spdx.json`);
-GitHub artifact attestations cover the binaries, and container images are signed
-with keyless Cosign (commands in [SECURITY.md](SECURITY.md), "Release Verification").
+Admission statements are unsigned unless an operator-owned signing layer
+authenticates them. Protect staging and published objects from untrusted
+same-UID or privileged writers; read-only serving mounts are part of that boundary.
+
+## Development
+
+Use Zig 0.13.0 and Python 3. Generate fixtures before running the test suite:
+
+```bash
+zig fmt --check src/ build.zig tests/*.zig
+python3 tests/generate_fixtures.py
+zig build test --summary all
+zig build -Doptimize=ReleaseSafe
+python3 tests/cli_test.py
+python3 tests/negative_corpus.py
+python3 scripts/version_consistency.py
+```
+
+CI covers Linux/macOS core tests, upstream differential checks, mutation fuzzing
+and benchmarks. Native Windows checks run separately and gate release
+publication. Tagged releases also require the real-model corpus and container
+runtime checks.
+
+Contributions are welcome through issues and pull requests. Follow the
+repository invariants in [AGENTS.md](AGENTS.md), use concise Conventional
+Commit messages, and keep local session records, audit reports and incident
+runbooks outside the tracked public tree. Before committing staged changes,
+run `python3 scripts/check_public_tree.py`.
 
 ## Documentation
 
-| Document | Contents |
-| :--- | :--- |
-| [`docs/production_deployment.md`](docs/production_deployment.md) | Production deployment and integration guide |
-| [`docs/admission-attestation.md`](docs/admission-attestation.md) | Admission v2 fields, policy replay, CAS path resolution and migration |
-| [`docs/release-notes-0.3.7.md`](docs/release-notes-0.3.7.md) | Unreleased 0.3.7 preparation notes and compatibility changes |
-| [`docs/error-codes.md`](docs/error-codes.md) | Canonical `SGGUF_E_*` namespace and JSON schema versioning policy |
-| [`SECURITY.md`](SECURITY.md) | Threat model, security invariants, release verification, vulnerability reporting |
-| [`AGENTS.md`](AGENTS.md) | Repository invariants, toolchain pinning, command reference |
-
-## Contributing
-
-Contributions are welcome via GitHub issues and pull requests; keep the
-repository invariants in [`AGENTS.md`](AGENTS.md) intact.
-
-Public documentation covers the product's interfaces, security contract and
-generic integration examples. Keep local session notes, incident runbooks,
-audit reports and maintainer release records outside the tracked source tree.
-Before committing, stage explicit paths and run
-`python3 scripts/check_public_tree.py`; CI checks the same publication boundary.
-
-### Development and Testing
-
-Run from the repository root, in this order (matches CI):
-
-```sh
-zig fmt --check src/ build.zig tests/*.zig
-python3 tests/generate_fixtures.py     # writes gitignored fixtures + seed corpus
-zig build test --summary all           # unit + regression + fuzz corpus sweep
-zig build -Doptimize=ReleaseSafe       # -> zig-out/bin/safegguf
-python3 tests/cli_test.py              # end-to-end exit-code contract
-python3 tests/negative_corpus.py       # negative corpus + advisory provenance (exit 2)
-```
-
-`zig build test` fails on a fresh clone until fixtures are generated (the fuzz
-target opens `tests/corpus`); `cli_test.py` tests whatever binary is at
-`zig-out/bin/safegguf` — rebuild ReleaseSafe first. Heavier suites are listed in
-[AGENTS.md](AGENTS.md).
-
-### CI and Release
-
-- **CI** ([`ci.yml`](.github/workflows/ci.yml)): core tests on
-  `ubuntu-24.04`/`macos-14`, embedded-version consistency, real-corpus gate,
-  oracle/differential suites, mutation fuzzing, benchmarks, Windows gate,
-  container release, and release assembly; [`windows.yml`](.github/workflows/windows.yml)
-  runs fixtures, `zig build test`, ReleaseSafe build, CLI tests, and the
-  negative corpus natively on `windows-latest`.
-- **Scheduled/advisory**: Nightly Fuzz, Coverage Fuzz (Zig 0.14.1 advisory),
-  Real Corpus (advisory), Upstream Canary (rolling oracle).
-- **Releases**: `v*` tags trigger the release job, gated on every validation job
-  including the fail-closed Windows gate; a failed or skipped gate blocks it.
+- [Release notes](docs/release-notes-0.1.0.md)
+- [Admission schema and policy replay](docs/admission-attestation.md)
+- [Canonical error codes](docs/error-codes.md)
+- [Deployment and integration](docs/production_deployment.md)
+- [Security policy](SECURITY.md)
 
 ## License
 
-Distributed under the MIT License. See [`LICENSE`](LICENSE) for details.
+[MIT](LICENSE).

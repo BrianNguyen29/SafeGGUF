@@ -2,16 +2,19 @@
 
 SafeGGUF is designed as a memory-safe, overflow-checked pre-admission validation layer for AI model weights stored in the GGUF format.
 
-> **Release status:** **v0.3.6** is the latest tagged release (tag object `f688b59`, commit `ddbf045`, published 2026-09-15); `main` may carry unreleased commits on top of that tag. Unless marked otherwise, the guarantees below describe `main`.
+The current source version is **0.1.0**. Support applies to signed artifacts
+published through [GitHub Releases](https://github.com/BrianNguyen29/SafeGGUF/releases),
+not to arbitrary source builds or locally renamed binaries.
 
 ## Supported Versions
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.3.x (latest tagged release: v0.3.6) | :white_check_mark: |
-| < 0.3.0 | :x:                |
+| 0.1.0 release artifacts | Supported |
+| Other versions | Unsupported |
 
-Only released artifacts are supported; source builds from `main` are development snapshots, not release artifacts.
+Source builds use the version declared in `VERSION`; matching a version string
+alone does not establish release authenticity.
 
 ## Release Verification
 
@@ -20,6 +23,10 @@ Tagged releases publish the cross-platform binaries, `SHA256SUMS.txt`, a keyless
 Signing is keyless (the release workflow's GitHub OIDC identity; no long-lived release private key). Verify a downloaded release before use:
 
 ```bash
+# Use the reviewed source commit of the release being verified.
+RELEASE_TAG=v0.1.0
+RELEASE_COMMIT="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+
 # 1. Verify the checksum manifest's keyless Sigstore signature
 cosign verify-blob \
   --bundle SHA256SUMS.txt.sigstore.json \
@@ -36,8 +43,8 @@ gh attestation verify safegguf-x86_64-linux \
   --repo BrianNguyen29/SafeGGUF \
   --signer-workflow BrianNguyen29/SafeGGUF/.github/workflows/ci.yml \
   --predicate-type https://slsa.dev/provenance/v1 \
-  --source-ref refs/tags/v0.3.6 \
-  --source-digest ddbf045591cd7a2c7c69252012092440025723eb
+  --source-ref "refs/tags/${RELEASE_TAG}" \
+  --source-digest "$RELEASE_COMMIT"
 
 # 4. Verify the attested SBOM content (spdx.dev/Document predicate) for the
 #    same binary; --format json prints the verified statement, whose
@@ -46,13 +53,16 @@ gh attestation verify safegguf-x86_64-linux \
   --repo BrianNguyen29/SafeGGUF \
   --signer-workflow BrianNguyen29/SafeGGUF/.github/workflows/ci.yml \
   --predicate-type https://spdx.dev/Document/v2.3 \
-  --source-ref refs/tags/v0.3.6 \
-  --source-digest ddbf045591cd7a2c7c69252012092440025723eb
+  --source-ref "refs/tags/${RELEASE_TAG}" \
+  --source-digest "$RELEASE_COMMIT"
 ```
 
-The `--source-ref`/`--source-digest` values above are those of the latest tagged release (v0.3.6); substitute the tag and commit of the release being verified.
+Use a trusted checkout containing the reviewed release tag. Pin both the source
+reference and its expected commit when verifying provenance.
 
-`safegguf --version` reports the embedded version, source commit, Zig version, build mode, target, and pinned ggml target/commit. Source builds report the embedded default version, which CI checks against the latest tagged release; release artifacts report the version of the tag they were built from.
+`safegguf --version` reports the version, source commit, Zig version, build mode,
+target and pinned ggml baseline. CI checks source metadata against `VERSION`
+and requires the release tag to match before publication.
 
 ### Regression Fixture Provenance
 
